@@ -1,60 +1,26 @@
-# Cloud-Native Distributed Event Processing Platform
+# Cloud-Native Distributed Event Platform
 
-A scalable event-driven platform designed to ingest, stream, process, and analyze events in real time using cloud-native technologies.
+A scalable platform for ingesting, streaming, processing, and analyzing events in real time using cloud-native technologies.
 
-## Architecture
+## Goals
 
-The platform uses an event-driven architecture built around Apache Kafka and container orchestration with Kubernetes.
+Build a distributed event platform demonstrating:
 
-Core components:
+- event-driven architecture
+- distributed systems design
+- cloud-native infrastructure
+- observability and resilience
 
-- Event ingestion service
-- Kafka event streaming backbone
-- Stream processing services
-- Storage layer
-- Observability stack
-- Cloud-native infrastructure
+## Core Technologies
 
-## Technology Stack
-
-Backend
-- Java
-- Spring Boot
-
-Streaming
 - Apache Kafka
-
-Infrastructure
-- Docker
+- Spring Boot
 - Kubernetes
-
-Storage
 - PostgreSQL
 - Redis
-
-Observability
 - Prometheus
 - Grafana
-- OpenTelemetry
 
-CI/CD
-- GitHub Actions
+## Project Status
 
-## System Overview
-
-Producer → Ingestion API → Kafka → Processing Services → Storage → APIs / Dashboards
-
-## Repository Structure
-
-(explain folders)
-
-## Getting Started
-
-Instructions to run the platform locally.
-
-## Future Work
-
-- multi-tenant support
-- event replay
-- auto scaling
-- chaos testing
+Phase 1: Repository Foundation
