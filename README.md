@@ -1,5 +1,10 @@
 # PulseStream
 
+![CI](https://img.shields.io/github/actions/workflow/status/ME-Massine/pulsestream/ci.yml?branch=main)
+![License](https://img.shields.io/github/license/ME-Massine/pulsestream)
+![Last Commit](https://img.shields.io/github/last-commit/ME-Massine/pulsestream)
+![Repo Size](https://img.shields.io/github/repo-size/ME-Massine/pulsestream)
+
 A cloud-native distributed event processing platform for **IoT telemetry ingestion, streaming analytics, and anomaly detection**.
 
 PulseStream demonstrates how to build a **modern event-driven system** using Kafka, Spring Boot, and Kubernetes.
@@ -13,6 +18,57 @@ The project focuses on:
 *   Cloud-native infrastructure
 
 ---
+
+## System Architecture
+
+The PulseStream platform is built around an event-driven streaming pipeline powered by Apache Kafka.
+
+```mermaid
+flowchart LR
+
+A[IoT Devices] --> B[Ingestion Service]
+
+B --> C[Kafka Cluster]
+
+C --> D[Telemetry Processor]
+C --> E[Anomaly Detection]
+
+D --> F[(PostgreSQL)]
+E --> F
+
+F --> G[Query Service]
+
+G --> H[API Clients]
+
+C --> I[Dead Letter Queue]
+
+subgraph Observability
+J[Prometheus]
+K[Grafana]
+L[OpenTelemetry]
+end
+```
+
+Detailed architecture documentation:
+`docs/architecture`
+`docs/diagrams`
+
+## Where to Start
+
+If you're exploring the project for the first time:
+
+1.  Read the **Platform Overview**
+    `docs/platform-overview.md`
+
+2.  Review the **System Architecture**
+    `docs/architecture/system-overview.md`
+
+3.  Explore **Architecture Decisions**
+    `docs/decisions/`
+
+4.  Check the **Development Roadmap**
+    `docs/roadmap.md`
+
 
 # Architecture Overview
 
