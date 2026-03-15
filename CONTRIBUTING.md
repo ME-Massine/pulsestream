@@ -1,12 +1,19 @@
-Branch naming convention:
+## Workflow
+1. Pick an issue from Ready
+2. Create a feature branch
+3. Open a draft PR early
+4. Link the PR to the issue
+5. Request review before merging
 
-feature/<feature-name>
+## Branch Naming
+- feature/<name>
+- fix/<name>
+- chore/<name>
+- docs/<name>
 
-Example:
-feature/ingestion-service
-
-All contributions must:
-
-- use pull requests
-- include documentation updates when relevant
-- pass CI checks
+## Pull Requests
+Every pull request must:
+- link to an issue
+- describe the change
+- include testing notes
+- update documentation when needed
