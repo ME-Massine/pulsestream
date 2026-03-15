@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - "feature/**"
+      - "fix/**"
+      - "chore/**"
+      - "docs/**"
+  pull_request:
+    branches:
+      - main
+      - dev
+
+jobs:
+  repo-sanity:
+    name: Repository sanity checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required repository files
+        run: |
+          test -f README.md
+          test -f CONTRIBUTING.md
+          test -f .github/PULL_REQUEST_TEMPLATE.md
+          test -f .github/ISSUE_TEMPLATE/bug_report.yml
+          test -f .github/ISSUE_TEMPLATE/feature_request.yml
+          test -f .github/ISSUE_TEMPLATE/task.yml
+
+      - name: Validate required directories
+        run: |
+          test -d docs
+          test -d docs/architecture
+          test -d docs/decisions
+          test -d docs/diagrams
+
+  java-build-placeholder:
+    name: Java build placeholder
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Confirm Java is available
+        run: java -version
