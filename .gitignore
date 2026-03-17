@@ -25,3 +25,8 @@ replay_pid*
 
 *.iml
 .idea/
+infrastructure/docker/.env
+.DS_Store
+Thumbs.db
+
+target/
