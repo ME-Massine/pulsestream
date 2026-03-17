@@ -4,6 +4,14 @@ This document tracks the current engineering state of the PulseStream platform.
 
 PulseStream is a cloud-native event processing platform designed for ingesting, streaming, processing, and analyzing IoT telemetry events.
 
+```
+Phase 1 — Architecture        ✅ Completed
+Phase 2 — Local Platform      🚧 In Progress
+Phase 3 — Event Pipeline      ⏳ Planned
+Phase 4 — Observability       ⏳ Planned
+Phase 5 — Resilience          ⏳ Planned
+Phase 6 — Kubernetes          ⏳ Planned
+```
 ---
 
 # Current Phase
