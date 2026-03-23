@@ -13,7 +13,7 @@ services:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_log:/var/lib/zookeeper/log
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok || exit 1"]
+      test: ["CMD-SHELL", "echo ruok | timeout 2 bash -c 'cat >/dev/tcp/localhost/2181' && echo ok || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -118,6 +118,48 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     volumes:
       - grafana_data:/var/lib/grafana
+    networks:
+      - pulsestream-net
+
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: pulsestream-postgres-exporter
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/${POSTGRES_DB:-pulsestream}?sslmode=disable"
+      DATA_SOURCE_USER: ${POSTGRES_USER:-pulsestream}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:-pulsestream}
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - pulsestream-net
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: pulsestream-redis-exporter 
+    environment: 
+      REDIS_ADDR: "redis://redis:6379"
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pulsestream-net
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: pulsestream-kafka-exporter
+    command:
+      - "--kafka.server=kafka:29092"
+    ports:
+      - "9308:9308" 
+    depends_on:
+      kafka:
+        condition: service_healthy
     networks:
       - pulsestream-net
 
