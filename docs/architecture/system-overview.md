@@ -85,9 +85,13 @@ IoT Device / Simulator
 ↓
 Ingestion Service
 ↓
-Kafka Topic: telemetry.raw
+Kafka Topic: telemetry.events.raw
 ↓
 Telemetry Processor
+↓
+Kafka Topics:
+- telemetry.events.processed
+- telemetry.events.anomalies
 ↓
 PostgreSQL
 ↓
@@ -98,7 +102,7 @@ Dashboard / API Clients
 ```
 
 
-During processing, anomaly detection logic may produce additional events which are published to dedicated Kafka topics.
+During processing, anomaly detection logic produces additional events which are published to dedicated Kafka topics before being persisted.
 
 ---
 

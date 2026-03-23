@@ -67,9 +67,9 @@ flowchart LR
     E --> F[Query Service]
     F --> G[API Clients / Dashboards]
 
-    D --> H[(telemetry.processed)]
-    D --> I[(telemetry.anomalies)]
-    D --> J[(telemetry.deadletter)]
+    D --> H[(telemetry.events.processed)]
+    D --> I[(telemetry.events.anomalies)]
+    D --> J[(telemetry.events.dlq)]
 
     subgraph Observability
         K[Prometheus]
@@ -122,7 +122,7 @@ flowchart TB
     A[Telemetry API Controller] --> B[Telemetry Validation Component]
     B --> C[Event Enrichment Component]
     C --> D[Kafka Producer Component]
-    D --> E[(Kafka Topic: telemetry.raw)]
+    D --> E[(Kafka Topic: telemetry.events.raw)]
 
     F[Authentication / API Key Validation] --> A
 ```
@@ -156,8 +156,8 @@ flowchart TB
     C --> E[Anomaly Event Publisher]
     C --> F[Persistence Component]
 
-    D --> G[(Kafka Topic: telemetry.processed)]
-    E --> H[(Kafka Topic: telemetry.anomalies)]
+    D --> G[(Kafka Topic: telemetry.events.processed)]
+    E --> H[(Kafka Topic: telemetry.events.anomalies)]
     F --> I[(PostgreSQL)]
 ```
 
