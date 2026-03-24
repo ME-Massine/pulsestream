@@ -16,7 +16,7 @@ Raw telemetry data ingested from devices.
 - device-simulator
 
 **Consumers**
-- analytics-processor
+- telemetry-processor
 
 **Configuration**
 - partitions: 3
@@ -28,13 +28,32 @@ Raw telemetry data ingested from devices.
 ## telemetry.events.processed
 
 **Description**  
-Processed telemetry data after enrichment and anomaly detection.
+Processed telemetry data after enrichment.
 
 **Producers**
-- analytics-processor
+- telemetry-processor
 
 **Consumers**
 - query-service
+
+**Configuration**
+- partitions: 3
+- replication-factor: 1
+- retention: 7 days
+
+---
+
+## telemetry.events.anomalies
+
+**Description**  
+Detected anomalies from telemetry data.
+
+**Producers**
+- telemetry-processor
+
+**Consumers**
+- query-service
+- monitoring dashboards
 
 **Configuration**
 - partitions: 3
@@ -49,7 +68,7 @@ Processed telemetry data after enrichment and anomaly detection.
 Dead-letter queue for failed events.
 
 **Producers**
-- analytics-processor
+- telemetry-processor
 
 **Consumers**
 - monitoring / manual inspection
