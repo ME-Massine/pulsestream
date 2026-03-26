@@ -49,7 +49,7 @@ Produced when devices send telemetry readings.
 
 #### Processed Telemetry Events
 
-Produced after the telemetry processor normalizes or enriches telemetry data.
+Produced after the telemetry-processor normalizes or enriches telemetry data.
 
 *   `telemetry.processed`
 
@@ -101,7 +101,7 @@ This event represents a telemetry reading sent by a device.
 
 ### Anomaly Event Example
 
-When the telemetry processor detects abnormal behavior, it emits an anomaly event.
+When the telemetry-processor detects abnormal behavior, it emits an anomaly event.
 
 ```json
 {

@@ -5,12 +5,12 @@ This diagram shows the high-level architecture of PulseStream and the main inter
 ```mermaid
 flowchart LR
     A[IoT Devices / Simulator] --> B[Ingestion Service]
-    B --> T1[(Kafka Topic: telemetry.raw)]
+    B --> T1[(Kafka Topic: telemetry.events.raw)]
 
-    T1 --> C[Telemetry Processor]
-    C --> T2[(Kafka Topic: telemetry.processed)]
-    C --> T3[(Kafka Topic: telemetry.anomalies)]
-    C --> T4[(Kafka Topic: telemetry.deadletter)]
+    T1 --> C[Telemetry-Processor]
+    C --> T2[(Kafka Topic: telemetry.events.processed )]
+    C --> T3[(Kafka Topic: telemetry.events.anomalies)]
+    C --> T4[(Kafka Topic: telemetry.events.dlq)]
 
     C --> D[PostgreSQL]
     D --> E[Query Service]
@@ -37,10 +37,10 @@ flowchart LR
 
 **Notes:**
 
-*   `telemetry.raw` stores incoming telemetry readings.
+*   `telemetry.events.raw` stores incoming telemetry readings.
 
-*   `telemetry.processed` stores normalized or enriched downstream events.
+*   `telemetry.events.processed ` stores normalized or enriched downstream events.
 
-*   `telemetry.anomalies` captures anomaly detection results.
+*   `telemetry.events.anomalies` captures anomaly detection results.
 
-*   `telemetry.deadletter` stores invalid or failed events.
+*   `telemetry.events.dlq` stores invalid or failed events.

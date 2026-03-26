@@ -59,7 +59,7 @@ The Ingestion Service is responsible for receiving telemetry events from IoT dev
 
 ### Telemetry Processor
 
-The Telemetry Processor consumes raw telemetry events and performs real-time analysis.
+The telemetry-processor consumes raw telemetry events and performs real-time analysis.
 
 **Responsibilities:**
 
@@ -221,7 +221,7 @@ Ingestion Service
 ↓
 Kafka Topic: telemetry.events.raw
 ↓
-Telemetry Processor
+telemetry-processor
 ↓
 Kafka Topics:
 telemetry.events.processed

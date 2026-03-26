@@ -8,12 +8,12 @@ flowchart TB
 
     subgraph Kubernetes Cluster
         I --> S1[Ingestion Service Pod]
-        S1 --> K1[(Kafka: telemetry.raw)]
+        S1 --> K1[(Kafka: telemetry.events.raw)]
 
-        K1 --> S2[Telemetry Processor Pod]
-        S2 --> K2[(Kafka: telemetry.processed)]
-        S2 --> K3[(Kafka: telemetry.anomalies)]
-        S2 --> K4[(Kafka: telemetry.deadletter)]
+        K1 --> S2[telemetry-processor Pod]
+        S2 --> K2[(Kafka: telemetry.events.processed)]
+        S2 --> K3[(Kafka: telemetry.events.anomalies)]
+        S2 --> K4[(Kafka: telemetry.events.dlq)]
 
         S2 --> DB[(PostgreSQL)]
 
