@@ -80,14 +80,19 @@ The platform is composed of several distributed components that communicate thro
 ## Event Flow
 
 The typical lifecycle of a telemetry event follows this sequence:
-```bash
+
+```text
 IoT Device / Simulator
 ↓
 Ingestion Service
 ↓
-Kafka Topic: telemetry.raw
+Kafka Topic: telemetry.events.raw
 ↓
 Telemetry Processor
+↓
+Kafka Topics:
+- telemetry.events.processed
+- telemetry.events.anomalies
 ↓
 PostgreSQL
 ↓
@@ -96,9 +101,7 @@ Query Service
 Dashboard / API Clients
 
 ```
-
-
-During processing, anomaly detection logic may produce additional events which are published to dedicated Kafka topics.
+During processing, anomaly detection logic may publish events to dedicated Kafka topics for downstream consumers.
 
 ---
 

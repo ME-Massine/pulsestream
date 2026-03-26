@@ -65,11 +65,11 @@ Kafka provides:
 
 Core topics include:
 
-```bash
-telemetry.raw
-telemetry.processed
-telemetry.anomalies
-telemetry.deadletter
+```text
+telemetry.events.raw
+telemetry.events.processed
+telemetry.events.anomalies
+telemetry.events.dlq
 ```
 
 ---
@@ -80,9 +80,8 @@ Processing services consume telemetry streams and perform transformations.
 
 **Example processors:**
 
-*   Telemetry processor
-*   Anomaly detection processor
-*   Aggregation processor
+*   telemetry-processor
+*   future alerting or aggregation consumers
 
 These services read from Kafka topics and produce new events downstream.
 

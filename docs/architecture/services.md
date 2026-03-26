@@ -47,7 +47,7 @@ The Ingestion Service is responsible for receiving telemetry events from IoT dev
 
 **Primary Kafka interaction:**
 
-*   Produces events to `telemetry.raw`
+*   Produces events to `telemetry.events.raw`
 
 **Key characteristics:**
 
@@ -71,9 +71,9 @@ The Telemetry Processor consumes raw telemetry events and performs real-time ana
 
 **Primary Kafka interaction:**
 
-*   Consumes from `telemetry.raw`
-*   Produces to `telemetry.processed`
-*   Produces to `telemetry.anomalies`
+*   Consumes from `telemetry.events.raw`
+*   Produces to `telemetry.events.processed`
+*   Produces to `telemetry.events.anomalies`
 
 **Key characteristics:**
 
@@ -169,10 +169,10 @@ Kafka acts as the backbone of the platform.
 
 | Topic                | Description               |
 |----------------------|---------------------------|
-| `telemetry.raw`      | Raw telemetry events      |
-| `telemetry.processed`| Normalized telemetry data |
-| `telemetry.anomalies`| Detected anomalies        |
-| `telemetry.deadletter`| Failed or invalid events  |
+| `telemetry.events.raw`      | Raw telemetry events      |
+| `telemetry.events.processed`| Normalized telemetry data |
+| `telemetry.events.anomalies`| Detected anomalies        |
+| `telemetry.events.dlq`| Failed or invalid events  |
 
 ---
 
@@ -219,13 +219,13 @@ IoT Device / Simulator
 ↓
 Ingestion Service
 ↓
-Kafka Topic: telemetry.raw
+Kafka Topic: telemetry.events.raw
 ↓
 Telemetry Processor
 ↓
 Kafka Topics:
-telemetry.processed
-telemetry.anomalies
+telemetry.events.processed
+telemetry.events.anomalies
 ↓
 PostgreSQL
 ↓
