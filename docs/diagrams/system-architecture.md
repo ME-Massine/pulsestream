@@ -39,7 +39,7 @@ flowchart LR
 
 *   `telemetry.events.raw` stores incoming telemetry readings.
 
-*   `telemetry.events.processed ` stores normalized or enriched downstream events.
+*   `telemetry.events.processed` stores normalized or enriched downstream events.
 
 *   `telemetry.events.anomalies` captures anomaly detection results.
 
