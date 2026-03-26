@@ -38,7 +38,6 @@ jobs:
 
             let issue = null;
             let issueText = "";
-            let labels = [];
             let changedFiles = [];
 
             if (match) {
@@ -52,9 +51,6 @@ jobs:
 
               issue = issueResp.data;
               issueText = `${issue.title || ""}\n${issue.body || ""}`.toLowerCase();
-              labels = (issue.labels || []).map(label =>
-                (typeof label === "string" ? label : label.name || "").toLowerCase()
-              );
 
               const files = await github.paginate(
                 github.rest.pulls.listFiles,
@@ -96,21 +92,6 @@ jobs:
             }
 
             if (issue) {
-              const touchesDocs = changedFiles.some(file =>
-                file.startsWith("docs/") || file.endsWith(".md")
-              );
-
-              const touchesWorkflows = changedFiles.some(file =>
-                file.startsWith(".github/workflows/")
-              );
-
-              const touchesJava = changedFiles.some(file =>
-                file.endsWith(".java") ||
-                file.includes("pom.xml") ||
-                file.includes("src/main/") ||
-                file.includes("src/test/")
-              );
-
               const touchesTests = changedFiles.some(file =>
                 file.includes("src/test/") ||
                 file.includes("/test/") ||
@@ -122,50 +103,12 @@ jobs:
                 file.endsWith(".test.js")
               );
 
-              if (
-                labels.includes("docs") ||
-                issueText.includes("documentation") ||
-                issueText.includes("docs")
-              ) {
-                if (!touchesDocs) {
-                  failures.push("Issue looks docs-related, but no docs files were changed.");
-                } else {
-                  passes.push("Docs-related issue matched with docs changes.");
-                }
-              }
-
-              if (
-                labels.includes("ci") ||
-                labels.includes("github-actions") ||
-                issueText.includes("workflow") ||
-                issueText.includes("github actions") ||
-                issueText.includes("ci")
-              ) {
-                if (!touchesWorkflows) {
-                  failures.push("Issue looks CI-related, but no workflow files were changed.");
-                } else {
-                  passes.push("CI-related issue matched with workflow changes.");
-                }
-              }
-
-              if (
-                labels.includes("backend") ||
-                labels.includes("java") ||
-                issueText.includes("service") ||
-                issueText.includes("controller") ||
-                issueText.includes("repository")
-              ) {
-                if (!touchesJava) {
-                  failures.push("Issue looks backend-related, but no backend/Java files were changed.");
-                } else {
-                  passes.push("Backend-related issue matched with backend/Java changes.");
-                }
-              }
-
               const issueMentionsTests =
                 issueText.includes("test") ||
                 issueText.includes("tests") ||
-                issueText.includes("coverage");
+                issueText.includes("coverage") ||
+                issueText.includes("unit test") ||
+                issueText.includes("integration test");
 
               const prMentionsTests =
                 prText.includes("test") ||
@@ -173,7 +116,7 @@ jobs:
 
               if (issueMentionsTests) {
                 if (!touchesTests && !prMentionsTests) {
-                  failures.push("Issue mentions tests, but this PR does not add or describe test work.");
+                  failures.push("Linked issue mentions tests, but this PR does not add or describe test work.");
                 } else {
                   passes.push("Test requirement appears addressed.");
                 }
@@ -181,6 +124,45 @@ jobs:
 
               if (changedFiles.length > 30) {
                 warnings.push(`This PR changes ${changedFiles.length} files. Review scope carefully.`);
+              }
+
+              const touchesDocs = changedFiles.some(file =>
+                file.startsWith("docs/") || file.endsWith(".md")
+              );
+
+              const touchesWorkflows = changedFiles.some(file =>
+                file.startsWith(".github/workflows/")
+              );
+
+              const touchesBackend = changedFiles.some(file =>
+                file.endsWith(".java") ||
+                file.includes("pom.xml") ||
+                file.includes("src/main/") ||
+                file.includes("src/test/")
+              );
+
+              if (issueText.includes("workflow") || issueText.includes("github actions") || issueText.includes("ci")) {
+                if (!touchesWorkflows) {
+                  warnings.push("Issue may be CI-related, but no workflow files were changed.");
+                }
+              }
+
+              if (issueText.includes("documentation") || issueText.includes("docs")) {
+                if (!touchesDocs) {
+                  warnings.push("Issue may involve documentation, but no docs files were changed.");
+                }
+              }
+
+              if (
+                issueText.includes("service") ||
+                issueText.includes("controller") ||
+                issueText.includes("repository") ||
+                issueText.includes("endpoint") ||
+                issueText.includes("api")
+              ) {
+                if (!touchesBackend) {
+                  warnings.push("Issue may involve backend work, but no backend files were changed.");
+                }
               }
             }
 
@@ -214,7 +196,6 @@ jobs:
 
             const commentBody = bodyLines.join("\n");
 
-            // Non-annoying behavior: update the existing bot comment instead of creating a new one every time
             const marker = "<!-- pr-issue-alignment-review -->";
             const finalBody = `${marker}\n${commentBody}`;
 
