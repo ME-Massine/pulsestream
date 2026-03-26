@@ -1,0 +1,233 @@
+name: PR Issue Alignment
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+jobs:
+  pr-issue-alignment:
+    name: PR issue alignment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Review PR against linked issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const prBody = pr.body || "";
+            const prTitle = pr.title || "";
+            const prText = `${prTitle}\n${prBody}`.toLowerCase();
+
+            let failures = [];
+            let warnings = [];
+            let passes = [];
+
+            const match = prBody.match(
+              /(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/i
+            );
+
+            if (!match) {
+              failures.push("Missing linked issue. Add `Closes #123` under **Related Issue**.");
+            }
+
+            let issue = null;
+            let issueText = "";
+            let changedFiles = [];
+
+            if (match) {
+              const issueNumber = Number(match[1]);
+
+              const issueResp = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber
+              });
+
+              issue = issueResp.data;
+              issueText = `${issue.title || ""}\n${issue.body || ""}`.toLowerCase();
+
+              const files = await github.paginate(
+                github.rest.pulls.listFiles,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  per_page: 100
+                }
+              );
+
+              changedFiles = files.map(file => file.filename.toLowerCase());
+              passes.push(`Linked issue detected: #${issueNumber}`);
+            }
+
+            const requiredSections = [
+              "## summary",
+              "## related issue",
+              "## changes",
+              "## testing",
+              "## checklist"
+            ];
+
+            for (const section of requiredSections) {
+              if (!prBody.toLowerCase().includes(section)) {
+                failures.push(`Missing required PR section: \`${section}\``);
+              }
+            }
+
+            const badPlaceholders = [
+              "describe the purpose of this pull request.",
+              "describe how this was tested."
+            ];
+
+            for (const text of badPlaceholders) {
+              if (prBody.toLowerCase().includes(text)) {
+                failures.push(`PR still contains template placeholder text: "${text}"`);
+              }
+            }
+
+            if (issue) {
+              const touchesTests = changedFiles.some(file =>
+                file.includes("src/test/") ||
+                file.includes("/test/") ||
+                file.endsWith("test.java") ||
+                file.endsWith("tests.java") ||
+                file.endsWith(".spec.ts") ||
+                file.endsWith(".test.ts") ||
+                file.endsWith(".spec.js") ||
+                file.endsWith(".test.js")
+              );
+
+              const issueMentionsTests =
+                issueText.includes("test") ||
+                issueText.includes("tests") ||
+                issueText.includes("coverage") ||
+                issueText.includes("unit test") ||
+                issueText.includes("integration test");
+
+              const prMentionsTests =
+                prText.includes("test") ||
+                prText.includes("tests");
+
+              if (issueMentionsTests) {
+                if (!touchesTests && !prMentionsTests) {
+                  failures.push("Linked issue mentions tests, but this PR does not add or describe test work.");
+                } else {
+                  passes.push("Test requirement appears addressed.");
+                }
+              }
+
+              if (changedFiles.length > 30) {
+                warnings.push(`This PR changes ${changedFiles.length} files. Review scope carefully.`);
+              }
+
+              const touchesDocs = changedFiles.some(file =>
+                file.startsWith("docs/") || file.endsWith(".md")
+              );
+
+              const touchesWorkflows = changedFiles.some(file =>
+                file.startsWith(".github/workflows/")
+              );
+
+              const touchesBackend = changedFiles.some(file =>
+                file.endsWith(".java") ||
+                file.includes("pom.xml") ||
+                file.includes("src/main/") ||
+                file.includes("src/test/")
+              );
+
+              if (issueText.includes("workflow") || issueText.includes("github actions") || issueText.includes("ci")) {
+                if (!touchesWorkflows) {
+                  warnings.push("Issue may be CI-related, but no workflow files were changed.");
+                }
+              }
+
+              if (issueText.includes("documentation") || issueText.includes("docs")) {
+                if (!touchesDocs) {
+                  warnings.push("Issue may involve documentation, but no docs files were changed.");
+                }
+              }
+
+              if (
+                issueText.includes("service") ||
+                issueText.includes("controller") ||
+                issueText.includes("repository") ||
+                issueText.includes("endpoint") ||
+                issueText.includes("api")
+              ) {
+                if (!touchesBackend) {
+                  warnings.push("Issue may involve backend work, but no backend files were changed.");
+                }
+              }
+            }
+
+            const bodyLines = [
+              "## PR Issue Alignment Review",
+              "",
+              failures.length ? "### Failures" : "### Result"
+            ];
+
+            if (failures.length) {
+              for (const failure of failures) {
+                bodyLines.push(`- ${failure}`);
+              }
+            } else {
+              bodyLines.push("- No blocking alignment issues detected.");
+            }
+
+            if (passes.length) {
+              bodyLines.push("", "### Checks passed");
+              for (const pass of passes) {
+                bodyLines.push(`- ${pass}`);
+              }
+            }
+
+            if (warnings.length) {
+              bodyLines.push("", "### Warnings");
+              for (const warning of warnings) {
+                bodyLines.push(`- ${warning}`);
+              }
+            }
+
+            const commentBody = bodyLines.join("\n");
+
+            const marker = "<!-- pr-issue-alignment-review -->";
+            const finalBody = `${marker}\n${commentBody}`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              per_page: 100
+            });
+
+            const existingComment = comments.find(comment =>
+              comment.user?.type === "Bot" &&
+              typeof comment.body === "string" &&
+              comment.body.includes(marker)
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: finalBody
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: finalBody
+              });
+            }
+
+            if (failures.length) {
+              core.setFailed(`PR failed alignment review with ${failures.length} issue(s).`);
+            }
