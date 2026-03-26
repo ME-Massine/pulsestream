@@ -167,12 +167,12 @@ Kafka acts as the backbone of the platform.
 
 **Kafka topics used in the platform:**
 
-| Topic                        | Description               |
-|------------------------------|---------------------------|
-| `telemetry.events.raw`       | Raw telemetry events          |
-| `telemetry.events.processed` | Normalized telemetry data |
-| `telemetry.events.anomalies` | Detected anomalies        |
-| `telemetry.events.dlq`       | Failed or invalid events  |
+| Topic                | Description               |
+|----------------------|---------------------------|
+| `telemetry.events.raw`      | Raw telemetry events      |
+| `telemetry.events.processed`| Normalized telemetry data |
+| `telemetry.events.anomalies`| Detected anomalies        |
+| `telemetry.events.dlq`| Failed or invalid events  |
 
 ---
 

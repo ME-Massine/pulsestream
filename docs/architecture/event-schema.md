@@ -49,7 +49,7 @@ Produced when devices send telemetry readings.
 
 #### Processed Telemetry Events
 
-Produced after the telemetry-processor normalizes or enriches telemetry data.
+Produced after the telemetry processor normalizes or enriches telemetry data.
 
 *   `telemetry.processed`
 
@@ -101,7 +101,7 @@ This event represents a telemetry reading sent by a device.
 
 ### Anomaly Event Example
 
-When the telemetry-processor detects abnormal behavior, it emits an anomaly event.
+When the telemetry processor detects abnormal behavior, it emits an anomaly event.
 
 ```json
 {
@@ -150,12 +150,12 @@ Triggered when a device fails to report telemetry within its expected interval.
 
 Events are routed through Kafka topics.
 
-| Topic                        | Purpose                       |
-|------------------------------|-------------------------------|
-| `telemetry.events.raw`       | Raw telemetry events          |
-| `telemetry.events.processed` | Normalized telemetry events   |
-| `telemetry.events.anomalies` | Detected anomalies            |
-| `telemetry.events.dlq`       | Failed events                 |
+| Topic                        | Purpose                     |
+|-----------------------------|-----------------------------|
+| `telemetry.events.raw`      | Raw telemetry events        |
+| `telemetry.events.processed`| Normalized telemetry events |
+| `telemetry.events.anomalies`| Detected anomalies          |
+| `telemetry.events.dlq`      | Failed events               |
 
 ### Event Versioning
 
@@ -187,7 +187,7 @@ Events received by the ingestion service must pass basic validation checks:
 *   payload structure matches event type
 *   metric values within acceptable bounds
 
-Invalid events are redirected to the dead letter topic.
+Invalid events are redirected to the dead-letter topic.
 
 ## Summary
 
