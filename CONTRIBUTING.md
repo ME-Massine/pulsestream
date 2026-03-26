@@ -17,3 +17,9 @@ Every pull request must:
 - describe the change
 - include testing notes
 - update documentation when needed
+
+## Issue Types
+
+- **Feature**: a meaningful platform capability or service-level increment
+- **Task**: a concrete implementation step, usually under a feature
+- **Bug**: a defect or incorrect behavior that needs fixing

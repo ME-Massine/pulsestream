@@ -35,10 +35,10 @@ Kafka will be used to:
 
 Initial topic design:
 
-- `telemetry.raw`
-- `telemetry.processed`
-- `telemetry.anomalies`
-- `telemetry.deadletter`
+- `telemetry.events.raw`
+- `telemetry.events.processed`
+- `telemetry.events.anomalies`
+- `telemetry.events.dlq`
 
 ## Consequences
 

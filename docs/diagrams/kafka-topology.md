@@ -7,25 +7,25 @@ flowchart LR
     A[IoT Devices / Simulator] --> B[Ingestion Service]
     B --> T1[(telemetry.events.raw)]
 
-    T1 --> C[Telemetry Processor]
+    T1 --> C[telemetry-processor]
 
     C --> T2[(telemetry.events.processed)]
     C --> T3[(telemetry.events.anomalies)]
     C --> T4[(telemetry.events.dlq)]
 
     T2 --> D[Query Service / Downstream Consumers]
-    T3 --> E[Query Service / Monitoring Dashboards / Future Alerting]
+    T3 --> E[Alerting / Dashboard / Query Service]
     T4 --> F[DLQ Inspection / Replay Tools]
 ```
 
 ### Topic Definitions
 
-| Topic                        | Producer                                | Consumer                                  | Purpose                           |
-|------------------------------|-----------------------------------------|-------------------------------------------|-----------------------------------|
-| `telemetry.events.raw`       | Ingestion Service                       | Telemetry Processor                       | Raw incoming telemetry events     |
-| `telemetry.events.processed` | Telemetry Processor                     | Query Service / downstream consumers      | Normalized and enriched telemetry data |
-| `telemetry.events.anomalies` | Telemetry Processor                     | Query Service / Monitoring Dashboards / Future Alerting | Detected anomaly events           |
-| `telemetry.events.dlq`       | Ingestion Service or Telemetry Processor | Replay or inspection tools                | Invalid or failed events          |
+| Topic                | Producer                                | Consumer                                  | Purpose                           |
+|----------------------|-----------------------------------------|-------------------------------------------|-----------------------------------|
+| `telemetry.events.raw`      | Ingestion Service                       | telemetry-processor                       | Raw incoming telemetry events     |
+| `telemetry.events.processed`| telemetry-processor                     | Query Service / downstream consumers      | Normalized and enriched telemetry data |
+| `telemetry.events.anomalies`| telemetry-processor                     | Dashboard / alerting / query service      | Detected anomaly events           |
+| `telemetry.events.dlq`| Ingestion Service or telemetry-processor | Replay or inspection tools                | Invalid or failed events          |
 
 ### Notes
 

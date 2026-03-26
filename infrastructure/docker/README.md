@@ -18,7 +18,6 @@ The local platform includes:
 - `docker-compose.yml` — local platform definition
 - `.env.example` — example environment configuration
 - `prometheus/prometheus.yml` — `Prometheus` configuration
-- `postgres/init.sql` — `PostgreSQL` initialization (schema and tables)
 
 ### Usage
 
@@ -65,12 +64,22 @@ docker compose down -v
 | Prometheus | 9090 |
 | Grafana    | 3000 |
 
+### Service Access (Docker Network)
+
+Inside the Docker network, services can reach each other using service names:
+
+| Service     | Hostname  | Port |
+|-------------|----------|------|
+| Kafka       | kafka     | 29092 |
+| PostgreSQL  | postgres  | 5432 |
+| Redis       | redis     | 6379 |
+
+This is the configuration used by platform services during development.
+
 ### Notes
 
 - `Kafka` is exposed on `localhost:9092` for local development.
 - Internal `Docker` network communication uses the `kafka:29092` listener.
 - `Prometheus` is initialized with a minimal configuration and will be extended when application services are added.
 - `Grafana` uses the credentials defined in `.env`.
-- `PostgreSQL` is initialized with the PulseStream platform schema and initial tables for telemetry and anomalies.
-- The `postgres/init.sql` script is executed when the container starts for the first time.
-- The platform uses the `platform` schema to store processed events.
+- `Kafka topics` are managed manually or via scripts defined in the project and follow the naming convention `telemetry.events.*`.
