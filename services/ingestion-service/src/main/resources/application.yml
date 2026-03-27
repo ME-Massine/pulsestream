@@ -18,3 +18,12 @@ logging:
   level:
     root: INFO
     com.pulsestream.ingestion: INFO
+
+pulsestream:
+  kafka:
+    bootstrap-servers: localhost:9092
+    topics:
+      raw: telemetry.events.raw
+      processed: telemetry.events.processed
+      anomalies: telemetry.events.anomalies
+      dlq: telemetry.events.dlq
