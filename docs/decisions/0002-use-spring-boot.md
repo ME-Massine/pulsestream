@@ -35,7 +35,7 @@ Spring Boot will be used for:
 - observability integration
 - dependency injection and modular service design
 
-Java 21 will be used as the runtime baseline.
+Java 17 will be used as the runtime baseline.
 
 ## Consequences
 

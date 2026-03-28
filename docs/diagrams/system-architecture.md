@@ -7,8 +7,8 @@ flowchart LR
     A[IoT Devices / Simulator] --> B[Ingestion Service]
     B --> T1[(Kafka Topic: telemetry.events.raw)]
 
-    T1 --> C[Telemetry Processor]
-    C --> T2[(Kafka Topic: telemetry.events.processed)]
+    T1 --> C[Telemetry-Processor]
+    C --> T2[(Kafka Topic: telemetry.events.processed )]
     C --> T3[(Kafka Topic: telemetry.events.anomalies)]
     C --> T4[(Kafka Topic: telemetry.events.dlq)]
 

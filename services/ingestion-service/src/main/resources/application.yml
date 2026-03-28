@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: ingestion-service
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    root: INFO
+    com.pulsestream.ingestion: INFO
+
+pulsestream:
+  kafka:
+    bootstrap-servers: localhost:9092
+    topics:
+      raw: telemetry.events.raw
+      processed: telemetry.events.processed
+      anomalies: telemetry.events.anomalies
+      dlq: telemetry.events.dlq

@@ -8,7 +8,6 @@ This directory contains the core architecture diagrams for PulseStream.
 - [Event Flow](./event-flow.md)
 - [Kafka Topology](./kafka-topology.md)
 - [Kubernetes Deployment](./kubernetes-deployment.md)
-
 ## Purpose
 
 These diagrams document the platform from multiple perspectives:

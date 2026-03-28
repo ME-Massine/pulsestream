@@ -29,7 +29,7 @@ jobs:
           test -f CONTRIBUTING.md
           test -f .github/PULL_REQUEST_TEMPLATE.md
           test -f .github/ISSUE_TEMPLATE/bug_report.yml
-          test -f .github/ISSUE_TEMPLATE/feature_request.yml
+          test -f .github/ISSUE_TEMPLATE/feature.yml
           test -f .github/ISSUE_TEMPLATE/task.yml
 
       - name: Validate required directories

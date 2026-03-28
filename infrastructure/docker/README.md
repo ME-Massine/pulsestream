@@ -108,6 +108,4 @@ Alternatively, wait for the `Docker` health status to show `healthy`.
 - Topics are created by the `kafka-init` one-shot container, which exits after completion.
 - `Prometheus` is initialized with a minimal configuration and will be extended when application services are added.
 - `Grafana` uses the credentials defined in `.env`.
-- `PostgreSQL` is initialized with the PulseStream platform schema and initial tables for telemetry and anomalies.
-- The `postgres/init.sql` script is executed when the container starts for the first time.
-- The platform uses the `platform` schema to store processed events.
+- `Kafka topics` are managed manually or via scripts defined in the project and follow the naming convention `telemetry.events.*`.

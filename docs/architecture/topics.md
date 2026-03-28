@@ -28,7 +28,7 @@ Raw telemetry data ingested from devices.
 ## telemetry.events.processed
 
 **Description**  
-Processed telemetry data after enrichment.
+Processed telemetry data after enrichment and anomaly detection.
 
 **Producers**
 - telemetry-processor
@@ -53,7 +53,7 @@ Detected anomalies from telemetry data.
 
 **Consumers**
 - query-service
-- monitoring dashboards
+- future alerting consumers
 
 **Configuration**
 - partitions: 3
