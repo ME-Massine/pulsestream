@@ -30,11 +30,10 @@ echo ""
 #   Format: TOPIC_NAME:PARTITIONS:RETENTION_MS
 # ──────────────────────────────────────────────
 TOPICS=(
-  "pulsestream.events.raw:3:604800000"
-  "pulsestream.events.processed:3:604800000"
-  "pulsestream.events.failed:1:2592000000"
-  "pulsestream.notifications:2:259200000"
-  "pulsestream.metrics:2:86400000"
+  "telemetry.events.raw:3:86400000"
+  "telemetry.events.processed:3:604800000"
+  "telemetry.events.anomalies:3:604800000"
+  "telemetry.events.dlq:1:604800000"
 )
 
 for TOPIC_DEF in "${TOPICS[@]}"; do

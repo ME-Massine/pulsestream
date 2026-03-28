@@ -13,7 +13,7 @@ services:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_log:/var/lib/zookeeper/log
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | timeout 2 bash -c 'cat >/dev/tcp/localhost/2181' && echo ok || exit 1"]
+      test: [ "CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -30,7 +30,7 @@ services:
       - "${KAFKA_EXTERNAL_PORT:-9092}:9092"
       - "${KAFKA_INTERNAL_PORT:-29092}:29092"
     environment:
-      KAFKA_BROKER_ID: 1
+      KAFKA_BROKER_ID: ${KAFKA_BROKER_ID:-1}
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
 
       # Listeners
@@ -43,17 +43,17 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       
       # Broker Settings
-      KAFKA_MESSAGE_MAX_BYTES: 10485760
-      KAFKA_REPLICA_FETCH_MAX_BYTES: 10485760
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_MESSAGE_MAX_BYTES: ${KAFKA_MESSAGE_MAX_BYTES:-10485760}
+      KAFKA_REPLICA_FETCH_MAX_BYTES: ${KAFKA_REPLICA_FETCH_MAX_BYTES:-10485760}
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: ${KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS:-0}
 
       # Topic retention
       KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-168}
       KAFKA_LOG_RETENTION_BYTES: ${KAFKA_LOG_RETENTION_BYTES:-1073741824}
-      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_LOG_SEGMENT_BYTES: ${KAFKA_LOG_SEGMENT_BYTES:-1073741824}
       
       # Partitions
       KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-3}
@@ -66,7 +66,7 @@ services:
           memory: 1G
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "/usr/bin/check-health"]
+      test: [ "CMD", "bash", "/usr/bin/check-health" ]
       interval: 30s
       timeout: 20s
       retries: 5
