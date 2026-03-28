@@ -18,6 +18,9 @@ The local platform includes:
 - `docker-compose.yml` — local platform definition
 - `.env.example` — example environment configuration
 - `prometheus/prometheus.yml` — `Prometheus` configuration
+- `postgres/init.sql` — `PostgreSQL` initialization (schema and tables)
+- `kafka/init-topics.sh` — Kafka topic creation script (runs at startup)
+- `kafka/check-health.sh` — Kafka broker health-check script
 
 ### Usage
 
@@ -64,22 +67,45 @@ docker compose down -v
 | Prometheus | 9090 |
 | Grafana    | 3000 |
 
-### Service Access (Docker Network)
+### Kafka Broker Configuration
 
-Inside the Docker network, services can reach each other using service names:
+The broker is configured for local development with the following defaults:
 
-| Service     | Hostname  | Port |
-|-------------|----------|------|
-| Kafka       | kafka     | 29092 |
-| PostgreSQL  | postgres  | 5432 |
-| Redis       | redis     | 6379 |
+| Setting | Value | Description |
+| :------ | :---- | :---------- |
+| `KAFKA_BROKER_ID` | 1 | Single broker for local dev |
+| `KAFKA_NUM_PARTITIONS` | 3 | Default partitions for auto-created topics |
+| `KAFKA_LOG_RETENTION_HOURS` | 168 | 7-day message retention |
+| `KAFKA_LOG_RETENTION_BYTES` | 1 GB | Max log size per partition |
+| `KAFKA_MESSAGE_MAX_BYTES` | 10 MB | Maximum message size |
+| `KAFKA_AUTO_CREATE_TOPICS_ENABLE` | true | Allow auto topic creation |
+| `KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS` | 0 | Fast consumer group rebalance |
 
-This is the configuration used by platform services during development.
+#### Topics
+
+The `kafka-init` service automatically creates these topics on startup:
+
+| Topic | Partitions | Retention | Purpose |
+| :---- | :--------- | :-------- | :------ |
+| `pulsestream.events.raw` | 3 | 7 days | Incoming raw events |
+| `pulsestream.events.processed` | 3 | 7 days | Processed/enriched events |
+| `pulsestream.events.failed` | 1 | 30 days | Dead-letter queue |
+| `pulsestream.notifications` | 2 | 3 days | Alert notifications |
+| `pulsestream.metrics` | 2 | 1 day | Internal metrics |
+
+Run the embedded health-check script to verify broker status and topic availability:
+
+```bash
+docker exec pulsestream-kafka check-health
+```
+
+Alternatively, wait for the `Docker` health status to show `healthy`.
 
 ### Notes
 
 - `Kafka` is exposed on `localhost:9092` for local development.
 - Internal `Docker` network communication uses the `kafka:29092` listener.
+- Topics are created by the `kafka-init` one-shot container, which exits after completion.
 - `Prometheus` is initialized with a minimal configuration and will be extended when application services are added.
 - `Grafana` uses the credentials defined in `.env`.
 - `Kafka topics` are managed manually or via scripts defined in the project and follow the naming convention `telemetry.events.*`.
