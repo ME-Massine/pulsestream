@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.*;
 public class TelemetryController {
 
     @PostMapping
-    public ResponseEntity<Void> ingestTelemetry(@Valid @RequestBody TelemetryIngestionRequestDto request) {
-        return ResponseEntity.status(HttpStatus.ACCEPTED).build();
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public void ingestTelemetry(@Valid @RequestBody TelemetryIngestionRequestDto request) {
     }
 }
