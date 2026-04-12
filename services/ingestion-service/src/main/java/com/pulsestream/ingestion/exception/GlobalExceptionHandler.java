@@ -40,12 +40,12 @@ public class GlobalExceptionHandler {
                 Instant.now(),
                 HttpStatus.BAD_REQUEST.value(),
                 "Bad Request",
-                "Validation failed for one or more fields.",
+                "Validation failed",
                 request.getRequestURI(),
                 validationErrors
         );
 
-        log.warn("Validation failure at {}: {}", request.getRequestURI(), validationErrors);
+        log.warn("Validation failure at {}", request.getRequestURI());
         return ResponseEntity.badRequest().body(response);
     }
 
@@ -62,7 +62,7 @@ public class GlobalExceptionHandler {
                 "Bad Request",
                 "Malformed JSON request body or missing required payload.",
                 request.getRequestURI(),
-                null
+                List.of()
         );
 
         log.warn("Malformed JSON received at {}: {}", request.getRequestURI(), ex.getMessage());
@@ -84,7 +84,7 @@ public class GlobalExceptionHandler {
                 "Internal Server Error",
                 "An unexpected error occurred. Please contact system administrator.",
                 request.getRequestURI(),
-                null
+                List.of()
         );
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
