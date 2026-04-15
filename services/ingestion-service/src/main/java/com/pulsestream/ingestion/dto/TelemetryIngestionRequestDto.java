@@ -10,11 +10,13 @@ import java.time.Instant;
  * Request DTO for telemetry events received by the ingestion API.
  */
 public record TelemetryIngestionRequestDto(
-        @NotBlank String eventId,
-        @NotBlank String tenantId,
-        @NotBlank String eventType,
-        @NotNull @JsonFormat(shape = JsonFormat.Shape.STRING) Instant timestamp,
-        @NotBlank String source,
-        @NotBlank String version,
-        @NotNull @Valid TelemetryPayloadDto payload) {
+        @NotBlank(message = "eventId is required") String eventId,
+        @NotBlank(message = "tenantId is required") String tenantId,
+        @NotBlank(message = "eventType is required") String eventType,
+        @NotNull(message = "timestamp is required")
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
+        Instant timestamp,
+        @NotBlank(message = "source is required") String source,
+        @NotBlank(message = "version is required") String version,
+        @NotNull(message = "payload is required") @Valid TelemetryPayloadDto payload) {
 }
