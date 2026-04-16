@@ -8,10 +8,10 @@ import java.math.BigDecimal;
  * Payload DTO for telemetry reading events.
  */
 public record TelemetryPayloadDto(
-        @NotBlank String deviceId,
-        @NotBlank String deviceType,
-        @NotBlank String metric,
-        @NotNull BigDecimal value,
-        @NotBlank String unit,
-        @NotBlank String location) {
+        @NotBlank(message = ValidationMessages.DEVICE_ID_REQUIRED) String deviceId,
+        @NotBlank(message = ValidationMessages.DEVICE_TYPE_REQUIRED) String deviceType,
+        @NotBlank(message = ValidationMessages.METRIC_REQUIRED) String metric,
+        @NotNull(message = ValidationMessages.VALUE_REQUIRED) BigDecimal value,
+        @NotBlank(message = ValidationMessages.UNIT_REQUIRED) String unit,
+        @NotBlank(message = ValidationMessages.LOCATION_REQUIRED) String location) {
 }
