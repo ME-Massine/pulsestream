@@ -22,6 +22,10 @@ public class TelemetryEventMapper {
     }
 
     private TelemetryPayload toPayloadModel(TelemetryPayloadDto payload) {
+        if (payload == null) {
+            return null;
+        }
+
         return new TelemetryPayload(
                 payload.deviceId(),
                 payload.deviceType(),
