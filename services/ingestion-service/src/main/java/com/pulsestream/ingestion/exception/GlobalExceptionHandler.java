@@ -39,6 +39,7 @@ public class GlobalExceptionHandler {
         ErrorResponse response = new ErrorResponse(
                 Instant.now(),
                 HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.name(),
                 "Bad Request",
                 "Validation failed",
                 request.getRequestURI(),
@@ -59,6 +60,7 @@ public class GlobalExceptionHandler {
         ErrorResponse response = new ErrorResponse(
                 Instant.now(),
                 HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.name(),
                 "Bad Request",
                 "Malformed JSON request body or missing required payload.",
                 request.getRequestURI(),
@@ -81,6 +83,7 @@ public class GlobalExceptionHandler {
         ErrorResponse response = new ErrorResponse(
                 Instant.now(),
                 HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                HttpStatus.INTERNAL_SERVER_ERROR.name(),
                 "Internal Server Error",
                 "An unexpected error occurred. Please contact system administrator.",
                 request.getRequestURI(),

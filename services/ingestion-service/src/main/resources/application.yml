@@ -21,7 +21,15 @@ logging:
 
 pulsestream:
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      client-id: ${PULSESTREAM_KAFKA_PRODUCER_CLIENT_ID:ingestion-service-producer}
+      key-serializer: ${PULSESTREAM_KAFKA_PRODUCER_KEY_SERIALIZER:org.apache.kafka.common.serialization.StringSerializer}
+      value-serializer: ${PULSESTREAM_KAFKA_PRODUCER_VALUE_SERIALIZER:org.springframework.kafka.support.serializer.JsonSerializer}
+      acknowledgements: ${PULSESTREAM_KAFKA_PRODUCER_ACKNOWLEDGEMENTS:all}
+      retries: ${PULSESTREAM_KAFKA_PRODUCER_RETRIES:3}
+      delivery-timeout: ${PULSESTREAM_KAFKA_PRODUCER_DELIVERY_TIMEOUT:30s}
+      properties: {}
     topics:
       raw: telemetry.events.raw
       processed: telemetry.events.processed
