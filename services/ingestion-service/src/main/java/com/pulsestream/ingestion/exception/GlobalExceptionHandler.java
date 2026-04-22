@@ -36,13 +36,17 @@ public class GlobalExceptionHandler {
                         error.getDefaultMessage()))
                 .collect(Collectors.toList());
 
-        log.warn("Validation failure at {}", request.getRequestURI());
-        return buildErrorResponse(
-                HttpStatus.BAD_REQUEST,
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.BAD_REQUEST.value(),
+                "Bad Request",
                 "Validation failed",
-                request,
+                request.getRequestURI(),
                 validationErrors
         );
+
+        log.warn("Validation failure at {}", request.getRequestURI());
+        return ResponseEntity.badRequest().body(response);
     }
 
     /**
@@ -52,13 +56,17 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleMessageNotReadable(
             HttpMessageNotReadableException ex, HttpServletRequest request) {
 
-        log.warn("Malformed JSON received at {}: {}", request.getRequestURI(), ex.getMessage());
-        return buildErrorResponse(
-                HttpStatus.BAD_REQUEST,
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.BAD_REQUEST.value(),
+                "Bad Request",
                 "Malformed JSON request body or missing required payload.",
-                request,
+                request.getRequestURI(),
                 List.of()
         );
+
+        log.warn("Malformed JSON received at {}: {}", request.getRequestURI(), ex.getMessage());
+        return ResponseEntity.badRequest().body(response);
     }
 
     /**
@@ -70,28 +78,15 @@ public class GlobalExceptionHandler {
 
         log.error("Unhandled exception occurred while processing request to {}", request.getRequestURI(), ex);
 
-        return buildErrorResponse(
-                HttpStatus.INTERNAL_SERVER_ERROR,
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                "Internal Server Error",
                 "An unexpected error occurred. Please contact system administrator.",
-                request,
+                request.getRequestURI(),
                 List.of()
         );
-    }
 
-    private ResponseEntity<ErrorResponse> buildErrorResponse(
-            HttpStatus httpStatus,
-            String message,
-            HttpServletRequest request,
-            List<ErrorResponse.ValidationError> errors
-    ) {
-        return ResponseEntity.status(httpStatus).body(new ErrorResponse(
-                Instant.now(),
-                httpStatus.value(),
-                httpStatus.name(),
-                httpStatus.getReasonPhrase(),
-                message,
-                request.getRequestURI(),
-                errors
-        ));
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
     }
 }
