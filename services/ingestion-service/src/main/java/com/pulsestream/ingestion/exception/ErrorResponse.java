@@ -11,6 +11,7 @@ import java.util.List;
 public record ErrorResponse(
         Instant timestamp,
         int status,
+        String code,
         String error,
         String message,
         String path,
