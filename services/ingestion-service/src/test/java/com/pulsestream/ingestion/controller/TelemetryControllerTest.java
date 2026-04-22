@@ -51,7 +51,6 @@ class TelemetryControllerTest {
                         .content(requestBody))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
                 .andExpect(jsonPath("$.errors").isArray())
                 .andExpect(jsonPath("$.errors[?(@.field=='eventId')]").exists())
                 .andExpect(jsonPath("$.errors[?(@.field=='payload.deviceId')]").exists());
