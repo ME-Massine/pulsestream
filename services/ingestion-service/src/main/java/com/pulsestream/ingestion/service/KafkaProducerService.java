@@ -37,9 +37,12 @@ public class KafkaProducerService {
 
     private String resolveMessageKey(TelemetryEvent telemetryEvent) {
         if (StringUtils.hasText(telemetryEvent.eventId())) {
-            return telemetryEvent.eventId();
+            return telemetryEvent.eventId().trim();
         }
 
-        return telemetryEvent.tenantId();
+        Assert.hasText(telemetryEvent.tenantId(),
+                "telemetryEvent must contain a non-blank tenantId when eventId is blank");
+
+        return telemetryEvent.tenantId().trim();
     }
 }

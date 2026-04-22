@@ -61,6 +61,16 @@ class KafkaProducerServiceTest {
     }
 
     @Test
+    @DisplayName("should reject blank tenant id when event id is blank")
+    void shouldRejectBlankTenantIdWhenEventIdIsBlank() {
+        TelemetryEvent telemetryEvent = telemetryEvent(" ", " ");
+
+        assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("telemetryEvent must contain a non-blank tenantId when eventId is blank");
+    }
+
+    @Test
     @DisplayName("should reject null telemetry events")
     void shouldRejectNullTelemetryEvents() {
         assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(null))
