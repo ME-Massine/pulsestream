@@ -1,6 +1,9 @@
 package com.pulsestream.ingestion.controller;
 
+import com.pulsestream.ingestion.dto.TelemetryIngestionRequestDto;
 import com.pulsestream.ingestion.mapper.TelemetryEventMapper;
+import com.pulsestream.ingestion.model.TelemetryEvent;
+import com.pulsestream.ingestion.service.KafkaProducerService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -8,10 +11,11 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import static org.mockito.Mockito.when;
 
+import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -21,6 +25,9 @@ class TelemetryControllerTest {
 
     @MockBean
     private TelemetryEventMapper telemetryEventMapper;
+
+    @MockBean
+    private KafkaProducerService kafkaProducerService;
 
     @Autowired
     private MockMvc mockMvc;
@@ -56,6 +63,7 @@ class TelemetryControllerTest {
                 .andExpect(jsonPath("$.errors[?(@.field=='payload.deviceId')]").exists());
 
         verifyNoInteractions(telemetryEventMapper);
+        verifyNoInteractions(kafkaProducerService);
     }
 
     @Test
@@ -80,11 +88,16 @@ class TelemetryControllerTest {
         }
         """;
 
+        when(telemetryEventMapper.toModel(any(TelemetryIngestionRequestDto.class)))
+                .thenReturn(mock(TelemetryEvent.class));
+
         mockMvc.perform(post("/api/v1/events")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(requestBody))
                 .andExpect(status().isAccepted());
 
-        verify(telemetryEventMapper).toModel(any());
+
+        verify(telemetryEventMapper).toModel(any(TelemetryIngestionRequestDto.class));
+        verify(kafkaProducerService).publishTelemetryEvent(any(TelemetryEvent.class));;
     }
 }
