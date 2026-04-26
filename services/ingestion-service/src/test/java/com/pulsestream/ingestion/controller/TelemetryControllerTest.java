@@ -1,6 +1,7 @@
 package com.pulsestream.ingestion.controller;
 
 import com.pulsestream.ingestion.dto.TelemetryIngestionRequestDto;
+import com.pulsestream.ingestion.exception.TelemetryPublishingException;
 import com.pulsestream.ingestion.mapper.TelemetryEventMapper;
 import com.pulsestream.ingestion.model.TelemetryEvent;
 import com.pulsestream.ingestion.service.KafkaProducerService;
@@ -99,5 +100,48 @@ class TelemetryControllerTest {
 
         verify(telemetryEventMapper).toModel(any(TelemetryIngestionRequestDto.class));
         verify(kafkaProducerService).publishTelemetryEvent(any(TelemetryEvent.class));
+    }
+
+    @Test
+    @DisplayName("should return controlled response when Kafka publishing fails")
+    void shouldReturnControlledResponseWhenKafkaPublishingFails() throws Exception {
+        String requestBody = """
+        {
+          "eventId": "evt-001",
+          "tenantId": "factory-01",
+          "eventType": "telemetry.reading",
+          "timestamp": "2026-03-31T12:00:00Z",
+          "source": "sensor-gateway",
+          "version": "1.0",
+          "payload": {
+            "deviceId": "sensor-1042",
+            "deviceType": "temperature-sensor",
+            "metric": "temperature",
+            "value": 28.4,
+            "unit": "C",
+            "location": "zone-a"
+          }
+        }
+        """;
+
+        TelemetryEvent telemetryEvent = mock(TelemetryEvent.class);
+        when(telemetryEventMapper.toModel(any(TelemetryIngestionRequestDto.class)))
+                .thenReturn(telemetryEvent);
+        doThrow(new TelemetryPublishingException(
+                "Failed to publish telemetry event to Kafka",
+                new RuntimeException("broker unavailable")
+        )).when(kafkaProducerService).publishTelemetryEvent(telemetryEvent);
+
+        mockMvc.perform(post("/api/v1/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.status").value(503))
+                .andExpect(jsonPath("$.error").value("Service Unavailable"))
+                .andExpect(jsonPath("$.message")
+                        .value("Telemetry event could not be accepted because publishing is currently unavailable."));
+
+        verify(telemetryEventMapper).toModel(any(TelemetryIngestionRequestDto.class));
+        verify(kafkaProducerService).publishTelemetryEvent(telemetryEvent);
     }
 }

@@ -70,6 +70,26 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles Kafka publishing failures after request validation has succeeded.
+     */
+    @ExceptionHandler(TelemetryPublishingException.class)
+    public ResponseEntity<ErrorResponse> handleTelemetryPublishingException(
+            TelemetryPublishingException ex, HttpServletRequest request) {
+
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.SERVICE_UNAVAILABLE.value(),
+                "Service Unavailable",
+                "Telemetry event could not be accepted because publishing is currently unavailable.",
+                request.getRequestURI(),
+                List.of()
+        );
+
+        log.warn("Kafka publishing failure while processing request to {}", request.getRequestURI(), ex);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
+    }
+
+    /**
      * Catch-all handler for any other unhandled exceptions.
      */
     @ExceptionHandler(Exception.class)

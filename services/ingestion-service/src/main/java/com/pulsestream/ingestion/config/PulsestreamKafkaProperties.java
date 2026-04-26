@@ -47,6 +47,8 @@ public class PulsestreamKafkaProperties {
 
         private Duration deliveryTimeout = Duration.ofSeconds(30);
 
+        private Duration publishTimeout = Duration.ofSeconds(5);
+
         private Map<String, String> properties = new LinkedHashMap<>();
 
         public String getClientId() {
@@ -95,6 +97,14 @@ public class PulsestreamKafkaProperties {
 
         public void setDeliveryTimeout(Duration deliveryTimeout) {
             this.deliveryTimeout = deliveryTimeout;
+        }
+
+        public Duration getPublishTimeout() {
+            return publishTimeout;
+        }
+
+        public void setPublishTimeout(Duration publishTimeout) {
+            this.publishTimeout = publishTimeout;
         }
 
         public Map<String, String> getProperties() {
