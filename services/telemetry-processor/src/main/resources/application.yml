@@ -1,0 +1,55 @@
+spring:
+  application:
+    name: telemetry-processor
+  datasource:
+    url: ${PULSESTREAM_POSTGRES_URL:jdbc:postgresql://localhost:5432/pulsestream}
+    username: ${PULSESTREAM_POSTGRES_USERNAME:pulsestream}
+    password: ${PULSESTREAM_POSTGRES_PASSWORD:pulsestream}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    database: postgresql
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        boot:
+          allow_jdbc_metadata_access: false
+        default_schema: platform
+  kafka:
+    bootstrap-servers: ${PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${PULSESTREAM_KAFKA_CONSUMER_GROUP_ID:telemetry-processor}
+      auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
+
+server:
+  port: 8082
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+  health:
+    db:
+      enabled: ${PULSESTREAM_DB_HEALTH_ENABLED:false}
+
+logging:
+  level:
+    root: INFO
+    com.pulsestream.processor: INFO
+
+pulsestream:
+  kafka:
+    topics:
+      raw: telemetry.events.raw
+      processed: telemetry.events.processed
+      anomalies: telemetry.events.anomalies
+      dlq: telemetry.events.dlq
