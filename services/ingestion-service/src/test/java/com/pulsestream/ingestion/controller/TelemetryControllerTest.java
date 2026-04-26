@@ -98,6 +98,6 @@ class TelemetryControllerTest {
 
 
         verify(telemetryEventMapper).toModel(any(TelemetryIngestionRequestDto.class));
-        verify(kafkaProducerService).publishTelemetryEvent(any(TelemetryEvent.class));;
+        verify(kafkaProducerService).publishTelemetryEvent(any(TelemetryEvent.class));
     }
 }
