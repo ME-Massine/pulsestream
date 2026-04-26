@@ -5,8 +5,10 @@ import com.pulsestream.ingestion.exception.TelemetryPublishingException;
 import com.pulsestream.ingestion.model.TelemetryEvent;
 import com.pulsestream.ingestion.model.TelemetryPayload;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
 
 import org.apache.kafka.common.KafkaException;
 import org.junit.jupiter.api.DisplayName;
@@ -94,6 +96,24 @@ class KafkaProducerServiceTest {
                 .isInstanceOf(TelemetryPublishingException.class)
                 .hasMessage("Failed to publish telemetry event to Kafka")
                 .hasCause(kafkaException);
+
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+    }
+
+    @Test
+    @DisplayName("should throw controlled exception when Kafka send does not complete before timeout")
+    void shouldThrowControlledExceptionWhenKafkaSendDoesNotCompleteBeforeTimeout() {
+        kafkaProperties.getProducer().setPublishTimeout(Duration.ofMillis(10));
+        TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
+        CompletableFuture<SendResult<String, TelemetryEvent>> sendFuture = new CompletableFuture<>();
+
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+                .thenReturn(sendFuture);
+
+        assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
+                .isInstanceOf(TelemetryPublishingException.class)
+                .hasMessage("Failed to publish telemetry event to Kafka")
+                .hasCauseInstanceOf(TimeoutException.class);
 
         verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
     }

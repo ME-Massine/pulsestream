@@ -3,7 +3,10 @@ package com.pulsestream.ingestion.service;
 import com.pulsestream.ingestion.config.PulsestreamKafkaProperties;
 import com.pulsestream.ingestion.exception.TelemetryPublishingException;
 import com.pulsestream.ingestion.model.TelemetryEvent;
-import java.util.concurrent.CompletionException;
+import java.time.Duration;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,11 +37,21 @@ public class KafkaProducerService {
 
         String topic = kafkaProperties.getTopics().getRaw();
         String messageKey = resolveMessageKey(telemetryEvent);
+        long publishTimeoutMillis = publishTimeoutMillis();
 
         try {
-            telemetryKafkaTemplate.send(topic, messageKey, telemetryEvent).join();
-        } catch (CompletionException ex) {
+            telemetryKafkaTemplate.send(topic, messageKey, telemetryEvent)
+                    .get(publishTimeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw publishFailure(telemetryEvent, topic, messageKey, ex);
+        } catch (ExecutionException ex) {
             throw publishFailure(telemetryEvent, topic, messageKey, ex.getCause() != null ? ex.getCause() : ex);
+        } catch (TimeoutException ex) {
+            TimeoutException timeoutException =
+                    new TimeoutException("Kafka publish did not complete within " + publishTimeoutMillis + " ms");
+            timeoutException.initCause(ex);
+            throw publishFailure(telemetryEvent, topic, messageKey, timeoutException);
         } catch (RuntimeException ex) {
             throw publishFailure(telemetryEvent, topic, messageKey, ex);
         }
@@ -53,6 +66,14 @@ public class KafkaProducerService {
                 "telemetryEvent must contain a non-blank tenantId when eventId is blank");
 
         return telemetryEvent.tenantId().trim();
+    }
+
+    private long publishTimeoutMillis() {
+        Duration publishTimeout = kafkaProperties.getProducer().getPublishTimeout();
+        Assert.notNull(publishTimeout, "Kafka producer publish timeout must not be null");
+        Assert.isTrue(publishTimeout.toMillis() > 0,
+                "Kafka producer publish timeout must be greater than zero");
+        return publishTimeout.toMillis();
     }
 
     private TelemetryPublishingException publishFailure(

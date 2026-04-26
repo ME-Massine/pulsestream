@@ -29,6 +29,7 @@ pulsestream:
       acknowledgements: ${PULSESTREAM_KAFKA_PRODUCER_ACKNOWLEDGEMENTS:all}
       retries: ${PULSESTREAM_KAFKA_PRODUCER_RETRIES:3}
       delivery-timeout: ${PULSESTREAM_KAFKA_PRODUCER_DELIVERY_TIMEOUT:30s}
+      publish-timeout: ${PULSESTREAM_KAFKA_PRODUCER_PUBLISH_TIMEOUT:5s}
       properties: {}
     topics:
       raw: telemetry.events.raw

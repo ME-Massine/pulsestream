@@ -85,7 +85,7 @@ public class GlobalExceptionHandler {
                 List.of()
         );
 
-        log.warn("Kafka publishing failure while processing request to {}", request.getRequestURI());
+        log.warn("Kafka publishing failure while processing request to {}", request.getRequestURI(), ex);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
     }
 
