@@ -91,7 +91,7 @@ public class TelemetryProcessorKafkaProperties {
         }
 
         public void setProperties(Map<String, String> properties) {
-            this.properties = properties;
+            this.properties = properties != null ? properties : new LinkedHashMap<>();
         }
     }
 

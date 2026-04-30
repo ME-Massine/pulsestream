@@ -26,7 +26,7 @@ spring:
     listener:
       ack-mode: record
     properties:
-      spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.*}
+      spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.dto}
       spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
 
 server:
@@ -59,7 +59,7 @@ pulsestream:
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
       concurrency: ${PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY:1}
       properties:
-        spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.*}
+        spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.dto}
         spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
     topics:
       raw: ${PULSESTREAM_KAFKA_TOPIC_RAW:telemetry.events.raw}
