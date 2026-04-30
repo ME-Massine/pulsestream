@@ -10,12 +10,13 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
 
 @Configuration
 public class KafkaConsumerConfiguration {
 
     @Bean
-    public ConsumerFactory<String, Object> telemetryConsumerFactory(
+    public ConsumerFactory<String, TelemetryEvent> telemetryConsumerFactory(
             TelemetryProcessorKafkaProperties kafkaProperties
     ) {
         Map<String, Object> consumerProperties = new HashMap<>();
@@ -25,6 +26,8 @@ public class KafkaConsumerConfiguration {
         consumerProperties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, kafkaProperties.getConsumer().getKeyDeserializer());
         consumerProperties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, kafkaProperties.getConsumer().getValueDeserializer());
         consumerProperties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, kafkaProperties.getConsumer().getAutoOffsetReset());
+        consumerProperties.put(JsonDeserializer.VALUE_DEFAULT_TYPE, TelemetryEvent.class.getName());
+        consumerProperties.put(JsonDeserializer.TRUSTED_PACKAGES, TelemetryEvent.class.getPackageName());
 
         consumerProperties.putAll(kafkaProperties.getConsumer().getProperties());
 
@@ -32,11 +35,11 @@ public class KafkaConsumerConfiguration {
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, Object> telemetryKafkaListenerContainerFactory(
-            ConsumerFactory<String, Object> telemetryConsumerFactory,
+    public ConcurrentKafkaListenerContainerFactory<String, TelemetryEvent> telemetryKafkaListenerContainerFactory(
+            ConsumerFactory<String, TelemetryEvent> telemetryConsumerFactory,
             TelemetryProcessorKafkaProperties kafkaProperties
     ) {
-        ConcurrentKafkaListenerContainerFactory<String, Object> factory =
+        ConcurrentKafkaListenerContainerFactory<String, TelemetryEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
 
         factory.setConsumerFactory(telemetryConsumerFactory);
