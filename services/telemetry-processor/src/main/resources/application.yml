@@ -21,10 +21,13 @@ spring:
     consumer:
       group-id: ${PULSESTREAM_KAFKA_CONSUMER_GROUP_ID:telemetry-processor}
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      key-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_KEY_DESERIALIZER:org.apache.kafka.common.serialization.StringDeserializer}
+      value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JsonDeserializer}
     listener:
       ack-mode: record
+    properties:
+      spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.*}
+      spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
 
 server:
   port: 8082
@@ -48,8 +51,18 @@ logging:
 
 pulsestream:
   kafka:
+    bootstrap-servers: ${PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${PULSESTREAM_KAFKA_CONSUMER_GROUP_ID:telemetry-processor}
+      key-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_KEY_DESERIALIZER:org.apache.kafka.common.serialization.StringDeserializer}
+      value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JsonDeserializer}
+      auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
+      concurrency: ${PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY:1}
+      properties:
+        spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.*}
+        spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
     topics:
-      raw: telemetry.events.raw
-      processed: telemetry.events.processed
-      anomalies: telemetry.events.anomalies
-      dlq: telemetry.events.dlq
+      raw: ${PULSESTREAM_KAFKA_TOPIC_RAW:telemetry.events.raw}
+      processed: ${PULSESTREAM_KAFKA_TOPIC_PROCESSED:telemetry.events.processed}
+      anomalies: ${PULSESTREAM_KAFKA_TOPIC_ANOMALIES:telemetry.events.anomalies}
+      dlq: ${PULSESTREAM_KAFKA_TOPIC_DLQ:telemetry.events.dlq}
