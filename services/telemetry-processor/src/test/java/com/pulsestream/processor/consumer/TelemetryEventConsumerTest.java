@@ -1,7 +1,9 @@
 package com.pulsestream.processor.consumer;
 
+import com.pulsestream.processor.model.NormalizedTelemetryEvent;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
+import com.pulsestream.processor.service.TelemetryNormalizationService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -12,17 +14,30 @@ import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class TelemetryEventConsumerTest {
 
-    private final TelemetryEventConsumer consumer = new TelemetryEventConsumer();
+    private final TelemetryNormalizationService normalizationService =
+            mock(TelemetryNormalizationService.class);
+
+    private final TelemetryEventConsumer consumer =
+            new TelemetryEventConsumer(normalizationService);
 
     @Test
-    @DisplayName("should consume telemetry event without throwing")
-    void shouldConsumeTelemetryEventWithoutThrowing() {
+    @DisplayName("should consume telemetry event and invoke normalization without throwing")
+    void shouldConsumeTelemetryEventAndInvokeNormalizationWithoutThrowing() {
         TelemetryEvent event = telemetryEvent();
+        NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
+
+        when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
 
         consumer.consumeTelemetryEvent(event);
+
+        verify(normalizationService).normalize(event);
     }
 
     @Test
@@ -31,6 +46,8 @@ class TelemetryEventConsumerTest {
         assertThatThrownBy(() -> consumer.consumeTelemetryEvent(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("telemetryEvent must not be null");
+
+        verifyNoInteractions(normalizationService);
     }
 
     @Test
@@ -65,6 +82,23 @@ class TelemetryEventConsumerTest {
                         "C",
                         "zone-a"
                 )
+        );
+    }
+
+    private NormalizedTelemetryEvent normalizedTelemetryEvent() {
+        return new NormalizedTelemetryEvent(
+                "evt-001",
+                "factory-01",
+                "telemetry.reading",
+                Instant.parse("2026-03-31T12:00:00Z"),
+                "sensor-gateway",
+                "1.0",
+                "sensor-1042",
+                "temperature-sensor",
+                "temperature",
+                new BigDecimal("28.4"),
+                "c",
+                "zone-a"
         );
     }
 }

@@ -1,6 +1,8 @@
 package com.pulsestream.processor.consumer;
 
+import com.pulsestream.processor.model.NormalizedTelemetryEvent;
 import com.pulsestream.processor.model.TelemetryEvent;
+import com.pulsestream.processor.service.TelemetryNormalizationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -12,6 +14,12 @@ public class TelemetryEventConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(TelemetryEventConsumer.class);
 
+    private final TelemetryNormalizationService normalizationService;
+
+    public TelemetryEventConsumer(TelemetryNormalizationService normalizationService) {
+        this.normalizationService = normalizationService;
+    }
+
     @KafkaListener(
             topics = "${pulsestream.kafka.topics.raw}",
             groupId = "${pulsestream.kafka.consumer.group-id}",
@@ -20,12 +28,15 @@ public class TelemetryEventConsumer {
     public void consumeTelemetryEvent(TelemetryEvent telemetryEvent) {
         Assert.notNull(telemetryEvent, "telemetryEvent must not be null");
 
+        NormalizedTelemetryEvent normalizedEvent =
+                normalizationService.normalize(telemetryEvent);
+
         log.info(
-                "Received telemetry event eventId={} tenantId={} eventType={} source={}",
-                telemetryEvent.eventId(),
-                telemetryEvent.tenantId(),
-                telemetryEvent.eventType(),
-                telemetryEvent.source()
+                "Normalized telemetry event eventId={} tenantId={} metric={} unit={}",
+                normalizedEvent.eventId(),
+                normalizedEvent.tenantId(),
+                normalizedEvent.metric(),
+                normalizedEvent.unit()
         );
     }
 }
