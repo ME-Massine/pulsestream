@@ -23,11 +23,13 @@ spring:
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
       key-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_KEY_DESERIALIZER:org.apache.kafka.common.serialization.StringDeserializer}
       value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JsonDeserializer}
+      properties:
+        spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.model}
+        spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
+        spring.json.value.default.type: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DEFAULT_TYPE:com.pulsestream.processor.model.TelemetryEvent}
+
     listener:
       ack-mode: record
-    properties:
-      spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.dto}
-      spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
 
 server:
   port: 8082
@@ -59,8 +61,9 @@ pulsestream:
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
       concurrency: ${PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY:1}
       properties:
-        spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.dto}
+        spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.model}
         spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
+        spring.json.value.default.type: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DEFAULT_TYPE:com.pulsestream.processor.model.TelemetryEvent}
     topics:
       raw: ${PULSESTREAM_KAFKA_TOPIC_RAW:telemetry.events.raw}
       processed: ${PULSESTREAM_KAFKA_TOPIC_PROCESSED:telemetry.events.processed}
