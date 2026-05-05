@@ -109,4 +109,41 @@ class TelemetryNormalizationServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("telemetry payload must not be null");
     }
+
+    @Test
+    @DisplayName("should preserve null optional fields during normalization")
+    void shouldPreserveNullOptionalFieldsDuringNormalization() {
+        TelemetryEvent rawEvent = new TelemetryEvent(
+                null,
+                " factory-01 ",
+                null,
+                Instant.parse("2026-03-31T12:00:00Z"),
+                null,
+                " 1.0 ",
+                new TelemetryPayload(
+                        null,
+                        null,
+                        " Temperature ",
+                        new BigDecimal("28.4"),
+                        null,
+                        null
+                )
+        );
+
+        NormalizedTelemetryEvent normalizedEvent =
+                normalizationService.normalize(rawEvent);
+
+        assertThat(normalizedEvent.eventId()).isNull();
+        assertThat(normalizedEvent.tenantId()).isEqualTo("factory-01");
+        assertThat(normalizedEvent.eventType()).isNull();
+        assertThat(normalizedEvent.timestamp()).isEqualTo(Instant.parse("2026-03-31T12:00:00Z"));
+        assertThat(normalizedEvent.source()).isNull();
+        assertThat(normalizedEvent.version()).isEqualTo("1.0");
+        assertThat(normalizedEvent.deviceId()).isNull();
+        assertThat(normalizedEvent.deviceType()).isNull();
+        assertThat(normalizedEvent.metric()).isEqualTo("temperature");
+        assertThat(normalizedEvent.value()).isEqualByComparingTo(new BigDecimal("28.4"));
+        assertThat(normalizedEvent.unit()).isNull();
+        assertThat(normalizedEvent.location()).isNull();
+    }
 }
