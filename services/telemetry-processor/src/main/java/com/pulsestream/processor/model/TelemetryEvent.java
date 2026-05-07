@@ -1,7 +1,6 @@
 package com.pulsestream.processor.model;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
-
 import java.time.Instant;
 
 public record TelemetryEvent(
