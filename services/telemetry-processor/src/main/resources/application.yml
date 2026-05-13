@@ -27,7 +27,6 @@ spring:
         spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.model}
         spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
         spring.json.value.default.type: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DEFAULT_TYPE:com.pulsestream.processor.model.TelemetryEvent}
-
     listener:
       ack-mode: record
 
@@ -64,6 +63,15 @@ pulsestream:
         spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.model}
         spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
         spring.json.value.default.type: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DEFAULT_TYPE:com.pulsestream.processor.model.TelemetryEvent}
+    producer:
+      client-id: ${PULSESTREAM_KAFKA_PRODUCER_CLIENT_ID:telemetry-processor-producer}
+      key-serializer: ${PULSESTREAM_KAFKA_PRODUCER_KEY_SERIALIZER:org.apache.kafka.common.serialization.StringSerializer}
+      value-serializer: ${PULSESTREAM_KAFKA_PRODUCER_VALUE_SERIALIZER:org.springframework.kafka.support.serializer.JsonSerializer}
+      acknowledgements: ${PULSESTREAM_KAFKA_PRODUCER_ACKS:all}
+      retries: ${PULSESTREAM_KAFKA_PRODUCER_RETRIES:3}
+      delivery-timeout: ${PULSESTREAM_KAFKA_PRODUCER_DELIVERY_TIMEOUT:30s}
+      publish-timeout: ${PULSESTREAM_KAFKA_PRODUCER_PUBLISH_TIMEOUT:5s}
+      properties: {}
     topics:
       raw: ${PULSESTREAM_KAFKA_TOPIC_RAW:telemetry.events.raw}
       processed: ${PULSESTREAM_KAFKA_TOPIC_PROCESSED:telemetry.events.processed}
