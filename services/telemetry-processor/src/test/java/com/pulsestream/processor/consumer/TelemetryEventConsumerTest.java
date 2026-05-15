@@ -1,8 +1,10 @@
 package com.pulsestream.processor.consumer;
 
 import com.pulsestream.processor.model.NormalizedTelemetryEvent;
+import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
+import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -23,21 +25,26 @@ class TelemetryEventConsumerTest {
 
     private final TelemetryNormalizationService normalizationService =
             mock(TelemetryNormalizationService.class);
+    private final TelemetryAnomalyDetectionService anomalyDetectionService =
+            mock(TelemetryAnomalyDetectionService.class);
 
     private final TelemetryEventConsumer consumer =
-            new TelemetryEventConsumer(normalizationService);
+            new TelemetryEventConsumer(normalizationService, anomalyDetectionService);
 
     @Test
-    @DisplayName("should consume telemetry event and invoke normalization without throwing")
-    void shouldConsumeTelemetryEventAndInvokeNormalizationWithoutThrowing() {
+    @DisplayName("should consume telemetry event and invoke normalization and anomaly detection without throwing")
+    void shouldConsumeTelemetryEventAndInvokeNormalizationAndAnomalyDetectionWithoutThrowing() {
         TelemetryEvent event = telemetryEvent();
         NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
+        TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.normal(normalizedEvent);
 
         when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
+        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
 
         consumer.consumeTelemetryEvent(event);
 
         verify(normalizationService).normalize(event);
+        verify(anomalyDetectionService).detect(normalizedEvent);
     }
 
     @Test
@@ -48,6 +55,7 @@ class TelemetryEventConsumerTest {
                 .hasMessage("telemetryEvent must not be null");
 
         verifyNoInteractions(normalizationService);
+        verifyNoInteractions(anomalyDetectionService);
     }
 
     @Test

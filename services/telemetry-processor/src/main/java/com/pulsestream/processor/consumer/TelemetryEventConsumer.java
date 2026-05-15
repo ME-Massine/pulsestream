@@ -1,7 +1,9 @@
 package com.pulsestream.processor.consumer;
 
 import com.pulsestream.processor.model.NormalizedTelemetryEvent;
+import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
+import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,9 +17,14 @@ public class TelemetryEventConsumer {
     private static final Logger log = LoggerFactory.getLogger(TelemetryEventConsumer.class);
 
     private final TelemetryNormalizationService normalizationService;
+    private final TelemetryAnomalyDetectionService anomalyDetectionService;
 
-    public TelemetryEventConsumer(TelemetryNormalizationService normalizationService) {
+    public TelemetryEventConsumer(
+            TelemetryNormalizationService normalizationService,
+            TelemetryAnomalyDetectionService anomalyDetectionService
+    ) {
         this.normalizationService = normalizationService;
+        this.anomalyDetectionService = anomalyDetectionService;
     }
 
     @KafkaListener(
@@ -31,8 +38,22 @@ public class TelemetryEventConsumer {
         NormalizedTelemetryEvent normalizedEvent =
                 normalizationService.normalize(telemetryEvent);
 
+        TelemetryAnomalyResult anomalyResult =
+                anomalyDetectionService.detect(normalizedEvent);
+
+        if (anomalyResult.anomalous()) {
+            log.warn(
+                    "Detected telemetry anomaly eventId={} tenantId={} severity={} reasons={}",
+                    normalizedEvent.eventId(),
+                    normalizedEvent.tenantId(),
+                    anomalyResult.severity(),
+                    anomalyResult.reasons()
+            );
+            return;
+        }
+
         log.info(
-                "Normalized telemetry event eventId={} tenantId={} metric={} unit={}",
+                "Processed normal telemetry event eventId={} tenantId={} metric={} unit={}",
                 normalizedEvent.eventId(),
                 normalizedEvent.tenantId(),
                 normalizedEvent.metric(),
