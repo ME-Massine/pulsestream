@@ -98,6 +98,64 @@ class TelemetryAnomalyDetectionServiceTest {
     }
 
     @Test
+    @DisplayName("should treat temperature exactly at maximum threshold as normal")
+    void shouldTreatTemperatureAtMaxThresholdAsNormal() {
+        NormalizedTelemetryEvent event = normalizedEvent("temperature", new BigDecimal("80"));
+
+        TelemetryAnomalyResult result = anomalyDetectionService.detect(event);
+
+        assertThat(result.anomalous()).isFalse();
+        assertThat(result.severity()).isEqualTo(AnomalySeverity.NONE);
+    }
+
+    @Test
+    @DisplayName("should treat temperature exactly at minimum threshold as normal")
+    void shouldTreatTemperatureAtMinThresholdAsNormal() {
+        NormalizedTelemetryEvent event = normalizedEvent("temperature", new BigDecimal("-40"));
+
+        TelemetryAnomalyResult result = anomalyDetectionService.detect(event);
+
+        assertThat(result.anomalous()).isFalse();
+        assertThat(result.severity()).isEqualTo(AnomalySeverity.NONE);
+    }
+
+    @Test
+    @DisplayName("should not detect spike on first reading for a device-metric pair")
+    void shouldNotDetectSpikeOnFirstReading() {
+        NormalizedTelemetryEvent event = normalizedEvent("temperature", new BigDecimal("28.4"));
+
+        TelemetryAnomalyResult result = anomalyDetectionService.detect(event);
+
+        assertThat(result.anomalous()).isFalse();
+        assertThat(result.reasons()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("should detect value spike when reading changes by more than 50 percent from previous")
+    void shouldDetectValueSpikeAboveThreshold() {
+        anomalyDetectionService.detect(normalizedEvent("temperature", new BigDecimal("20.0")));
+
+        NormalizedTelemetryEvent spikeEvent = normalizedEvent("temperature", new BigDecimal("50.0"));
+        TelemetryAnomalyResult result = anomalyDetectionService.detect(spikeEvent);
+
+        assertThat(result.anomalous()).isTrue();
+        assertThat(result.severity()).isEqualTo(AnomalySeverity.WARNING);
+        assertThat(result.reasons()).anyMatch(r -> r.startsWith("value spike detected"));
+    }
+
+    @Test
+    @DisplayName("should not detect spike when reading changes by 50 percent or less from previous")
+    void shouldNotDetectSpikeAtOrBelowThreshold() {
+        anomalyDetectionService.detect(normalizedEvent("temperature", new BigDecimal("20.0")));
+
+        NormalizedTelemetryEvent event = normalizedEvent("temperature", new BigDecimal("30.0"));
+        TelemetryAnomalyResult result = anomalyDetectionService.detect(event);
+
+        assertThat(result.anomalous()).isFalse();
+        assertThat(result.reasons()).noneMatch(r -> r.startsWith("value spike detected"));
+    }
+
+    @Test
     @DisplayName("should reject null normalized telemetry event")
     void shouldRejectNullNormalizedTelemetryEvent() {
         assertThatThrownBy(() -> anomalyDetectionService.detect(null))
