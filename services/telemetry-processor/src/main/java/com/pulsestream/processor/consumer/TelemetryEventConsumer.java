@@ -6,6 +6,7 @@ import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.service.AnomalyTelemetryPublisher;
 import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
+import com.pulsestream.processor.service.TelemetryProcessingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -20,15 +21,18 @@ public class TelemetryEventConsumer {
     private final TelemetryNormalizationService normalizationService;
     private final TelemetryAnomalyDetectionService anomalyDetectionService;
     private final AnomalyTelemetryPublisher anomalyPublisher;
+    private final TelemetryProcessingService processingService;
 
     public TelemetryEventConsumer(
             TelemetryNormalizationService normalizationService,
             TelemetryAnomalyDetectionService anomalyDetectionService,
-            AnomalyTelemetryPublisher anomalyPublisher
+            AnomalyTelemetryPublisher anomalyPublisher,
+            TelemetryProcessingService processingService
     ) {
         this.normalizationService = normalizationService;
         this.anomalyDetectionService = anomalyDetectionService;
         this.anomalyPublisher = anomalyPublisher;
+        this.processingService = processingService;
     }
 
     @KafkaListener(
@@ -59,6 +63,8 @@ public class TelemetryEventConsumer {
             anomalyPublisher.publish(telemetryEvent);
             return;
         }
+
+        processingService.process(telemetryEvent);
 
         log.info(
                 "Processed normal telemetry event eventId={} tenantId={} metric={} unit={}",

@@ -8,6 +8,7 @@ import com.pulsestream.processor.model.TelemetryPayload;
 import com.pulsestream.processor.service.AnomalyTelemetryPublisher;
 import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
+import com.pulsestream.processor.service.TelemetryProcessingService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -19,6 +20,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -33,13 +35,15 @@ class TelemetryEventConsumerTest {
             mock(TelemetryAnomalyDetectionService.class);
     private final AnomalyTelemetryPublisher anomalyPublisher =
             mock(AnomalyTelemetryPublisher.class);
+    private final TelemetryProcessingService processingService =
+            mock(TelemetryProcessingService.class);
 
     private final TelemetryEventConsumer consumer =
-            new TelemetryEventConsumer(normalizationService, anomalyDetectionService, anomalyPublisher);
+            new TelemetryEventConsumer(normalizationService, anomalyDetectionService, anomalyPublisher, processingService);
 
     @Test
-    @DisplayName("should consume telemetry event and invoke normalization and anomaly detection without throwing")
-    void shouldConsumeTelemetryEventAndInvokeNormalizationAndAnomalyDetectionWithoutThrowing() {
+    @DisplayName("should normalize, detect, and process normal telemetry event without throwing")
+    void shouldNormalizeDetectAndProcessNormalTelemetryEvent() {
         TelemetryEvent event = telemetryEvent();
         NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
         TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.normal(normalizedEvent);
@@ -51,11 +55,12 @@ class TelemetryEventConsumerTest {
 
         verify(normalizationService).normalize(event);
         verify(anomalyDetectionService).detect(normalizedEvent);
+        verify(processingService).process(event);
     }
 
     @Test
-    @DisplayName("should publish anomalous event to anomaly topic and not continue normal processing")
-    void shouldPublishAnomalousEventAndNotContinueNormalProcessing() {
+    @DisplayName("should publish anomalous event to anomaly topic and skip normal processing pipeline")
+    void shouldPublishAnomalousEventAndSkipNormalProcessingPipeline() {
         TelemetryEvent event = telemetryEvent();
         NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
         TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.anomalous(
@@ -68,11 +73,12 @@ class TelemetryEventConsumerTest {
         consumer.consumeTelemetryEvent(event);
 
         verify(anomalyPublisher).publish(event);
+        verify(processingService, never()).process(any());
     }
 
     @Test
-    @DisplayName("should not publish to anomaly topic when event is normal")
-    void shouldNotPublishToAnomalyTopicWhenEventIsNormal() {
+    @DisplayName("should route normal event through processing pipeline and skip anomaly topic")
+    void shouldRouteNormalEventThroughProcessingPipelineAndSkipAnomalyTopic() {
         TelemetryEvent event = telemetryEvent();
         NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
         TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.normal(normalizedEvent);
@@ -82,6 +88,7 @@ class TelemetryEventConsumerTest {
 
         consumer.consumeTelemetryEvent(event);
 
+        verify(processingService).process(event);
         verify(anomalyPublisher, never()).publish(event);
     }
 
@@ -95,6 +102,7 @@ class TelemetryEventConsumerTest {
         verifyNoInteractions(normalizationService);
         verifyNoInteractions(anomalyDetectionService);
         verifyNoInteractions(anomalyPublisher);
+        verifyNoInteractions(processingService);
     }
 
     @Test
