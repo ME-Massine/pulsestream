@@ -2,7 +2,9 @@ package com.pulsestream.processor.service;
 
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.exception.TelemetryPublishingException;
-import com.pulsestream.processor.model.TelemetryEvent;
+import com.pulsestream.processor.model.AnomalySeverity;
+import com.pulsestream.processor.model.TelemetryAnomalyEvent;
+import com.pulsestream.processor.model.TelemetryEnvelope;
 import com.pulsestream.processor.model.TelemetryPayload;
 import org.apache.kafka.common.KafkaException;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +18,7 @@ import org.springframework.kafka.support.SendResult;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
 
@@ -28,7 +31,7 @@ import static org.mockito.Mockito.when;
 class AnomalyTelemetryPublisherTest {
 
     @Mock
-    private KafkaTemplate<String, TelemetryEvent> kafkaTemplate;
+    private KafkaTemplate<String, TelemetryEnvelope> kafkaTemplate;
 
     private TelemetryProcessorKafkaProperties kafkaProperties;
 
@@ -41,108 +44,108 @@ class AnomalyTelemetryPublisherTest {
     }
 
     @Test
-    @DisplayName("should publish anomalous telemetry event to configured anomalies topic")
-    void shouldPublishAnomalousTelemetryEventToConfiguredTopic() {
-        TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
-        CompletableFuture<SendResult<String, TelemetryEvent>> future = CompletableFuture.completedFuture(null);
+    @DisplayName("should publish anomaly event to configured anomalies topic")
+    void shouldPublishAnomalyEventToConfiguredTopic() {
+        TelemetryAnomalyEvent anomalyEvent = anomalyEvent("evt-001", "factory-01");
+        CompletableFuture<SendResult<String, TelemetryEnvelope>> future = CompletableFuture.completedFuture(null);
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "evt-001", anomalyEvent))
                 .thenReturn(future);
 
-        assertThatCode(() -> anomalyTelemetryPublisher.publish(telemetryEvent))
+        assertThatCode(() -> anomalyTelemetryPublisher.publish(anomalyEvent))
                 .doesNotThrowAnyException();
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "evt-001", anomalyEvent);
     }
 
     @Test
     @DisplayName("should throw controlled exception when Kafka send completes with failure")
     void shouldThrowControlledExceptionWhenKafkaSendCompletesWithFailure() {
-        TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
-        CompletableFuture<SendResult<String, TelemetryEvent>> future = new CompletableFuture<>();
+        TelemetryAnomalyEvent anomalyEvent = anomalyEvent("evt-001", "factory-01");
+        CompletableFuture<SendResult<String, TelemetryEnvelope>> future = new CompletableFuture<>();
         KafkaException kafkaException = new KafkaException("broker unavailable");
         future.completeExceptionally(kafkaException);
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "evt-001", anomalyEvent))
                 .thenReturn(future);
 
-        assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(telemetryEvent))
+        assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(anomalyEvent))
                 .isInstanceOf(TelemetryPublishingException.class)
                 .hasMessage("Failed to publish telemetry event to Kafka")
                 .hasCause(kafkaException);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "evt-001", anomalyEvent);
     }
 
     @Test
     @DisplayName("should throw controlled exception when Kafka send fails immediately")
     void shouldThrowControlledExceptionWhenKafkaSendFailsImmediately() {
-        TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
+        TelemetryAnomalyEvent anomalyEvent = anomalyEvent("evt-001", "factory-01");
         KafkaException kafkaException = new KafkaException("producer unavailable");
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "evt-001", anomalyEvent))
                 .thenThrow(kafkaException);
 
-        assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(telemetryEvent))
+        assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(anomalyEvent))
                 .isInstanceOf(TelemetryPublishingException.class)
                 .hasMessage("Failed to publish telemetry event to Kafka")
                 .hasCause(kafkaException);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "evt-001", anomalyEvent);
     }
 
     @Test
     @DisplayName("should throw controlled exception when Kafka send does not complete before timeout")
     void shouldThrowControlledExceptionWhenKafkaSendDoesNotCompleteBeforeTimeout() {
-        TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
-        CompletableFuture<SendResult<String, TelemetryEvent>> future = new CompletableFuture<>();
+        TelemetryAnomalyEvent anomalyEvent = anomalyEvent("evt-001", "factory-01");
+        CompletableFuture<SendResult<String, TelemetryEnvelope>> future = new CompletableFuture<>();
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "evt-001", anomalyEvent))
                 .thenReturn(future);
 
-        assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(telemetryEvent))
+        assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(anomalyEvent))
                 .isInstanceOf(TelemetryPublishingException.class)
                 .hasMessage("Failed to publish telemetry event to Kafka")
                 .hasCauseInstanceOf(TimeoutException.class);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "evt-001", anomalyEvent);
     }
 
     @Test
     @DisplayName("should use tenant identifier as message key when event id is blank")
     void shouldUseTenantIdentifierAsMessageKeyWhenEventIdIsBlank() {
-        TelemetryEvent telemetryEvent = telemetryEvent(" ", "factory-01");
-        CompletableFuture<SendResult<String, TelemetryEvent>> future = CompletableFuture.completedFuture(null);
+        TelemetryAnomalyEvent anomalyEvent = anomalyEvent(" ", "factory-01");
+        CompletableFuture<SendResult<String, TelemetryEnvelope>> future = CompletableFuture.completedFuture(null);
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "factory-01", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getAnomalies(), "factory-01", anomalyEvent))
                 .thenReturn(future);
 
-        assertThatCode(() -> anomalyTelemetryPublisher.publish(telemetryEvent))
+        assertThatCode(() -> anomalyTelemetryPublisher.publish(anomalyEvent))
                 .doesNotThrowAnyException();
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "factory-01", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getAnomalies(), "factory-01", anomalyEvent);
     }
 
     @Test
     @DisplayName("should reject blank tenant id when event id is blank")
     void shouldRejectBlankTenantIdWhenEventIdIsBlank() {
-        TelemetryEvent telemetryEvent = telemetryEvent(" ", " ");
+        TelemetryAnomalyEvent anomalyEvent = anomalyEvent(" ", " ");
 
-        assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(telemetryEvent))
+        assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(anomalyEvent))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("telemetryEvent must contain a non-blank tenantId when eventId is blank");
+                .hasMessage("anomalyEvent must contain a non-blank tenantId when eventId is blank");
     }
 
     @Test
-    @DisplayName("should reject null telemetry events")
-    void shouldRejectNullTelemetryEvents() {
+    @DisplayName("should reject null anomaly events")
+    void shouldRejectNullAnomalyEvents() {
         assertThatThrownBy(() -> anomalyTelemetryPublisher.publish(null))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("telemetryEvent must not be null");
+                .hasMessage("anomalyEvent must not be null");
     }
 
-    private TelemetryEvent telemetryEvent(String eventId, String tenantId) {
-        return new TelemetryEvent(
+    private TelemetryAnomalyEvent anomalyEvent(String eventId, String tenantId) {
+        return new TelemetryAnomalyEvent(
                 eventId,
                 tenantId,
                 "telemetry.anomaly",
@@ -156,7 +159,10 @@ class AnomalyTelemetryPublisherTest {
                         BigDecimal.valueOf(95.0),
                         "C",
                         "zone-a"
-                )
+                ),
+                AnomalySeverity.WARNING,
+                List.of("temperature is above maximum threshold"),
+                Instant.parse("2026-03-15T12:05:22Z")
         );
     }
 }

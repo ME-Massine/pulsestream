@@ -5,7 +5,7 @@ import com.pulsestream.processor.model.NormalizedTelemetryEvent;
 import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
-import com.pulsestream.processor.service.AnomalyTelemetryPublisher;
+import com.pulsestream.processor.service.AnomalyProcessingService;
 import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import com.pulsestream.processor.service.TelemetryProcessingService;
@@ -33,13 +33,13 @@ class TelemetryEventConsumerTest {
             mock(TelemetryNormalizationService.class);
     private final TelemetryAnomalyDetectionService anomalyDetectionService =
             mock(TelemetryAnomalyDetectionService.class);
-    private final AnomalyTelemetryPublisher anomalyPublisher =
-            mock(AnomalyTelemetryPublisher.class);
+    private final AnomalyProcessingService anomalyProcessingService =
+            mock(AnomalyProcessingService.class);
     private final TelemetryProcessingService processingService =
             mock(TelemetryProcessingService.class);
 
     private final TelemetryEventConsumer consumer =
-            new TelemetryEventConsumer(normalizationService, anomalyDetectionService, anomalyPublisher, processingService);
+            new TelemetryEventConsumer(normalizationService, anomalyDetectionService, anomalyProcessingService, processingService);
 
     @Test
     @DisplayName("should normalize, detect, and process normal telemetry event without throwing")
@@ -72,7 +72,7 @@ class TelemetryEventConsumerTest {
 
         consumer.consumeTelemetryEvent(event);
 
-        verify(anomalyPublisher).publish(event);
+        verify(anomalyProcessingService).process(event, anomalyResult);
         verify(processingService, never()).process(any());
     }
 
@@ -89,7 +89,7 @@ class TelemetryEventConsumerTest {
         consumer.consumeTelemetryEvent(event);
 
         verify(processingService).process(event);
-        verify(anomalyPublisher, never()).publish(event);
+        verify(anomalyProcessingService, never()).process(any(), any());
     }
 
     @Test
@@ -101,7 +101,7 @@ class TelemetryEventConsumerTest {
 
         verifyNoInteractions(normalizationService);
         verifyNoInteractions(anomalyDetectionService);
-        verifyNoInteractions(anomalyPublisher);
+        verifyNoInteractions(anomalyProcessingService);
         verifyNoInteractions(processingService);
     }
 

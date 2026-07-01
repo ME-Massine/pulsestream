@@ -3,7 +3,7 @@ package com.pulsestream.processor.consumer;
 import com.pulsestream.processor.model.NormalizedTelemetryEvent;
 import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
-import com.pulsestream.processor.service.AnomalyTelemetryPublisher;
+import com.pulsestream.processor.service.AnomalyProcessingService;
 import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import com.pulsestream.processor.service.TelemetryProcessingService;
@@ -20,18 +20,18 @@ public class TelemetryEventConsumer {
 
     private final TelemetryNormalizationService normalizationService;
     private final TelemetryAnomalyDetectionService anomalyDetectionService;
-    private final AnomalyTelemetryPublisher anomalyPublisher;
+    private final AnomalyProcessingService anomalyProcessingService;
     private final TelemetryProcessingService processingService;
 
     public TelemetryEventConsumer(
             TelemetryNormalizationService normalizationService,
             TelemetryAnomalyDetectionService anomalyDetectionService,
-            AnomalyTelemetryPublisher anomalyPublisher,
+            AnomalyProcessingService anomalyProcessingService,
             TelemetryProcessingService processingService
     ) {
         this.normalizationService = normalizationService;
         this.anomalyDetectionService = anomalyDetectionService;
-        this.anomalyPublisher = anomalyPublisher;
+        this.anomalyProcessingService = anomalyProcessingService;
         this.processingService = processingService;
     }
 
@@ -60,7 +60,7 @@ public class TelemetryEventConsumer {
                     anomalyResult.severity(),
                     anomalyResult.reasons()
             );
-            anomalyPublisher.publish(telemetryEvent);
+            anomalyProcessingService.process(telemetryEvent, anomalyResult);
             return;
         }
 

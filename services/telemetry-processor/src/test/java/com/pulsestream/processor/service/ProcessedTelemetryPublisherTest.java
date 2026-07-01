@@ -2,6 +2,7 @@ package com.pulsestream.processor.service;
 
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.exception.TelemetryPublishingException;
+import com.pulsestream.processor.model.TelemetryEnvelope;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
 import java.math.BigDecimal;
@@ -28,7 +29,7 @@ import static org.mockito.Mockito.when;
 class ProcessedTelemetryPublisherTest {
 
     @Mock
-    private KafkaTemplate<String, TelemetryEvent> kafkaTemplate;
+    private KafkaTemplate<String, TelemetryEnvelope> kafkaTemplate;
 
     private TelemetryProcessorKafkaProperties kafkaProperties;
 
@@ -44,7 +45,7 @@ class ProcessedTelemetryPublisherTest {
     @DisplayName("should publish processed telemetry event to configured topic")
     void shouldPublishProcessedTelemetryEventToConfiguredTopic() {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
-        CompletableFuture<SendResult<String, TelemetryEvent>> future = CompletableFuture.completedFuture(null);
+        CompletableFuture<SendResult<String, TelemetryEnvelope>> future = CompletableFuture.completedFuture(null);
 
         when(kafkaTemplate.send(kafkaProperties.getTopics().getProcessed(), "evt-001", telemetryEvent))
                 .thenReturn(future);
@@ -59,7 +60,7 @@ class ProcessedTelemetryPublisherTest {
     @DisplayName("should throw controlled exception when Kafka send completes with failure")
     void shouldThrowControlledExceptionWhenKafkaSendCompletesWithFailure() {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
-        CompletableFuture<SendResult<String, TelemetryEvent>> future = new CompletableFuture<>();
+        CompletableFuture<SendResult<String, TelemetryEnvelope>> future = new CompletableFuture<>();
         KafkaException kafkaException = new KafkaException("broker unavailable");
         future.completeExceptionally(kafkaException);
 
@@ -95,7 +96,7 @@ class ProcessedTelemetryPublisherTest {
     @DisplayName("should throw controlled exception when Kafka send does not complete before timeout")
     void shouldThrowControlledExceptionWhenKafkaSendDoesNotCompleteBeforeTimeout() {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
-        CompletableFuture<SendResult<String, TelemetryEvent>> future = new CompletableFuture<>();
+        CompletableFuture<SendResult<String, TelemetryEnvelope>> future = new CompletableFuture<>();
 
         when(kafkaTemplate.send(kafkaProperties.getTopics().getProcessed(), "evt-001", telemetryEvent))
                 .thenReturn(future);
@@ -112,7 +113,7 @@ class ProcessedTelemetryPublisherTest {
     @DisplayName("should use tenant identifier as message key when event id is blank")
     void shouldUseTenantIdentifierAsMessageKeyWhenEventIdIsBlank() {
         TelemetryEvent telemetryEvent = telemetryEvent(" ", "factory-01");
-        CompletableFuture<SendResult<String, TelemetryEvent>> future = CompletableFuture.completedFuture(null);
+        CompletableFuture<SendResult<String, TelemetryEnvelope>> future = CompletableFuture.completedFuture(null);
 
         when(kafkaTemplate.send(kafkaProperties.getTopics().getProcessed(), "factory-01", telemetryEvent))
                 .thenReturn(future);
