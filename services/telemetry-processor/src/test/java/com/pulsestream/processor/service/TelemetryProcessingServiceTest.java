@@ -3,7 +3,9 @@ package com.pulsestream.processor.service;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -61,6 +63,35 @@ class TelemetryProcessingServiceTest {
         assertThat(publishedEvent.payload().metric()).isEqualTo("temperature");
         assertThat(publishedEvent.payload().unit()).isEqualTo("C");
         assertThat(publishedEvent.payload().location()).isEqualTo("zone-a");
+    }
+
+    @Test
+    @DisplayName("should stamp processed event with clock time when raw timestamp is missing")
+    void shouldStampProcessedEventWithClockTimeWhenRawTimestampIsMissing() {
+        Instant fixedNow = Instant.parse("2026-03-15T12:05:30Z");
+        Clock clock = Clock.fixed(fixedNow, ZoneOffset.UTC);
+        TelemetryProcessingService service =
+                new TelemetryProcessingService(processedTelemetryPublisher, clock);
+        TelemetryEvent rawEvent = new TelemetryEvent(
+                "evt-001",
+                "factory-01",
+                "telemetry.reading",
+                null,
+                "sensor-gateway",
+                "1.0",
+                new TelemetryPayload(
+                        "sensor_1042",
+                        "temperature-sensor",
+                        "temperature",
+                        BigDecimal.valueOf(28.4),
+                        "C",
+                        "zone-a"
+                )
+        );
+
+        TelemetryEvent processedEvent = service.process(rawEvent);
+
+        assertThat(processedEvent.timestamp()).isEqualTo(fixedNow);
     }
 
     @Test
