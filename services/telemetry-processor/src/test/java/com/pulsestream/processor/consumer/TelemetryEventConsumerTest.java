@@ -1,9 +1,14 @@
 package com.pulsestream.processor.consumer;
 
+import com.pulsestream.processor.model.AnomalySeverity;
 import com.pulsestream.processor.model.NormalizedTelemetryEvent;
+import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
+import com.pulsestream.processor.service.AnomalyTelemetryPublisher;
+import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
+import com.pulsestream.processor.service.TelemetryProcessingService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -11,10 +16,13 @@ import org.springframework.kafka.annotation.KafkaListener;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -23,21 +31,65 @@ class TelemetryEventConsumerTest {
 
     private final TelemetryNormalizationService normalizationService =
             mock(TelemetryNormalizationService.class);
+    private final TelemetryAnomalyDetectionService anomalyDetectionService =
+            mock(TelemetryAnomalyDetectionService.class);
+    private final AnomalyTelemetryPublisher anomalyPublisher =
+            mock(AnomalyTelemetryPublisher.class);
+    private final TelemetryProcessingService processingService =
+            mock(TelemetryProcessingService.class);
 
     private final TelemetryEventConsumer consumer =
-            new TelemetryEventConsumer(normalizationService);
+            new TelemetryEventConsumer(normalizationService, anomalyDetectionService, anomalyPublisher, processingService);
 
     @Test
-    @DisplayName("should consume telemetry event and invoke normalization without throwing")
-    void shouldConsumeTelemetryEventAndInvokeNormalizationWithoutThrowing() {
+    @DisplayName("should normalize, detect, and process normal telemetry event without throwing")
+    void shouldNormalizeDetectAndProcessNormalTelemetryEvent() {
         TelemetryEvent event = telemetryEvent();
         NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
+        TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.normal(normalizedEvent);
 
         when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
+        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
 
         consumer.consumeTelemetryEvent(event);
 
         verify(normalizationService).normalize(event);
+        verify(anomalyDetectionService).detect(normalizedEvent);
+        verify(processingService).process(event);
+    }
+
+    @Test
+    @DisplayName("should publish anomalous event to anomaly topic and skip normal processing pipeline")
+    void shouldPublishAnomalousEventAndSkipNormalProcessingPipeline() {
+        TelemetryEvent event = telemetryEvent();
+        NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
+        TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.anomalous(
+                normalizedEvent, AnomalySeverity.WARNING, List.of("temperature is above maximum threshold")
+        );
+
+        when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
+        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
+
+        consumer.consumeTelemetryEvent(event);
+
+        verify(anomalyPublisher).publish(event);
+        verify(processingService, never()).process(any());
+    }
+
+    @Test
+    @DisplayName("should route normal event through processing pipeline and skip anomaly topic")
+    void shouldRouteNormalEventThroughProcessingPipelineAndSkipAnomalyTopic() {
+        TelemetryEvent event = telemetryEvent();
+        NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
+        TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.normal(normalizedEvent);
+
+        when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
+        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
+
+        consumer.consumeTelemetryEvent(event);
+
+        verify(processingService).process(event);
+        verify(anomalyPublisher, never()).publish(event);
     }
 
     @Test
@@ -48,6 +100,9 @@ class TelemetryEventConsumerTest {
                 .hasMessage("telemetryEvent must not be null");
 
         verifyNoInteractions(normalizationService);
+        verifyNoInteractions(anomalyDetectionService);
+        verifyNoInteractions(anomalyPublisher);
+        verifyNoInteractions(processingService);
     }
 
     @Test
