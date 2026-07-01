@@ -57,7 +57,7 @@ Produced after the telemetry-processor normalizes or enriches telemetry data.
 
 Generated when telemetry readings violate anomaly rules.
 
-*   `telemetry.anomaly.detected`
+*   `telemetry.anomaly`
 
 #### Dead Letter Events
 
@@ -101,26 +101,44 @@ This event represents a telemetry reading sent by a device.
 
 ### Anomaly Event Example
 
-When the telemetry-processor detects abnormal behavior, it emits an anomaly event.
+When the telemetry-processor detects abnormal behavior, it emits an anomaly event. The event reuses
+the standard envelope and telemetry payload, and adds detection metadata (`severity`, `reasons`,
+`detectedAt`) at the envelope level so downstream consumers can act on it without re-running
+detection.
 
 ```json
 {
 "eventId": "evt_203",
 "tenantId": "factory_01",
-"eventType": "telemetry.anomaly.detected",
-"timestamp": "2026-03-15T12:05:23Z",
+"eventType": "telemetry.anomaly",
+"timestamp": "2026-03-15T12:05:21Z",
 "source": "telemetry-processor",
 "version": "1.0",
 "payload": {
 "deviceId": "sensor_1042",
+"deviceType": "temperature-sensor",
 "metric": "temperature",
-"value": 52.3,
-"threshold": 45.0,
-"anomalyType": "threshold_breach",
-"severity": "high"
-}
+"value": 95.0,
+"unit": "C",
+"location": "zone-a"
+},
+"severity": "WARNING",
+"reasons": ["temperature is above maximum threshold"],
+"detectedAt": "2026-03-15T12:05:23Z"
 }
 ```
+
+### Anomaly Event Fields
+
+| Field        | Description                                                                 |
+|--------------|-----------------------------------------------------------------------------|
+| eventType    | Always `telemetry.anomaly`                                                   |
+| source       | Always `telemetry-processor`                                                |
+| timestamp    | Original reading timestamp, carried over from the raw event                 |
+| payload      | Standard telemetry payload (see fields above)                               |
+| severity     | Detection severity: `WARNING` or `CRITICAL`                                 |
+| reasons      | List of human-readable explanations for why the reading was flagged         |
+| detectedAt   | Timestamp at which the processor detected the anomaly                       |
 
 ### Anomaly Types
 
