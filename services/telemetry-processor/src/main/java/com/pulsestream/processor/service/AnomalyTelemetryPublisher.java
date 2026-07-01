@@ -2,6 +2,8 @@ package com.pulsestream.processor.service;
 
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.exception.TelemetryPublishingException;
+import com.pulsestream.processor.model.AnomalyEvent;
+import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,27 +22,34 @@ public class AnomalyTelemetryPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(AnomalyTelemetryPublisher.class);
 
-    private final KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate;
+    private final KafkaTemplate<String, AnomalyEvent> anomalyKafkaTemplate;
 
     private final TelemetryProcessorKafkaProperties kafkaProperties;
 
     public AnomalyTelemetryPublisher(
-            KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate,
+            KafkaTemplate<String, AnomalyEvent> anomalyKafkaTemplate,
             TelemetryProcessorKafkaProperties kafkaProperties
     ) {
-        this.telemetryKafkaTemplate = telemetryKafkaTemplate;
+        this.anomalyKafkaTemplate = anomalyKafkaTemplate;
         this.kafkaProperties = kafkaProperties;
     }
 
-    public void publish(TelemetryEvent telemetryEvent) {
+    public void publish(TelemetryEvent telemetryEvent, TelemetryAnomalyResult anomalyResult) {
         Assert.notNull(telemetryEvent, "telemetryEvent must not be null");
+        Assert.notNull(anomalyResult, "anomalyResult must not be null");
+
+        AnomalyEvent anomalyEvent = new AnomalyEvent(
+                telemetryEvent,
+                anomalyResult.severity(),
+                anomalyResult.reasons()
+        );
 
         String topic = kafkaProperties.getTopics().getAnomalies();
         String messageKey = resolveMessageKey(telemetryEvent);
         long publishTimeoutMillis = publishTimeoutMillis();
 
         try {
-            telemetryKafkaTemplate.send(topic, messageKey, telemetryEvent)
+            anomalyKafkaTemplate.send(topic, messageKey, anomalyEvent)
                     .get(publishTimeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();

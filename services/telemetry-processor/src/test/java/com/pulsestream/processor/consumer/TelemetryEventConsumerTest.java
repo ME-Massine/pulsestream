@@ -72,7 +72,7 @@ class TelemetryEventConsumerTest {
 
         consumer.consumeTelemetryEvent(event);
 
-        verify(anomalyPublisher).publish(event);
+        verify(anomalyPublisher).publish(event, anomalyResult);
         verify(processingService, never()).process(any());
     }
 
@@ -89,7 +89,7 @@ class TelemetryEventConsumerTest {
         consumer.consumeTelemetryEvent(event);
 
         verify(processingService).process(event);
-        verify(anomalyPublisher, never()).publish(event);
+        verify(anomalyPublisher, never()).publish(any(TelemetryEvent.class), any(TelemetryAnomalyResult.class));
     }
 
     @Test

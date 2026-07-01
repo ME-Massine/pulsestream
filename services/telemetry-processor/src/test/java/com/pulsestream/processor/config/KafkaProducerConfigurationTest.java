@@ -25,9 +25,21 @@ class KafkaProducerConfigurationTest {
     @Test
     void shouldCreateKafkaProducerInfrastructureForProcessedTelemetryTopic() {
         contextRunner.run(context -> {
-            assertThat(context).hasSingleBean(ProducerFactory.class);
+            ProducerFactory<?, ?> producerFactory = context.getBean("telemetryProducerFactory", ProducerFactory.class);
 
-            ProducerFactory<?, ?> producerFactory = context.getBean(ProducerFactory.class);
+            assertThat(producerFactory.getConfigurationProperties())
+                    .containsEntry(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
+                    .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "telemetry-processor-producer")
+                    .containsEntry(ProducerConfig.ACKS_CONFIG, "all")
+                    .containsEntry(ProducerConfig.RETRIES_CONFIG, 5)
+                    .containsEntry(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 45000);
+        });
+    }
+
+    @Test
+    void shouldCreateKafkaProducerInfrastructureForAnomalyTopic() {
+        contextRunner.run(context -> {
+            ProducerFactory<?, ?> producerFactory = context.getBean("anomalyProducerFactory", ProducerFactory.class);
 
             assertThat(producerFactory.getConfigurationProperties())
                     .containsEntry(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")

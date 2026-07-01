@@ -60,7 +60,7 @@ public class TelemetryEventConsumer {
                     anomalyResult.severity(),
                     anomalyResult.reasons()
             );
-            anomalyPublisher.publish(telemetryEvent);
+            anomalyPublisher.publish(telemetryEvent, anomalyResult);
             return;
         }
 
