@@ -1,8 +1,8 @@
 package com.pulsestream.processor.config;
 
 import org.junit.jupiter.api.Test;
-import org.postgresql.Driver;
 
+import java.sql.Driver;
 import java.sql.DriverManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
