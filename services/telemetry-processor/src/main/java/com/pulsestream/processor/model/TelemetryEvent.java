@@ -11,5 +11,5 @@ public record TelemetryEvent(
         String source,
         String version,
         TelemetryPayload payload
-) {
+) implements TelemetryEnvelope {
 }

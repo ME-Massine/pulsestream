@@ -1,7 +1,7 @@
 package com.pulsestream.processor.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.pulsestream.processor.model.TelemetryEvent;
+import com.pulsestream.processor.model.TelemetryEnvelope;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -17,7 +17,7 @@ import org.springframework.kafka.support.serializer.JsonSerializer;
 public class KafkaProducerConfiguration {
 
     @Bean
-    ProducerFactory<String, TelemetryEvent> telemetryProducerFactory(
+    ProducerFactory<String, TelemetryEnvelope> telemetryProducerFactory(
             TelemetryProcessorKafkaProperties kafkaProperties,
             ObjectMapper objectMapper
     ) {
@@ -34,7 +34,7 @@ public class KafkaProducerConfiguration {
         );
         producerProperties.putAll(kafkaProperties.getProducer().getProperties());
 
-        DefaultKafkaProducerFactory<String, TelemetryEvent> producerFactory =
+        DefaultKafkaProducerFactory<String, TelemetryEnvelope> producerFactory =
                 new DefaultKafkaProducerFactory<>(producerProperties);
 
         if (JsonSerializer.class.getName().equals(kafkaProperties.getProducer().getValueSerializer())) {
@@ -45,8 +45,8 @@ public class KafkaProducerConfiguration {
     }
 
     @Bean
-    KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate(
-            ProducerFactory<String, TelemetryEvent> telemetryProducerFactory
+    KafkaTemplate<String, TelemetryEnvelope> telemetryKafkaTemplate(
+            ProducerFactory<String, TelemetryEnvelope> telemetryProducerFactory
     ) {
         return new KafkaTemplate<>(telemetryProducerFactory);
     }

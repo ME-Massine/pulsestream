@@ -2,6 +2,7 @@ package com.pulsestream.processor.service;
 
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.exception.TelemetryPublishingException;
+import com.pulsestream.processor.model.TelemetryEnvelope;
 import com.pulsestream.processor.model.TelemetryEvent;
 import java.time.Duration;
 import java.util.concurrent.ExecutionException;
@@ -20,12 +21,12 @@ public class ProcessedTelemetryPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(ProcessedTelemetryPublisher.class);
 
-    private final KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate;
+    private final KafkaTemplate<String, TelemetryEnvelope> telemetryKafkaTemplate;
 
     private final TelemetryProcessorKafkaProperties kafkaProperties;
 
     public ProcessedTelemetryPublisher(
-            KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate,
+            KafkaTemplate<String, TelemetryEnvelope> telemetryKafkaTemplate,
             TelemetryProcessorKafkaProperties kafkaProperties
     ) {
         this.telemetryKafkaTemplate = telemetryKafkaTemplate;
