@@ -69,11 +69,21 @@ class ProcessedTelemetryPersistenceServiceTest {
     }
 
     @Test
-    @DisplayName("should swallow duplicate persistence so the pipeline is not blocked")
+    @DisplayName("should swallow unique-constraint duplicate so the pipeline is not blocked")
     void shouldSwallowDuplicatePersistence() {
         TelemetryEvent processedEvent = processedEvent("evt-001");
         when(repository.save(ArgumentMatchers.any()))
                 .thenThrow(new DataIntegrityViolationException("duplicate key value violates unique constraint"));
+
+        assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("should treat non-unique DataIntegrityViolationException as a DB failure, not a duplicate")
+    void shouldTreatNonUniqueIntegrityViolationAsDbFailure() {
+        TelemetryEvent processedEvent = processedEvent("evt-001");
+        when(repository.save(ArgumentMatchers.any()))
+                .thenThrow(new DataIntegrityViolationException("null value in column violates not-null constraint"));
 
         assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
     }

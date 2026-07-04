@@ -10,7 +10,9 @@ import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 
@@ -18,10 +20,10 @@ import org.springframework.util.Assert;
  * Persists processed telemetry events to PostgreSQL for later querying and analytics.
  *
  * <p>Persistence is a secondary sink behind the {@code telemetry.events.processed} Kafka topic. A
- * slow or unavailable database must never break the processing pipeline, so persistence failures are
- * logged and swallowed here rather than propagated back to the Kafka listener (which would block the
- * consumer and trigger redelivery). Duplicate inserts — expected under at-least-once redelivery,
- * since {@code event_id} is unique — are treated as a no-op.
+ * slow or unavailable database must never break the processing pipeline, so this method executes
+ * asynchronously on a dedicated bounded executor and DB failures are logged rather than propagated.
+ * Duplicate inserts — expected under at-least-once redelivery, since {@code event_id} is unique —
+ * are treated as a no-op.
  */
 @Service
 public class ProcessedTelemetryPersistenceService {
@@ -41,6 +43,7 @@ public class ProcessedTelemetryPersistenceService {
         this.clock = clock;
     }
 
+    @Async("persistenceExecutor")
     public void persist(TelemetryEvent processedEvent) {
         Assert.notNull(processedEvent, "processedEvent must not be null");
         Assert.notNull(processedEvent.payload(), "processedEvent payload must not be null");
@@ -52,19 +55,30 @@ public class ProcessedTelemetryPersistenceService {
                     processedEvent.eventId(),
                     processedEvent.tenantId()
             );
-        } catch (DataIntegrityViolationException ex) {
-            log.debug(
-                    "Skipped persisting duplicate processed telemetry event eventId={}",
-                    processedEvent.eventId()
-            );
-        } catch (RuntimeException ex) {
-            log.error(
-                    "Failed to persist processed telemetry event eventId={} tenantId={}",
-                    processedEvent.eventId(),
-                    processedEvent.tenantId(),
-                    ex
-            );
+        } catch (DataAccessException ex) {
+            if (ex instanceof DataIntegrityViolationException divEx && isUniqueConstraintViolation(divEx)) {
+                log.debug(
+                        "Skipped persisting duplicate processed telemetry event eventId={}",
+                        processedEvent.eventId()
+                );
+            } else {
+                log.error(
+                        "Failed to persist processed telemetry event eventId={} tenantId={}",
+                        processedEvent.eventId(),
+                        processedEvent.tenantId(),
+                        ex
+                );
+            }
         }
+    }
+
+    /**
+     * Returns true only when the violation is a unique-constraint collision (PostgreSQL "duplicate key").
+     * Other integrity failures (NOT NULL, FK, check constraints) return false and are logged at ERROR.
+     */
+    private static boolean isUniqueConstraintViolation(DataIntegrityViolationException ex) {
+        String message = ex.getMostSpecificCause().getMessage();
+        return message != null && message.contains("duplicate key");
     }
 
     private ProcessedTelemetryEntity toEntity(TelemetryEvent processedEvent) {
