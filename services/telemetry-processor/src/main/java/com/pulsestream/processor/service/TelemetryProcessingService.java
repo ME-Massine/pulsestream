@@ -16,15 +16,24 @@ public class TelemetryProcessingService {
     private static final String DEFAULT_VERSION = "1.0";
 
     private final ProcessedTelemetryPublisher processedTelemetryPublisher;
+    private final ProcessedTelemetryPersistenceService persistenceService;
     private final Clock clock;
 
     @Autowired
-    public TelemetryProcessingService(ProcessedTelemetryPublisher processedTelemetryPublisher) {
-        this(processedTelemetryPublisher, Clock.systemUTC());
+    public TelemetryProcessingService(
+            ProcessedTelemetryPublisher processedTelemetryPublisher,
+            ProcessedTelemetryPersistenceService persistenceService
+    ) {
+        this(processedTelemetryPublisher, persistenceService, Clock.systemUTC());
     }
 
-    TelemetryProcessingService(ProcessedTelemetryPublisher processedTelemetryPublisher, Clock clock) {
+    TelemetryProcessingService(
+            ProcessedTelemetryPublisher processedTelemetryPublisher,
+            ProcessedTelemetryPersistenceService persistenceService,
+            Clock clock
+    ) {
         this.processedTelemetryPublisher = processedTelemetryPublisher;
+        this.persistenceService = persistenceService;
         this.clock = clock;
     }
 
@@ -43,6 +52,7 @@ public class TelemetryProcessingService {
         );
 
         processedTelemetryPublisher.publish(processedEvent);
+        persistenceService.persist(processedEvent);
         return processedEvent;
     }
 }

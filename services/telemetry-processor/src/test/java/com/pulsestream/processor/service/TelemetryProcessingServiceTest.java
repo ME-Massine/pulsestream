@@ -24,10 +24,14 @@ class TelemetryProcessingServiceTest {
     @Mock
     private ProcessedTelemetryPublisher processedTelemetryPublisher;
 
+    @Mock
+    private ProcessedTelemetryPersistenceService persistenceService;
+
     @Test
     @DisplayName("should normalize raw telemetry event and publish processed event")
     void shouldNormalizeRawTelemetryEventAndPublishProcessedEvent() {
-        TelemetryProcessingService service = new TelemetryProcessingService(processedTelemetryPublisher);
+        TelemetryProcessingService service =
+                new TelemetryProcessingService(processedTelemetryPublisher, persistenceService);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 " evt-001 ",
                 " factory-01 ",
@@ -51,6 +55,7 @@ class TelemetryProcessingServiceTest {
         verify(processedTelemetryPublisher).publish(captor.capture());
 
         TelemetryEvent publishedEvent = captor.getValue();
+        verify(persistenceService).persist(publishedEvent);
         assertThat(processedEvent).isEqualTo(publishedEvent);
         assertThat(publishedEvent.eventId()).isEqualTo("evt-001");
         assertThat(publishedEvent.tenantId()).isEqualTo("factory-01");
@@ -71,7 +76,7 @@ class TelemetryProcessingServiceTest {
         Instant fixedNow = Instant.parse("2026-03-15T12:05:30Z");
         Clock clock = Clock.fixed(fixedNow, ZoneOffset.UTC);
         TelemetryProcessingService service =
-                new TelemetryProcessingService(processedTelemetryPublisher, clock);
+                new TelemetryProcessingService(processedTelemetryPublisher, persistenceService, clock);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 "evt-001",
                 "factory-01",
@@ -97,7 +102,8 @@ class TelemetryProcessingServiceTest {
     @Test
     @DisplayName("should reject raw telemetry events without payload")
     void shouldRejectRawTelemetryEventsWithoutPayload() {
-        TelemetryProcessingService service = new TelemetryProcessingService(processedTelemetryPublisher);
+        TelemetryProcessingService service =
+                new TelemetryProcessingService(processedTelemetryPublisher, persistenceService);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 "evt-001",
                 "factory-01",
