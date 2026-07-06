@@ -69,6 +69,16 @@ public class ProcessedTelemetryPersistenceService {
                         ex
                 );
             }
+        } catch (RuntimeException ex) {
+            // Catches failures outside the DataAccessException hierarchy (e.g. connection-pool/transaction
+            // infrastructure errors such as CannotCreateTransactionException) so a dead database never
+            // crashes the async persistence thread.
+            log.error(
+                    "Unexpected failure persisting processed telemetry event eventId={} tenantId={}",
+                    processedEvent.eventId(),
+                    processedEvent.tenantId(),
+                    ex
+            );
         }
     }
 
