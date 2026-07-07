@@ -51,8 +51,8 @@ public class TelemetryProcessingService {
                 TelemetryEventNormalizer.normalizePayload(rawEvent.payload())
         );
 
-        processedTelemetryPublisher.publish(processedEvent);
         persistenceService.persist(processedEvent);
+        processedTelemetryPublisher.publish(processedEvent);
         return processedEvent;
     }
 }

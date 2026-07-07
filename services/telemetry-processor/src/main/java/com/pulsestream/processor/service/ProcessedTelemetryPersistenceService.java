@@ -12,18 +12,15 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 
 /**
  * Persists processed telemetry events to PostgreSQL for later querying and analytics.
  *
- * <p>Persistence is a secondary sink behind the {@code telemetry.events.processed} Kafka topic. A
- * slow or unavailable database must never break the processing pipeline, so this method executes
- * asynchronously on a dedicated bounded executor and DB failures are logged rather than propagated.
- * Duplicate inserts — expected under at-least-once redelivery, since {@code event_id} is unique —
- * are treated as a no-op.
+ * <p>The raw Kafka record should not be acknowledged until the processed event is stored. Duplicate
+ * inserts, expected under at-least-once redelivery because {@code event_id} is unique, are treated
+ * as a no-op so retries can continue through the pipeline idempotently.
  */
 @Service
 public class ProcessedTelemetryPersistenceService {
@@ -43,7 +40,6 @@ public class ProcessedTelemetryPersistenceService {
         this.clock = clock;
     }
 
-    @Async("persistenceExecutor")
     public void persist(TelemetryEvent processedEvent) {
         Assert.notNull(processedEvent, "processedEvent must not be null");
         Assert.notNull(processedEvent.payload(), "processedEvent payload must not be null");
@@ -62,29 +58,28 @@ public class ProcessedTelemetryPersistenceService {
                         processedEvent.eventId()
                 );
             } else {
-                log.error(
+                log.warn(
                         "Failed to persist processed telemetry event eventId={} tenantId={}",
                         processedEvent.eventId(),
                         processedEvent.tenantId(),
                         ex
                 );
+                throw ex;
             }
         } catch (RuntimeException ex) {
-            // Catches failures outside the DataAccessException hierarchy (e.g. connection-pool/transaction
-            // infrastructure errors such as CannotCreateTransactionException) so a dead database never
-            // crashes the async persistence thread.
-            log.error(
+            log.warn(
                     "Unexpected failure persisting processed telemetry event eventId={} tenantId={}",
                     processedEvent.eventId(),
                     processedEvent.tenantId(),
                     ex
             );
+            throw ex;
         }
     }
 
     /**
      * Returns true only when the violation is a unique-constraint collision (PostgreSQL "duplicate key").
-     * Other integrity failures (NOT NULL, FK, check constraints) return false and are logged at ERROR.
+     * Other integrity failures (NOT NULL, FK, check constraints) return false and are propagated.
      */
     private static boolean isUniqueConstraintViolation(DataIntegrityViolationException ex) {
         String message = ex.getMostSpecificCause().getMessage();
