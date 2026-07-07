@@ -19,6 +19,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.ArgumentMatchers;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -94,6 +95,16 @@ class ProcessedTelemetryPersistenceServiceTest {
         TelemetryEvent processedEvent = processedEvent("evt-001");
         when(repository.save(ArgumentMatchers.any()))
                 .thenThrow(new QueryTimeoutException("statement timed out"));
+
+        assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("should swallow non-DataAccessException failures (e.g. connection-pool errors) without crashing")
+    void shouldSwallowNonDataAccessExceptionFailures() {
+        TelemetryEvent processedEvent = processedEvent("evt-001");
+        when(repository.save(ArgumentMatchers.any()))
+                .thenThrow(new CannotCreateTransactionException("could not open JDBC connection"));
 
         assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
     }
