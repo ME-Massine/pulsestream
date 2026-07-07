@@ -106,6 +106,6 @@ Alternatively, wait for the `Docker` health status to show `healthy`.
 - `Kafka` is exposed on `localhost:9092` for local development.
 - Internal `Docker` network communication uses the `kafka:29092` listener.
 - Topics are created by the `kafka-init` one-shot container, which exits after completion.
-- `Prometheus` scrapes `ingestion-service` (`host.docker.internal:8081/actuator/prometheus`) at a 15s interval, in addition to itself. The service runs on the host, not in `Docker Compose`, so `extra_hosts` maps `host.docker.internal` to the host gateway.
+- `Prometheus` scrapes `ingestion-service` (`host.docker.internal:8081/actuator/prometheus`) and `telemetry-processor` (`host.docker.internal:8082/actuator/prometheus`) at a 15s interval, in addition to itself. Both services run on the host, not in `Docker Compose`, so `extra_hosts` maps `host.docker.internal` to the host gateway.
 - `Grafana` uses the credentials defined in `.env`.
 - `Kafka topics` are managed manually or via scripts defined in the project and follow the naming convention `telemetry.events.*`.

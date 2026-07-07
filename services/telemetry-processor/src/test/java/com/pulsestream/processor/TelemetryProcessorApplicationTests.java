@@ -44,4 +44,13 @@ class TelemetryProcessorApplicationTests {
         JsonNode body = objectMapper.readTree(response.getBody());
         assertThat(body.path("status").asText()).isEqualTo("UP");
     }
+
+    @Test
+    void prometheusEndpointIsAccessible() {
+        ResponseEntity<String> response =
+                restTemplate.getForEntity("http://localhost:" + port + "/actuator/prometheus", String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).contains("# HELP");
+    }
 }
