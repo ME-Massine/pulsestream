@@ -18,7 +18,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.ArgumentMatchers;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.dao.QueryTimeoutException;
 import org.springframework.transaction.CannotCreateTransactionException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -80,33 +79,25 @@ class ProcessedTelemetryPersistenceServiceTest {
     }
 
     @Test
-    @DisplayName("should treat non-unique DataIntegrityViolationException as a DB failure, not a duplicate")
-    void shouldTreatNonUniqueIntegrityViolationAsDbFailure() {
+    @DisplayName("should propagate non-unique DataIntegrityViolationException so Kafka can retry")
+    void shouldPropagateNonUniqueIntegrityViolation() {
         TelemetryEvent processedEvent = processedEvent("evt-001");
         when(repository.save(ArgumentMatchers.any()))
                 .thenThrow(new DataIntegrityViolationException("null value in column violates not-null constraint"));
 
-        assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> persistenceService.persist(processedEvent))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
-    @DisplayName("should swallow database failures so the pipeline is not blocked")
-    void shouldSwallowDatabaseFailures() {
-        TelemetryEvent processedEvent = processedEvent("evt-001");
-        when(repository.save(ArgumentMatchers.any()))
-                .thenThrow(new QueryTimeoutException("statement timed out"));
-
-        assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
-    }
-
-    @Test
-    @DisplayName("should swallow non-DataAccessException failures (e.g. connection-pool errors) without crashing")
-    void shouldSwallowNonDataAccessExceptionFailures() {
+    @DisplayName("should propagate database failures so Kafka can retry")
+    void shouldPropagateDatabaseFailures() {
         TelemetryEvent processedEvent = processedEvent("evt-001");
         when(repository.save(ArgumentMatchers.any()))
                 .thenThrow(new CannotCreateTransactionException("could not open JDBC connection"));
 
-        assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> persistenceService.persist(processedEvent))
+                .isInstanceOf(CannotCreateTransactionException.class);
     }
 
     @Test
