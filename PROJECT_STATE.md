@@ -9,7 +9,7 @@ This document serves as the official record for tracking the current engineering
 | **Phase 1** | Architecture and Design | ✅ Completed |
 | **Phase 2** | Local Development Platform | ✅ Completed |
 | **Phase 3** | Core Event Pipeline | 🚧 In Progress |
-| **Phase 4** | Observability and Monitoring | ⏳ Planned |
+| **Phase 4** | Observability and Monitoring | 🚧 Foundations Started |
 | **Phase 5** | Reliability and Resilience | ⏳ Planned |
 | **Phase 6** | Kubernetes Deployment | ⏳ Planned |
 
@@ -19,7 +19,7 @@ This document serves as the official record for tracking the current engineering
 
 ### Phase 3 — Core Event Pipeline (In Progress)
 
-The project has successfully transitioned from infrastructure setup to the implementation of the core functional components. The current focus is on establishing the end-to-end telemetry processing flow.
+The project has implemented the first functional telemetry path from HTTP ingestion through Kafka processing to PostgreSQL persistence for normal processed telemetry events. The current focus is on closing remaining pipeline gaps, especially documented failure handling, DLQ workflows, anomaly persistence, and query APIs.
 
 ---
 
@@ -51,17 +51,34 @@ docker compose up -d
 ```
 The configuration is managed via the [infrastructure/docker/docker-compose.yml](infrastructure/docker/docker-compose.yml) file.
 
+### Core Event Pipeline Implemented So Far
+The current checkout includes:
+*   `ingestion-service` with `POST /api/v1/events` and request validation.
+*   Kafka producer configuration for publishing raw telemetry to `telemetry.events.raw`.
+*   `telemetry-processor` Kafka consumer configuration for `telemetry.events.raw`.
+*   Telemetry normalization and basic anomaly detection.
+*   Processed event publishing to `telemetry.events.processed`.
+*   Anomaly event publishing to `telemetry.events.anomalies`.
+*   PostgreSQL persistence for normal processed telemetry in `platform.processed_telemetry`.
+*   Spring Boot actuator Prometheus endpoints in both services.
+
 ---
 
 # Current Work
 
 ### Phase 3 — Core Event Pipeline
-The objective of this phase is to implement the first functional end-to-end telemetry pipeline. This involves the development of several critical components:
-*   **Ingestion-service foundation**: Establishing the base service structure.
-*   **Telemetry ingestion API**: Developing the REST interface for device data.
-*   **Kafka producer integration**: Enabling the ingestion service to publish events.
-*   **Telemetry-processor service**: Implementing the core logic for data normalization and analysis.
-*   **PostgreSQL persistence**: Ensuring processed events are durably stored.
+The objective of this phase is to complete the first functional end-to-end telemetry pipeline. Several critical components are already implemented:
+*   **Ingestion-service foundation**: Implemented.
+*   **Telemetry ingestion API**: Implemented as `POST /api/v1/events`.
+*   **Kafka producer integration**: Implemented for raw telemetry publishing.
+*   **Telemetry-processor service**: Implemented for Kafka consumption, normalization, anomaly detection, and downstream publishing.
+*   **PostgreSQL persistence**: Implemented for normal processed telemetry records.
+
+Remaining Phase 3 gaps include:
+*   Persisting anomaly records from application code.
+*   Defining and implementing DLQ routing behavior.
+*   Adding query APIs or a query service for persisted telemetry.
+*   Confirming schema initialization behavior for local PostgreSQL environments.
 
 **Target Outcome:**
 ```text
@@ -73,7 +90,7 @@ API → Kafka → Processor → PostgreSQL
 # Upcoming Phases
 
 ### Phase 4 — Observability
-This phase will introduce comprehensive monitoring and tracing capabilities to the platform. Key deliverables include Prometheus metrics integration, Grafana dashboard configurations, distributed tracing via OpenTelemetry, and automated service health monitoring.
+This phase will expand the current observability foundation. The services already expose Spring Boot actuator health and Prometheus endpoints, and the local Docker platform includes Prometheus and Grafana. Remaining deliverables include complete scrape coverage, dashboard configuration, distributed tracing via OpenTelemetry, and automated service health monitoring.
 
 ### Phase 5 — Reliability and Resilience
 The focus will shift toward enhancing the platform's fault tolerance. This includes the implementation of dead-letter queues (DLQs), event replay capabilities, robust retry mechanisms, and failure isolation patterns to ensure system stability under stress.
@@ -85,13 +102,14 @@ The final phase involves transitioning the platform to a production-grade Kubern
 
 # Next Immediate Task
 
-The current priority is to continue implementation planning and service setup for Phase 3.
+The current priority is to close the remaining Phase 3 pipeline gaps and keep documentation synchronized with implementation.
 
 **Current Focus Areas:**
-*   Development of the `ingestion-service` skeleton and API.
-*   Integration of the Kafka producer within the ingestion layer.
-*   Initial setup of the `telemetry-processor` service.
-*   Configuration of the persistence layer for processed telemetry events.
+*   Anomaly persistence and schema alignment.
+*   DLQ behavior and failure routing.
+*   Query API or query service design.
+*   Local PostgreSQL schema initialization flow.
+*   Observability scrape coverage and dashboard setup.
 
 ---
 

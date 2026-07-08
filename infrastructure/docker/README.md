@@ -18,7 +18,7 @@ The local platform includes:
 - `docker-compose.yml` — local platform definition
 - `.env.example` — example environment configuration
 - `prometheus/prometheus.yml` — `Prometheus` configuration
-- `postgres/init.sql` — `PostgreSQL` initialization (schema and tables)
+- `postgres/init.sql` — `PostgreSQL` schema script for processed telemetry and anomalies. The current Compose file does not mount this file into `/docker-entrypoint-initdb.d`, so apply it manually or add a mount before relying on automatic schema creation.
 - `kafka/init-topics.sh` — Kafka topic creation script (runs at startup)
 - `kafka/check-health.sh` — Kafka broker health-check script
 
@@ -74,11 +74,11 @@ The broker is configured for local development with the following defaults:
 | Setting | Value | Description |
 | :------ | :---- | :---------- |
 | `KAFKA_BROKER_ID` | 1 | Single broker for local dev |
-| `KAFKA_NUM_PARTITIONS` | 3 | Default partitions for auto-created topics |
+| `KAFKA_NUM_PARTITIONS` | 3 | Broker default partition count |
 | `KAFKA_LOG_RETENTION_HOURS` | 168 | 7-day message retention |
 | `KAFKA_LOG_RETENTION_BYTES` | 1 GB | Max log size per partition |
 | `KAFKA_MESSAGE_MAX_BYTES` | 10 MB | Maximum message size |
-| `KAFKA_AUTO_CREATE_TOPICS_ENABLE` | true | Allow auto topic creation |
+| `KAFKA_AUTO_CREATE_TOPICS_ENABLE` | false | Disable implicit topic creation; topics are created by `kafka-init` |
 | `KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS` | 0 | Fast consumer group rebalance |
 
 #### Topics
@@ -87,11 +87,10 @@ The `kafka-init` service automatically creates these topics on startup:
 
 | Topic | Partitions | Retention | Purpose |
 | :---- | :--------- | :-------- | :------ |
-| `pulsestream.events.raw` | 3 | 7 days | Incoming raw events |
-| `pulsestream.events.processed` | 3 | 7 days | Processed/enriched events |
-| `pulsestream.events.failed` | 1 | 30 days | Dead-letter queue |
-| `pulsestream.notifications` | 2 | 3 days | Alert notifications |
-| `pulsestream.metrics` | 2 | 1 day | Internal metrics |
+| `telemetry.events.raw` | 3 | 24 hours | Incoming raw events |
+| `telemetry.events.processed` | 3 | 7 days | Processed/enriched events |
+| `telemetry.events.anomalies` | 3 | 7 days | Detected anomaly events |
+| `telemetry.events.dlq` | 1 | 7 days | Dead-letter queue for failed events |
 
 Run the embedded health-check script to verify broker readiness:
 

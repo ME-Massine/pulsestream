@@ -2,7 +2,7 @@
 
 PulseStream is a cloud-native event processing platform designed to ingest, process, and analyze IoT telemetry data at scale.
 
-The platform enables real-time ingestion of telemetry events, streaming analytics, anomaly detection, and querying of processed data.
+The platform currently enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, and persistence of normal processed telemetry records. Query APIs and anomaly persistence are planned follow-up work.
 
 The system is designed using an event-driven architecture built around Apache Kafka.
 
@@ -15,9 +15,9 @@ PulseStream provides the following capabilities:
 *   Scalable telemetry ingestion
 *   Event stream processing
 *   Anomaly detection pipelines
-*   Durable event storage
-*   Real-time querying APIs
-*   Observability and monitoring
+*   Durable processed telemetry storage
+*   Planned real-time querying APIs
+*   Foundational observability and monitoring
 
 ---
 
@@ -81,7 +81,7 @@ Processing services consume telemetry streams and perform transformations.
 **Example processors:**
 
 *   telemetry-processor
-*   future alerting or aggregation consumers
+*   planned alerting or aggregation consumers
 
 These services read from Kafka topics and produce new events downstream.
 
@@ -89,13 +89,13 @@ These services read from Kafka topics and produce new events downstream.
 
 ### Storage Layer
 
-Processed telemetry and anomaly results are stored in PostgreSQL.
+Normal processed telemetry records are stored in PostgreSQL. The schema script defines an anomalies table, but the current application code publishes anomaly events to Kafka and does not persist them yet.
 
 The database supports:
 
-*   Query APIs
-*   Dashboards
-*   Anomaly analysis
+*   Future query APIs
+*   Future dashboards
+*   Future anomaly analysis
 *   Device history
 
 Redis may be used as a caching layer for frequently requested data.
@@ -103,6 +103,8 @@ Redis may be used as a caching layer for frequently requested data.
 ---
 
 ### Query Service
+
+**Status:** Planned. There is no query service module in the current checkout.
 
 The query service exposes APIs to retrieve processed telemetry data.
 
@@ -116,12 +118,12 @@ The query service exposes APIs to retrieve processed telemetry data.
 
 ### Observability Stack
 
-The platform includes a full observability stack:
+The local platform includes a foundational observability stack:
 
 *   Prometheus for metrics
-*   Grafana for dashboards
-*   OpenTelemetry for distributed tracing
-*   Centralized logging
+*   Grafana for future dashboards
+*   OpenTelemetry for planned distributed tracing
+*   Centralized logging as planned follow-up work
 
 ---
 
@@ -138,13 +140,16 @@ This provides:
 *   Kafka
 *   PostgreSQL
 *   Redis
-*   Platform services
+*   Prometheus
+*   Grafana
+
+Spring Boot platform services are run from their service directories on the host during local development.
 
 ---
 
 ### Production Deployment
 
-Production deployments target **Kubernetes**.
+Production deployments are planned to target **Kubernetes**.
 
 Kubernetes provides:
 

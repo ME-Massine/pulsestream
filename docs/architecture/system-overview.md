@@ -43,19 +43,19 @@ The platform analyzes telemetry streams and detects abnormal device behavior suc
 - abnormal spikes or drops in sensor values
 - missing device heartbeats
 
-Detected anomalies are emitted as dedicated events and stored for further analysis.
+Detected anomalies are emitted as dedicated Kafka events. The database schema includes an anomalies table, but application-level anomaly persistence is not implemented yet.
 
 ### Data Persistence
 
-Processed telemetry readings and anomaly events are stored in PostgreSQL for historical querying and analytics.
+Normal processed telemetry readings are stored in PostgreSQL for historical querying and analytics.
 
 ### Query APIs
 
-External clients and dashboards can retrieve telemetry summaries and anomaly records through dedicated query APIs.
+Dedicated query APIs are planned. There is no query service in the current checkout.
 
 ### Observability
 
-The platform exposes metrics, logs, and traces to monitor system health, event throughput, and processing latency.
+The services expose health and Prometheus metrics endpoints. Distributed tracing and full dashboard coverage are planned.
 
 ---
 
@@ -70,10 +70,10 @@ The platform is composed of several distributed components that communicate thro
 | Ingestion Service | Accepts telemetry events from devices and publishes them to Kafka |
 | Kafka Cluster | Central streaming backbone responsible for event transport and buffering |
 | Telemetry Processor | Consumes telemetry streams and performs anomaly detection |
-| Query Service | Provides APIs to access processed telemetry and anomaly data |
-| PostgreSQL | Stores processed telemetry data and anomaly records |
-| Observability Stack | Prometheus, Grafana, and tracing tools for system monitoring |
-| Device Simulator | Generates telemetry events to simulate IoT devices |
+| Query Service | Planned API for processed telemetry and anomaly data |
+| PostgreSQL | Stores processed telemetry data; anomaly table exists in schema script |
+| Observability Stack | Prometheus and Grafana locally; tracing is planned |
+| Device Simulator | Planned generator for synthetic telemetry |
 
 ---
 
@@ -96,7 +96,7 @@ Kafka Topics:
 ↓
 PostgreSQL
 ↓
-Query Service
+Query Service (planned)
 ↓
 Dashboard / API Clients
 
@@ -116,10 +116,10 @@ PulseStream uses the following core technologies:
 | PostgreSQL | Persistent storage for processed data |
 | Redis | Optional caching layer |
 | Docker | Containerization for local development |
-| Kubernetes | Cloud-native deployment platform |
+| Kubernetes | Planned cloud-native deployment platform |
 | Prometheus | Metrics collection |
 | Grafana | Observability dashboards |
-| OpenTelemetry | Distributed tracing |
+| OpenTelemetry | Planned distributed tracing |
 
 ---
 
@@ -157,8 +157,13 @@ The initial version of PulseStream focuses on a minimal but complete pipeline:
 - Kafka-based event streaming
 - telemetry processing and anomaly detection
 - PostgreSQL persistence
+- foundational observability through actuator and Prometheus endpoints
+
+Current MVP gaps include:
+
+- anomaly persistence from application code
 - query API for telemetry analytics
-- observability stack
+- explicit DLQ routing
 - simulated IoT devices
 
 Future iterations may expand into advanced analytics, device management, and large-scale telemetry simulations.

@@ -13,14 +13,14 @@ flowchart LR
     C --> T4[(Kafka Topic: telemetry.events.dlq)]
 
     C --> D[PostgreSQL]
-    D --> E[Query Service]
+    D --> E[Query Service planned]
     E --> F[Dashboard / API Clients]
 
     subgraph Observability
         P[Prometheus]
         G[Grafana]
-        O[OpenTelemetry]
-        J[Jaeger]
+        O[OpenTelemetry planned]
+        J[Jaeger planned]
     end
 
     B --> P

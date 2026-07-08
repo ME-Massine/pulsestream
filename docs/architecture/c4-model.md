@@ -19,12 +19,12 @@ The System Context view shows how PulseStream interacts with external users and 
 
 ## Description
 
-PulseStream is a cloud-native platform that ingests IoT telemetry events, processes them through a streaming backbone, detects anomalies, and exposes processed information to downstream clients.
+PulseStream is a cloud-native platform that ingests IoT telemetry events, processes them through a streaming backbone, detects anomalies, and persists processed telemetry. Query access for downstream clients is planned.
 
 External actors include:
 
 - IoT devices and gateways that send telemetry
-- platform users or API clients that query processed data
+- future platform users or API clients that query processed data
 - operators who monitor platform health and observability dashboards
 
 ## Context Diagram
@@ -38,7 +38,7 @@ flowchart LR
     P[PulseStream Platform]
 
     D -->|Send telemetry events| P
-    P -->|Expose processed telemetry and anomalies| U
+    P -->|Future query APIs for processed telemetry| U
     O -->|Monitor metrics, logs, and traces| P
 ```
 
@@ -53,7 +53,7 @@ The Container view shows the major deployable/runtime building blocks of the pla
 
 Description
 
-PulseStream is composed of several containers and infrastructure services that work together to ingest, process, store, and expose telemetry data.
+PulseStream is composed of services and infrastructure that work together to ingest, process, and store telemetry data. Query and tracing containers are planned extensions.
 
 Container Diagram
 
@@ -64,7 +64,7 @@ flowchart LR
 
     C --> D[Telemetry Processor]
     D --> E[(PostgreSQL)]
-    E --> F[Query Service]
+    E --> F[Query Service planned]
     F --> G[API Clients / Dashboards]
 
     D --> H[(telemetry.events.processed)]
@@ -74,8 +74,8 @@ flowchart LR
     subgraph Observability
         K[Prometheus]
         L[Grafana]
-        M[OpenTelemetry]
-        N[Jaeger]
+        M[OpenTelemetry planned]
+        N[Jaeger planned]
     end
 
     B --> K
@@ -97,17 +97,17 @@ flowchart LR
 | Ingestion Service   | Accept telemetry events and publish them to Kafka          | Spring Boot                                |
 | Kafka Cluster       | Event streaming backbone                                   | Apache Kafka                               |
 | Telemetry Processor | Consume telemetry events, normalize data, detect anomalies | Spring Boot                                |
-| Query Service       | Expose processed telemetry and anomaly data                | Spring Boot                                |
-| PostgreSQL          | Persist processed telemetry and anomaly records            | PostgreSQL                                 |
-| Observability Stack | Metrics, dashboards, tracing                               | Prometheus, Grafana, OpenTelemetry, Jaeger |
-| Device Simulator    | Generate synthetic telemetry traffic                       | Spring Boot or lightweight simulator       |
+| Query Service       | Planned API for processed telemetry and anomaly data       | Spring Boot                                |
+| PostgreSQL          | Persist processed telemetry records                        | PostgreSQL                                 |
+| Observability Stack | Metrics today; dashboards and tracing planned              | Prometheus, Grafana, OpenTelemetry, Jaeger |
+| Device Simulator    | Planned synthetic telemetry traffic generator              | Spring Boot or lightweight simulator       |
 
 
 Notes
 - Kafka is the central asynchronous communication layer.
 - Services are loosely coupled and communicate primarily through events.
 - PostgreSQL stores processed results, not the full streaming backbone.
-- Observability components span multiple containers and support operations.
+- Prometheus and Grafana are provisioned locally; tracing is planned.
 
 ## Level 3 — Component View
 
@@ -120,11 +120,11 @@ Ingestion Service Components
 ```mermaid
 flowchart TB
     A[Telemetry API Controller] --> B[Telemetry Validation Component]
-    B --> C[Event Enrichment Component]
-    C --> D[Kafka Producer Component]
+    B --> D[Kafka Producer Component]
     D --> E[(Kafka Topic: telemetry.events.raw)]
 
-    F[Authentication / API Key Validation] --> A
+    C[Event Enrichment Component planned] -.-> D
+    F[Authentication / API Key Validation planned] --> A
 ```
 
 ## Ingestion Service Component Responsibilities
@@ -132,9 +132,9 @@ flowchart TB
 | Component                           | Responsibility                                    |
 | ----------------------------------- | ------------------------------------------------- |
 | Telemetry API Controller            | Accept incoming HTTP telemetry requests           |
-| Authentication / API Key Validation | Validate producer identity and access             |
+| Authentication / API Key Validation | Planned producer identity and access validation   |
 | Telemetry Validation Component      | Validate the event schema and required fields     |
-| Event Enrichment Component          | Add metadata such as timestamps or source details |
+| Event Enrichment Component          | Planned metadata enrichment such as timestamps or source details |
 | Kafka Producer Component            | Publish validated events to Kafka                 |
 
 Notes
@@ -154,7 +154,7 @@ flowchart TB
     B --> C[Anomaly Detection Component]
     C --> D[Processed Event Publisher]
     C --> E[Anomaly Event Publisher]
-    C --> F[Persistence Component]
+    C --> F[Processed Telemetry Persistence Component]
 
     D --> G[(Kafka Topic: telemetry.events.processed)]
     E --> H[(Kafka Topic: telemetry.events.anomalies)]
@@ -170,19 +170,17 @@ flowchart TB
 | Anomaly Detection Component       | Apply anomaly rules and identify abnormal readings |
 | Processed Event Publisher         | Publish normalized telemetry events                |
 | Anomaly Event Publisher           | Publish anomaly events                             |
-| Persistence Component             | Store processed telemetry and anomaly records      |
+| Processed Telemetry Persistence Component | Store normal processed telemetry records |
 
 Notes
 
 - The processor is the main data-processing engine of the platform.
 - Anomaly detection rules should be isolated and extensible.
-- Output flows are separated into processed, anomalous, and persistent paths.
+- Output flows are separated into processed, anomalous, and persistent paths. Anomaly persistence is planned but not implemented in application code yet.
 
 ## Level 4 — Code View
 
-The Code view is intentionally not documented in detail yet.
-
-This level will be introduced when implementation begins and the first services are created.
+The Code view is intentionally kept lightweight. The first services now exist under `services/ingestion-service` and `services/telemetry-processor`.
 
 Expected future additions:
 
