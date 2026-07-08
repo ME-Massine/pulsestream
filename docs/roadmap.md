@@ -34,7 +34,7 @@ Development is organized into structured engineering phases. Each phase correspo
 *   Redis cache
 *   Observability stack for development
 
-**Outcome:** Developers can run the full platform locally.
+**Outcome:** Developers can run the shared infrastructure locally. Spring Boot services run from their service directories against that local infrastructure.
 
 ---
 
@@ -44,13 +44,15 @@ Development is organized into structured engineering phases. Each phase correspo
 
 **Deliverables:**
 
-*   Ingestion service
-*   Telemetry API endpoint
-*   Kafka producer implementation
-*   Telemetry processor
-*   Event persistence in PostgreSQL
+*   Ingestion service — implemented
+*   Telemetry API endpoint — implemented as `POST /api/v1/events`
+*   Kafka producer implementation — implemented for raw telemetry
+*   Telemetry processor — implemented for raw event consumption, normalization, anomaly detection, and downstream publishing
+*   Event persistence in PostgreSQL — implemented for normal processed telemetry
+*   Anomaly persistence — planned
+*   Query API — planned
 
-**Outcome:** Telemetry events flow through the full platform.
+**Outcome:** Normal telemetry events flow from API to Kafka to processor to PostgreSQL. Anomalous events are published to Kafka; persistence/query workflows remain planned.
 
 ---
 
@@ -60,10 +62,11 @@ Development is organized into structured engineering phases. Each phase correspo
 
 **Deliverables:**
 
-*   Prometheus metrics collection
-*   Grafana dashboards
-*   Distributed tracing
-*   Service health monitoring
+*   Prometheus metrics endpoints — implemented in services
+*   Prometheus local scrape configuration — started
+*   Grafana dashboards — planned
+*   Distributed tracing — planned
+*   Service health monitoring — started through actuator health endpoints
 
 **Outcome:** Operational visibility into the platform.
 

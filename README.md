@@ -5,14 +5,14 @@
 ![Last Commit](https://img.shields.io/github/last-commit/ME-Massine/pulsestream)
 ![Repo Size](https://img.shields.io/github/repo-size/ME-Massine/pulsestream)
 
-PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The platform demonstrates the implementation of a modern **event-driven system** by leveraging a robust technology stack including Kafka, Spring Boot, Docker, PostgreSQL, Redis, Prometheus, Grafana, and Kubernetes.
+PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, Redis provisioning, and a local Prometheus/Grafana stack. Kubernetes deployment, distributed tracing, query APIs, and simulator tooling are planned platform extensions.
 
 The project is engineered with a primary focus on several critical domains of modern software development:
 *   **Event-driven architecture** for decoupled and scalable service interaction.
 *   **Distributed systems design** to ensure high availability and fault tolerance.
 *   **Scalable data pipelines** capable of handling high-velocity telemetry streams.
-*   **Observability and resilience** through integrated monitoring and tracing.
-*   **Cloud-native infrastructure** for seamless deployment and orchestration.
+*   **Observability and resilience** through local metrics, health endpoints, and planned tracing/replay workflows.
+*   **Cloud-native infrastructure** through Docker Compose today and Kubernetes planning for later phases.
 
 ---
 
@@ -27,7 +27,7 @@ flowchart LR
 
     C --> D[Telemetry Processor]
     D --> E[(PostgreSQL)]
-    E --> F[Query Service]
+    E --> F[Query Service planned]
     F --> G[API Clients / Dashboards]
 
     D --> H[(telemetry.events.processed)]
@@ -37,7 +37,7 @@ flowchart LR
     subgraph Observability
         K[Prometheus]
         L[Grafana]
-        M[OpenTelemetry]
+        M[OpenTelemetry planned]
     end
 
     B --> K
@@ -78,12 +78,12 @@ The platform utilizes a curated selection of industry-standard technologies to a
 | :--- | :--- |
 | **Apache Kafka** | Serves as the event streaming backbone for the entire platform. |
 | **Spring Boot** | Provides the framework for building robust backend microservices. |
-| **PostgreSQL** | Used for persistent storage of telemetry data and anomaly records. |
-| **Redis** | Implemented for caching and planned rate-limiting capabilities. |
-| **Prometheus** | Handles the collection of system and application metrics. |
-| **Grafana** | Provides powerful visualization for monitoring dashboards. |
+| **PostgreSQL** | Used for persistent storage of processed telemetry records. |
+| **Redis** | Provisioned locally for future caching and rate-limiting capabilities. |
+| **Prometheus** | Collects local metrics from configured scrape targets. |
+| **Grafana** | Provisioned locally for future dashboards and metric visualization. |
 | **Docker** | Facilitates a consistent local development environment. |
-| **Kubernetes** | Used for container orchestration in production deployments. |
+| **Kubernetes** | Planned production orchestration target. |
 
 ---
 
@@ -153,7 +153,7 @@ For a more detailed breakdown of these phases, please refer to the [full roadmap
 
 ## Running the Platform
 
-The local development environment is currently being finalized. Configuration files and instructions for running the platform locally can be found in the infrastructure directory:
+The local development environment is defined with Docker Compose. Configuration files and instructions for running the platform locally can be found in the infrastructure directory:
 *   [infrastructure/docker/docker-compose.yml](./infrastructure/docker/docker-compose.yml)
 *   [infrastructure/docker/README.md](./infrastructure/docker/README.md)
 

@@ -32,7 +32,7 @@ Each service can scale independently depending on workload demands.
 
 ## Core Services
 
-The MVP version of PulseStream includes the following services.
+The current PulseStream checkout includes the ingestion service and telemetry processor. Query APIs, simulator tooling, tracing, and additional consumers are planned extensions unless noted otherwise.
 
 ### Ingestion Service
 
@@ -85,6 +85,8 @@ The telemetry-processor consumes raw telemetry events and performs real-time ana
 
 ### Query Service
 
+**Status:** Planned. There is no `services/query-service` module in the current checkout.
+
 The Query Service exposes APIs that allow external systems and dashboards to retrieve telemetry data and anomalies.
 
 **Responsibilities:**
@@ -107,6 +109,8 @@ The Query Service exposes APIs that allow external systems and dashboards to ret
 ---
 
 ### Device Simulator
+
+**Status:** Planned. There is no simulator service or script in the current checkout.
 
 The Device Simulator generates synthetic telemetry events to simulate IoT devices during development and testing.
 
@@ -138,8 +142,8 @@ PulseStream integrates observability tools to monitor system health and performa
 |---------------|---------------------------------------|
 | Prometheus    | Collect system and application metrics |
 | Grafana       | Visualize metrics and dashboards      |
-| OpenTelemetry | Distributed tracing instrumentation   |
-| Jaeger        | Trace visualization                   |
+| OpenTelemetry | Planned distributed tracing instrumentation |
+| Jaeger        | Planned trace visualization           |
 
 **Responsibilities:**
 
@@ -178,19 +182,18 @@ Kafka acts as the backbone of the platform.
 
 ### PostgreSQL
 
-PostgreSQL stores processed telemetry records and anomaly events.
+PostgreSQL stores processed telemetry records. The schema script also defines an `anomalies` table, but the current telemetry processor publishes anomaly events to Kafka and does not persist anomaly records through application code yet.
 
 **Responsibilities:**
 
-*   Persistent storage of telemetry history
-*   Anomaly tracking
+*   Persistent storage of processed telemetry history
+*   Planned anomaly tracking
 *   Query support for dashboards
 
 **Example tables:**
 
-*   `telemetry_readings`
-*   `anomaly_events`
-*   `device_status`
+*   `platform.processed_telemetry`
+*   `platform.anomalies` (schema exists in `postgres/init.sql`; application persistence is not implemented yet)
 
 ---
 
@@ -222,16 +225,11 @@ Ingestion Service
 Kafka Topic: telemetry.events.raw
 ↓
 telemetry-processor
-↓
-Kafka Topics:
-telemetry.events.processed
-telemetry.events.anomalies
-↓
-PostgreSQL
-↓
-Query Service
-↓
-Dashboard / Clients
+├─ normal reading → PostgreSQL + telemetry.events.processed
+└─ anomalous reading → telemetry.events.anomalies
+
+Planned follow-up:
+PostgreSQL / Kafka topics → Query Service → Dashboard / Clients
 ```
 
 This asynchronous interaction model allows services to scale and evolve independently.
@@ -253,6 +251,8 @@ Each service can scale horizontally depending on system load.
 *   Partition-based parallel processing
 
 ### Query Service
+
+**Status:** Planned.
 
 *   Scales based on query traffic
 *   Read replicas may be introduced later

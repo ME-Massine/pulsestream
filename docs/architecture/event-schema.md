@@ -148,21 +148,23 @@ The platform initially supports the following anomaly types.
 
 Triggered when a sensor reading exceeds predefined limits.
 
-Example:
+Implemented rules:
 
-*   `temperature > 45°C`
+*   `temperature > 80`
+*   `temperature < -40`
+*   missing `tenantId`, `deviceId`, `metric`, or `value`
 
 #### Sudden Deviation
 
 Triggered when the value changes significantly in a short time interval.
 
-Example:
+Implemented rule:
 
-*   `temperature jump from 20 → 40 within seconds`
+*   value change greater than 50% from the previous reading for the same normalized device/metric key
 
 #### Missing Heartbeat
 
-Triggered when a device fails to report telemetry within its expected interval.
+Planned for a future reliability phase. It is documented as an intended anomaly type but is not implemented in the current telemetry processor.
 
 ### Kafka Topic Mapping
 
@@ -203,9 +205,10 @@ Events received by the ingestion service must pass basic validation checks:
 *   required envelope fields present
 *   valid timestamp format
 *   payload structure matches event type
-*   metric values within acceptable bounds
 
-Invalid events are redirected to the dead-letter topic.
+Metric-specific bounds are handled by the telemetry processor anomaly detection rules rather than by the ingestion API.
+
+Invalid HTTP ingestion requests are rejected by the ingestion service validation layer. The dead-letter topic is provisioned for failed asynchronous processing, but explicit DLQ routing is not implemented yet.
 
 ## Summary
 

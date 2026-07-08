@@ -13,7 +13,7 @@ Raw telemetry data ingested from devices.
 
 **Producers**
 - ingestion-service
-- device-simulator
+- device-simulator (planned)
 
 **Consumers**
 - telemetry-processor
@@ -34,7 +34,8 @@ Processed telemetry data after enrichment and anomaly detection.
 - telemetry-processor
 
 **Consumers**
-- query-service
+- query-service (planned)
+- downstream consumers (planned)
 
 **Configuration**
 - partitions: 3
@@ -52,7 +53,7 @@ Detected anomalies from telemetry data.
 - telemetry-processor
 
 **Consumers**
-- query-service
+- query-service (planned)
 - future alerting consumers
 
 **Configuration**
