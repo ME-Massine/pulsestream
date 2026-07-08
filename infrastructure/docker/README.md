@@ -18,6 +18,7 @@ The local platform includes:
 - `docker-compose.yml` — local platform definition
 - `.env.example` — example environment configuration
 - `prometheus/prometheus.yml` — `Prometheus` configuration
+- `grafana/provisioning/datasources/prometheus.yml` — `Grafana` datasource provisioning for `Prometheus`
 - `postgres/init.sql` — `PostgreSQL` schema script for processed telemetry and anomalies. The current Compose file does not mount this file into `/docker-entrypoint-initdb.d`, so apply it manually or add a mount before relying on automatic schema creation.
 - `kafka/init-topics.sh` — Kafka topic creation script (runs at startup)
 - `kafka/check-health.sh` — Kafka broker health-check script
@@ -134,11 +135,24 @@ The script checks that:
 
 You can also verify the same result in the `Prometheus` UI at `http://localhost:9090/targets`; the `ingestion-service` target should be `UP` and show no scrape error. In the graph view, query `up{job="ingestion-service"}` and confirm it returns `1`.
 
+### Grafana
+
+Grafana is available at `http://localhost:3000` by default, or at the port configured by `GRAFANA_PORT`.
+
+Default local credentials are:
+
+| Setting | Default |
+| :------ | :------ |
+| Username | `admin` |
+| Password | `admin` |
+
+The `Prometheus` datasource is provisioned automatically as the default datasource and points to `http://prometheus:9090` on the internal Docker network.
+
 ### Notes
 
 - `Kafka` is exposed on `localhost:9092` for local development.
 - Internal `Docker` network communication uses the `kafka:29092` listener.
 - Topics are created by the `kafka-init` one-shot container, which exits after completion.
 - `Prometheus` scrapes `ingestion-service` (`host.docker.internal:8081/actuator/prometheus`) at a 15s interval, in addition to itself. The service runs on the host, not in `Docker Compose`, so `extra_hosts` maps `host.docker.internal` to the host gateway.
-- `Grafana` uses the credentials defined in `.env`.
+- `Grafana` uses the credentials defined in `.env`, persists data in the `grafana_data` volume, and provisions `Prometheus` as its default datasource.
 - `Kafka topics` are managed manually or via scripts defined in the project and follow the naming convention `telemetry.events.*`.
