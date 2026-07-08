@@ -93,7 +93,7 @@ The `kafka-init` service automatically creates these topics on startup:
 | `pulsestream.notifications` | 2 | 3 days | Alert notifications |
 | `pulsestream.metrics` | 2 | 1 day | Internal metrics |
 
-Run the embedded health-check script to verify broker status and topic availability:
+Run the embedded health-check script to verify broker readiness:
 
 ```bash
 docker exec pulsestream-kafka check-health
