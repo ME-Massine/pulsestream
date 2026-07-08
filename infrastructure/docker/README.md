@@ -21,6 +21,7 @@ The local platform includes:
 - `postgres/init.sql` — `PostgreSQL` schema script for processed telemetry and anomalies. The current Compose file does not mount this file into `/docker-entrypoint-initdb.d`, so apply it manually or add a mount before relying on automatic schema creation.
 - `kafka/init-topics.sh` — Kafka topic creation script (runs at startup)
 - `kafka/check-health.sh` — Kafka broker health-check script
+- `../../scripts/validate-prometheus-metrics.ps1` — validates local ingestion-service metrics collection through `Prometheus`
 
 ### Usage
 
@@ -99,6 +100,39 @@ docker exec pulsestream-kafka check-health
 ```
 
 Alternatively, wait for the `Docker` health status to show `healthy`.
+
+### Prometheus Metrics Validation
+
+Use this flow to validate that `Prometheus` can scrape `ingestion-service` metrics end to end.
+
+1. Start the local platform from this directory:
+
+   ```bash
+   docker compose up -d
+   ```
+
+2. Start `ingestion-service` from the repository root in a separate terminal:
+
+   ```powershell
+   cd services\ingestion-service
+   .\mvnw.cmd spring-boot:run
+   ```
+
+3. Run the validation script from the repository root after the service is listening on port `8081`:
+
+   ```powershell
+   .\scripts\validate-prometheus-metrics.ps1
+   ```
+
+The script checks that:
+
+- `ingestion-service` reports `UP` from `/actuator/health`
+- `/actuator/prometheus` exposes key service metrics
+- `Prometheus` has an active `ingestion-service` target
+- the target is `up` with no scrape errors
+- `up`, `jvm_info`, `process_uptime_seconds`, and `application_ready_time_seconds` are queryable for the `ingestion-service` job
+
+You can also verify the same result in the `Prometheus` UI at `http://localhost:9090/targets`; the `ingestion-service` target should be `UP` and show no scrape error. In the graph view, query `up{job="ingestion-service"}` and confirm it returns `1`.
 
 ### Notes
 
