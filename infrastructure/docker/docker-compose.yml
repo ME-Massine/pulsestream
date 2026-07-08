@@ -66,6 +66,7 @@ services:
       resources:
         limits:
           memory: 1G
+    restart: unless-stopped
     healthcheck:
       test: [ "CMD", "bash", "/usr/bin/check-health" ]
       start_period: 30s
