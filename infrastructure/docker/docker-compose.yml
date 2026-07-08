@@ -13,9 +13,9 @@ services:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_log:/var/lib/zookeeper/log
     healthcheck:
-      test: [ "CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok || exit 1" ]
+      test: [ "CMD", "cub", "zk-ready", "localhost:2181", "30" ]
       interval: 10s
-      timeout: 5s
+      timeout: 35s
       retries: 10
     networks:
       - pulsestream-net
@@ -59,17 +59,19 @@ services:
       KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-3}
     volumes:
       - kafka_data:/var/lib/kafka/data
+      - ./kafka/wait-and-run.sh:/usr/bin/wait-and-run:ro
       - ./kafka/check-health.sh:/usr/bin/check-health:ro
+    command: [ "bash", "/usr/bin/wait-and-run" ]
     deploy:
       resources:
         limits:
           memory: 1G
-    restart: unless-stopped
     healthcheck:
       test: [ "CMD", "bash", "/usr/bin/check-health" ]
-      interval: 30s
-      timeout: 20s
-      retries: 5
+      start_period: 30s
+      interval: 15s
+      timeout: 30s
+      retries: 10
     networks:
       - pulsestream-net
 
