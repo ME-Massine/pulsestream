@@ -13,11 +13,14 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   ids_output=$(echo "ls /brokers/ids" | zookeeper-shell "$ZOOKEEPER_CONNECT" 2>/dev/null || true)
   ids_line=$(printf "%s\n" "$ids_output" | grep -E '^\[[0-9, ]*\]$' | tail -1 || true)
 
-  if ! printf "%s" "$ids_line" | tr -d "[] " | tr "," "\n" | grep -Fxq "$BROKER_ID"; then
+  if [ -z "$ids_line" ]; then
+    echo "Could not determine Kafka broker ids from ZooKeeper ($attempt/$MAX_ATTEMPTS)"
+  elif ! printf "%s" "$ids_line" | tr -d "[] " | tr "," "\n" | grep -Fxq "$BROKER_ID"; then
     exec /etc/confluent/docker/run
+  else
+    echo "Waiting for stale Kafka broker id $BROKER_ID to expire in ZooKeeper ($attempt/$MAX_ATTEMPTS)"
   fi
 
-  echo "Waiting for stale Kafka broker id $BROKER_ID to expire in ZooKeeper ($attempt/$MAX_ATTEMPTS)"
   attempt=$((attempt + 1))
   sleep "$SLEEP_SECONDS"
 done
