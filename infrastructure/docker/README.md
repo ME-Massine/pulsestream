@@ -23,6 +23,7 @@ The local platform includes:
 - `kafka/init-topics.sh` — Kafka topic creation script (runs at startup)
 - `kafka/check-health.sh` — Kafka broker health-check script
 - `../../scripts/validate-prometheus-metrics.ps1` — validates local ingestion-service metrics collection through `Prometheus`
+- `../../scripts/validate-grafana-datasource.ps1` — validates the `Grafana` `Prometheus` datasource is healthy and returns query data
 
 ### Usage
 
@@ -146,7 +147,23 @@ Default local credentials are:
 | Username | `admin` |
 | Password | `admin` |
 
-The `Prometheus` datasource is provisioned automatically as the default datasource and points to `http://prometheus:9090` on the internal Docker network.
+The `Prometheus` datasource is provisioned automatically as the default datasource (`uid: prometheus`) and points to `http://prometheus:9090` on the internal Docker network. Its `timeInterval` matches the `Prometheus` scrape interval (`15s`) so range queries request data at the resolution `Prometheus` stores.
+
+#### Datasource Validation
+
+After starting the platform, confirm the datasource is healthy and can return data by running the validation script from the repository root:
+
+```powershell
+.\scripts\validate-grafana-datasource.ps1
+```
+
+The script authenticates against the local `Grafana` API and checks that:
+
+- the `Prometheus` datasource is provisioned as the default datasource
+- `GET /api/datasources/uid/prometheus/health` reports status `OK`
+- an `up` query run through the datasource resources API (`/api/datasources/uid/prometheus/resources/api/v1/query`) returns data
+
+Override the defaults with `-GrafanaBaseUrl`, `-GrafanaUser`, and `-GrafanaPassword` if you changed the local `Grafana` port or credentials. You can also verify manually in the `Grafana` UI under `Connections > Data sources > Prometheus`; the `Save & test` button should report the datasource is working.
 
 ### Notes
 
