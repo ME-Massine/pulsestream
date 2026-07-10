@@ -23,6 +23,14 @@ logging:
     root: INFO
     com.pulsestream.ingestion: INFO
 
+otel:
+  traces:
+    exporter: console
+  metrics:
+    exporter: none
+  logs:
+    exporter: none
+
 pulsestream:
   kafka:
     bootstrap-servers: ${PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
