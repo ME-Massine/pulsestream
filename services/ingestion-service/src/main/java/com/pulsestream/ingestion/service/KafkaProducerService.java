@@ -3,6 +3,7 @@ package com.pulsestream.ingestion.service;
 import com.pulsestream.ingestion.config.PulsestreamKafkaProperties;
 import com.pulsestream.ingestion.exception.TelemetryPublishingException;
 import com.pulsestream.ingestion.model.TelemetryEvent;
+import com.pulsestream.ingestion.serialization.TelemetryEventSerializer;
 import java.time.Duration;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -22,13 +23,21 @@ public class KafkaProducerService {
 
     private final KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate;
 
+    private final KafkaTemplate<String, String> dlqKafkaTemplate;
+
+    private final TelemetryEventSerializer telemetryEventSerializer;
+
     private final PulsestreamKafkaProperties kafkaProperties;
 
     public KafkaProducerService(
             KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate,
+            KafkaTemplate<String, String> dlqKafkaTemplate,
+            TelemetryEventSerializer telemetryEventSerializer,
             PulsestreamKafkaProperties kafkaProperties
     ) {
         this.telemetryKafkaTemplate = telemetryKafkaTemplate;
+        this.dlqKafkaTemplate = dlqKafkaTemplate;
+        this.telemetryEventSerializer = telemetryEventSerializer;
         this.kafkaProperties = kafkaProperties;
     }
 
@@ -39,7 +48,7 @@ public class KafkaProducerService {
         String messageKey = resolveMessageKey(telemetryEvent);
 
         try {
-            sendBlocking(rawTopic, messageKey, telemetryEvent);
+            sendBlocking(telemetryKafkaTemplate, rawTopic, messageKey, telemetryEvent);
         } catch (KafkaSendFailure failure) {
             Throwable cause = failure.getCause();
             log.error(
@@ -59,9 +68,14 @@ public class KafkaProducerService {
 
     private void routeToDeadLetterQueue(TelemetryEvent telemetryEvent, String messageKey, Throwable cause) {
         String dlqTopic = kafkaProperties.getTopics().getDlq();
+        // Render the DLQ value up-front as a String using a serializer that is
+        // independent of the raw-topic JSON path. Even when the raw publish failed
+        // because the event could not be serialized, the original payload is still
+        // preserved here (falling back to the record's text form if needed).
+        String dlqValue = renderDeadLetterValue(telemetryEvent);
 
         try {
-            sendBlocking(dlqTopic, messageKey, telemetryEvent);
+            sendBlocking(dlqKafkaTemplate, dlqTopic, messageKey, dlqValue);
             log.warn(
                     "Rerouted failed telemetry event to DLQ topic={} key={} eventId={} reason={}",
                     dlqTopic,
@@ -80,11 +94,35 @@ public class KafkaProducerService {
         }
     }
 
-    private void sendBlocking(String topic, String messageKey, TelemetryEvent telemetryEvent) {
+    /**
+     * Produces the string value published to the DLQ. Preferring JSON keeps the DLQ
+     * record consistent with the raw topic, but because a raw-topic serialization
+     * failure would recur here, any serialization error falls back to the record's
+     * text representation so the original payload is never silently dropped.
+     */
+    private String renderDeadLetterValue(TelemetryEvent telemetryEvent) {
+        try {
+            return telemetryEventSerializer.serialize(telemetryEvent);
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "Falling back to non-JSON DLQ representation for eventId={} due to serialization failure",
+                    telemetryEvent.eventId(),
+                    ex
+            );
+            return String.valueOf(telemetryEvent);
+        }
+    }
+
+    private <V> void sendBlocking(
+            KafkaTemplate<String, V> template,
+            String topic,
+            String messageKey,
+            V value
+    ) {
         long publishTimeoutMillis = publishTimeoutMillis();
 
         try {
-            telemetryKafkaTemplate.send(topic, messageKey, telemetryEvent)
+            template.send(topic, messageKey, value)
                     .get(publishTimeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
