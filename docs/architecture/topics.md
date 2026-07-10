@@ -4,6 +4,16 @@
 
 This document defines the Kafka topics used in the platform.
 
+## Naming Convention
+
+Topics follow: `<domain>.<entity>.<stage>`
+
+- `domain` — bounded context (e.g. `telemetry`)
+- `entity` — event/data kind (e.g. `events`)
+- `stage` — lifecycle stage: `raw`, `processed`, `anomalies`, `dlq`
+
+Dead-letter topics use the `dlq` stage suffix on the domain/entity they guard, e.g. `telemetry.events.dlq` holds failed/malformed messages from the `telemetry.events.*` pipeline. This keeps DLQ topics discoverable next to the topics they protect rather than in a separate namespace.
+
 ---
 
 ## telemetry.events.raw
