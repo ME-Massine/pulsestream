@@ -170,6 +170,7 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     volumes:
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - grafana_data:/var/lib/grafana
     networks:
       - pulsestream-net
