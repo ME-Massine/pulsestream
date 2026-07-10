@@ -46,7 +46,10 @@ provisioning mount:
 After editing a dashboard in the `Grafana` UI, export the updated definition and
 commit it here so the file stays the source of truth:
 
-1. Open the dashboard and go to `Share > Export > Save to file`
-   (enable `Export for sharing externally` to keep the datasource as a variable).
+1. Open the dashboard and go to `Share > Export > Save to file`.
+   Leave `Export for sharing externally` **disabled** — that option rewrites the
+   datasource into a `${DS_...}` input variable, which breaks the stable
+   `prometheus` UID these provisioned files rely on.
 2. Replace the matching JSON file in this directory with the exported file.
-3. Commit the change.
+3. Confirm the datasource still references `"uid": "prometheus"` (not a
+   `${DS_...}` variable), then commit the change.
