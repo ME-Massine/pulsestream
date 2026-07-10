@@ -25,6 +25,7 @@ The local platform includes:
 - `kafka/check-health.sh` — Kafka broker health-check script
 - `../../scripts/validate-prometheus-metrics.ps1` — validates local ingestion-service metrics collection through `Prometheus`
 - `../../scripts/validate-grafana-datasource.ps1` — validates the `Grafana` `Prometheus` datasource is healthy and returns query data
+- `../../scripts/validate-kafka-dlq-topic.ps1` — validates the `telemetry.events.dlq` topic exists, is partitioned/replicated correctly, and follows the DLQ naming convention
 
 ### Usage
 
@@ -106,6 +107,20 @@ docker exec pulsestream-kafka check-health
 ```
 
 Alternatively, wait for the `Docker` health status to show `healthy`.
+
+#### DLQ Topic Validation
+
+The `kafka-init` container creates `telemetry.events.dlq` at startup. Confirm it exists with the expected configuration by running the validation script from the repository root:
+
+```powershell
+.\scripts\validate-kafka-dlq-topic.ps1
+```
+
+The script runs `kafka-topics --describe` against the running broker and checks that:
+
+- the `telemetry.events.dlq` topic is visible via the Kafka CLI
+- it has 1 partition and a replication factor of 1
+- its name follows the `<domain>.<entity>.dlq` naming convention from [`docs/architecture/topics.md`](../../docs/architecture/topics.md)
 
 ### Prometheus Metrics Validation
 
