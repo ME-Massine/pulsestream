@@ -5,11 +5,14 @@ import com.pulsestream.ingestion.exception.TelemetryPublishingException;
 import com.pulsestream.ingestion.mapper.TelemetryEventMapper;
 import com.pulsestream.ingestion.model.TelemetryEvent;
 import com.pulsestream.ingestion.service.KafkaProducerService;
+import io.opentelemetry.api.OpenTelemetry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Bean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import static org.mockito.Mockito.when;
@@ -23,6 +26,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(TelemetryController.class)
 class TelemetryControllerTest {
+
+    @TestConfiguration
+    static class TracingTestConfig {
+        @Bean
+        OpenTelemetry openTelemetry() {
+            return OpenTelemetry.noop();
+        }
+    }
 
     @MockBean
     private TelemetryEventMapper telemetryEventMapper;
