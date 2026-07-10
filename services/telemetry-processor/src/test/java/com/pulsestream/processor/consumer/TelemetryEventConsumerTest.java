@@ -6,6 +6,7 @@ import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
 import com.pulsestream.processor.service.AnomalyProcessingService;
+import com.pulsestream.processor.service.DeadLetterPublisher;
 import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import com.pulsestream.processor.service.TelemetryProcessingService;
@@ -19,6 +20,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -37,9 +39,12 @@ class TelemetryEventConsumerTest {
             mock(AnomalyProcessingService.class);
     private final TelemetryProcessingService processingService =
             mock(TelemetryProcessingService.class);
+    private final DeadLetterPublisher deadLetterPublisher =
+            mock(DeadLetterPublisher.class);
 
-    private final TelemetryEventConsumer consumer =
-            new TelemetryEventConsumer(normalizationService, anomalyDetectionService, anomalyProcessingService, processingService);
+    private final TelemetryEventConsumer consumer = new TelemetryEventConsumer(
+            normalizationService, anomalyDetectionService, anomalyProcessingService, processingService, deadLetterPublisher
+    );
 
     @Test
     @DisplayName("should normalize, detect, and process normal telemetry event without throwing")
@@ -90,6 +95,38 @@ class TelemetryEventConsumerTest {
 
         verify(processingService).process(event);
         verify(anomalyProcessingService, never()).process(any(), any());
+    }
+
+    @Test
+    @DisplayName("should route event to DLQ and not crash when normalization fails")
+    void shouldRouteEventToDlqAndNotCrashWhenNormalizationFails() {
+        TelemetryEvent event = telemetryEvent();
+        RuntimeException failure = new IllegalStateException("normalization exploded");
+
+        when(normalizationService.normalize(event)).thenThrow(failure);
+
+        assertThatCode(() -> consumer.consumeTelemetryEvent(event)).doesNotThrowAnyException();
+
+        verify(deadLetterPublisher).publish(event, failure);
+        verify(processingService, never()).process(any());
+        verify(anomalyProcessingService, never()).process(any(), any());
+    }
+
+    @Test
+    @DisplayName("should route event to DLQ and not crash when processing fails")
+    void shouldRouteEventToDlqAndNotCrashWhenProcessingFails() {
+        TelemetryEvent event = telemetryEvent();
+        NormalizedTelemetryEvent normalizedEvent = normalizedTelemetryEvent();
+        TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.normal(normalizedEvent);
+        RuntimeException failure = new IllegalStateException("processing exploded");
+
+        when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
+        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
+        when(processingService.process(event)).thenThrow(failure);
+
+        assertThatCode(() -> consumer.consumeTelemetryEvent(event)).doesNotThrowAnyException();
+
+        verify(deadLetterPublisher).publish(event, failure);
     }
 
     @Test

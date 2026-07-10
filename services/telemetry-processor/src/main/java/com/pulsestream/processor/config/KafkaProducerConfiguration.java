@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
@@ -49,5 +50,33 @@ public class KafkaProducerConfiguration {
             ProducerFactory<String, TelemetryEnvelope> telemetryProducerFactory
     ) {
         return new KafkaTemplate<>(telemetryProducerFactory);
+    }
+
+    /**
+     * Producer factory dedicated to the dead-letter queue. It uses a {@link StringSerializer}
+     * for the value so a failed event is captured as a pre-rendered string, independent of the
+     * JSON serializer used for the regular topics.
+     */
+    @Bean
+    ProducerFactory<String, String> dlqProducerFactory(TelemetryProcessorKafkaProperties kafkaProperties) {
+        Map<String, Object> producerProperties = new HashMap<>();
+        producerProperties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaProperties.getBootstrapServers());
+        producerProperties.put(ProducerConfig.CLIENT_ID_CONFIG, kafkaProperties.getProducer().getClientId() + "-dlq");
+        producerProperties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        producerProperties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        producerProperties.put(ProducerConfig.ACKS_CONFIG, kafkaProperties.getProducer().getAcknowledgements());
+        producerProperties.put(ProducerConfig.RETRIES_CONFIG, kafkaProperties.getProducer().getRetries());
+        producerProperties.put(
+                ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG,
+                Math.toIntExact(kafkaProperties.getProducer().getDeliveryTimeout().toMillis())
+        );
+        producerProperties.putAll(kafkaProperties.getProducer().getProperties());
+
+        return new DefaultKafkaProducerFactory<>(producerProperties);
+    }
+
+    @Bean
+    KafkaTemplate<String, String> dlqKafkaTemplate(ProducerFactory<String, String> dlqProducerFactory) {
+        return new KafkaTemplate<>(dlqProducerFactory);
     }
 }
