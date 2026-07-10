@@ -82,6 +82,7 @@ The platform utilizes a curated selection of industry-standard technologies to a
 | **Redis** | Provisioned locally for future caching and rate-limiting capabilities. |
 | **Prometheus** | Collects local metrics from configured scrape targets. |
 | **Grafana** | Provisioned locally for future dashboards and metric visualization. |
+| **Jaeger** | Local distributed tracing backend for collecting and visualizing OpenTelemetry traces. |
 | **Docker** | Facilitates a consistent local development environment. |
 | **Kubernetes** | Planned production orchestration target. |
 
@@ -157,7 +158,7 @@ The local development environment is defined with Docker Compose. Configuration 
 *   [infrastructure/docker/docker-compose.yml](./infrastructure/docker/docker-compose.yml)
 *   [infrastructure/docker/README.md](./infrastructure/docker/README.md)
 
-The local environment includes pre-configured instances of **Kafka**, **Zookeeper**, **PostgreSQL**, **Redis**, **Prometheus**, and **Grafana**.
+The local environment includes pre-configured instances of **Kafka**, **Zookeeper**, **PostgreSQL**, **Redis**, **Prometheus**, **Grafana**, and **Jaeger**.
 
 ---
 
