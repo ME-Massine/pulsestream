@@ -8,39 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Invoke-JsonGet {
-    param([string] $Uri)
-
-    try {
-        Invoke-RestMethod -Method Get -Uri $Uri -TimeoutSec 10
-    } catch {
-        throw "GET $Uri failed. $($_.Exception.Message)"
-    }
-}
-
-function Invoke-TextGet {
-    param([string] $Uri)
-
-    try {
-        (Invoke-WebRequest -Method Get -Uri $Uri -UseBasicParsing -TimeoutSec 10).Content
-    } catch {
-        throw "GET $Uri failed. $($_.Exception.Message)"
-    }
-}
-
-function Confirm-Condition {
-    param(
-        [bool] $Condition,
-        [string] $SuccessMessage,
-        [string] $FailureMessage
-    )
-
-    if (-not $Condition) {
-        throw $FailureMessage
-    }
-
-    Write-Host "[ok] $SuccessMessage"
-}
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
 
 function Invoke-PrometheusQuery {
     param([string] $Query)
@@ -61,30 +29,10 @@ function Invoke-PrometheusQuery {
     $queryResult.data.result
 }
 
-function Invoke-WithRetry {
-    param(
-        [scriptblock] $Operation,
-        [string] $FailureMessage
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $lastError = $null
-
-    do {
-        try {
-            return & $Operation
-        } catch {
-            $lastError = $_.Exception.Message
-            Start-Sleep -Seconds 2
-        }
-    } while ((Get-Date) -lt $deadline)
-
-    throw "$FailureMessage Last error: $lastError"
-}
-
 Write-Host "Validating ingestion-service metrics collection..."
 
 $health = Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
     -FailureMessage "ingestion-service health endpoint did not report UP within $TimeoutSeconds seconds." `
     -Operation {
         $result = Invoke-JsonGet "$IngestionBaseUrl/actuator/health"
@@ -110,6 +58,7 @@ foreach ($metricName in $expectedServiceMetrics) {
 }
 
 Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
     -FailureMessage "Prometheus target for job $PrometheusJob was not healthy within $TimeoutSeconds seconds." `
     -Operation {
         $targets = Invoke-JsonGet "$PrometheusBaseUrl/api/v1/targets?state=active"
@@ -134,6 +83,7 @@ Invoke-WithRetry `
     }
 
 $upResult = Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
     -FailureMessage "Prometheus did not report up{job=""$PrometheusJob""} within $TimeoutSeconds seconds." `
     -Operation {
         Invoke-PrometheusQuery "up{job=""$PrometheusJob""}"
@@ -147,6 +97,7 @@ Confirm-Condition `
 
 foreach ($metricName in $expectedServiceMetrics) {
     Invoke-WithRetry `
+        -TimeoutSeconds $TimeoutSeconds `
         -FailureMessage "Prometheus did not return $metricName for job $PrometheusJob within $TimeoutSeconds seconds." `
         -Operation {
             Invoke-PrometheusQuery "$metricName{job=""$PrometheusJob""}"
