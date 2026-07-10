@@ -22,8 +22,14 @@ logging:
   level:
     root: INFO
     com.pulsestream.ingestion: INFO
+  pattern:
+    level: "%5p [${spring.application.name:},trace_id=%X{trace_id:-},span_id=%X{span_id:-}]"
 
 otel:
+  # W3C trace context is propagated over HTTP headers so trace IDs stay
+  # consistent across services. `baggage` is enabled to carry contextual
+  # metadata and to prepare for Kafka propagation in a later issue.
+  propagators: ${PULSESTREAM_OTEL_PROPAGATORS:tracecontext,baggage}
   traces:
     exporter: console
   metrics:
