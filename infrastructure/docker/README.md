@@ -185,6 +185,10 @@ The script authenticates against the local `Grafana` API and checks that:
 
 Override the defaults with `-GrafanaBaseUrl`, `-GrafanaUser`, and `-GrafanaPassword` if you changed the local `Grafana` port or credentials. You can also verify manually in the `Grafana` UI under `Connections > Data sources > Prometheus`; the `Save & test` button should report the datasource is working.
 
+#### Dashboards
+
+Dashboard JSON is version-controlled under [`observability/grafana/dashboards`](../../observability/grafana/dashboards) as the single source of truth. The Compose file mounts that directory into the `Grafana` container at `/etc/grafana/dashboards`, and the file provider in `grafana/provisioning/dashboards/dashboards.yml` loads every dashboard into the `PulseStream` folder on startup. See the [dashboards README](../../observability/grafana/dashboards/README.md) for the list of dashboards and instructions on re-importing or exporting changes.
+
 ### Jaeger
 
 `Jaeger` is the local distributed tracing backend. The all-in-one container runs the collector, storage, and query UI in a single process, with the OTLP receiver enabled via `COLLECTOR_OTLP_ENABLED`.
