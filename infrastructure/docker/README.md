@@ -26,6 +26,7 @@ The local platform includes:
 - `../../scripts/validate-prometheus-metrics.ps1` — validates local ingestion-service metrics collection through `Prometheus`
 - `../../scripts/validate-grafana-datasource.ps1` — validates the `Grafana` `Prometheus` datasource is healthy and returns query data
 - `../../scripts/validate-kafka-dlq-topic.ps1` — validates the `telemetry.events.dlq` topic exists, is partitioned/replicated correctly, and follows the DLQ naming convention
+- `../../scripts/validate-distributed-tracing.ps1` — generates a request and validates the tracing flow across services through `Jaeger`
 
 ### Usage
 
@@ -204,6 +205,34 @@ To verify traces end to end:
 1. Start the local platform (`docker compose up -d`) and confirm the `pulsestream-jaeger` container is running.
 2. Start `ingestion-service` (and optionally `telemetry-processor`) from the repository root.
 3. Send traffic to the service, then open `http://localhost:16686`, select the `ingestion-service` service, and search for traces.
+
+#### Tracing Validation
+
+After starting the platform and both services, confirm the tracing flow across
+components by running the validation script from the repository root:
+
+```powershell
+.\scripts\validate-distributed-tracing.ps1
+```
+
+The script generates a telemetry request and, using the `Jaeger` query API,
+checks that:
+
+- `ingestion-service` reports `UP` and the `Jaeger` query API is reachable
+- the generated request produces a visible ingestion trace (located by its
+  `pulsestream.event.id` tag) that contains no missing spans — the HTTP server
+  span, the `TelemetryController.ingestTelemetry` application span, and the
+  `Kafka` producer span
+- `telemetry-processor` registers with `Jaeger` and emits its own consumer trace
+  after consuming the published event
+
+Because trace context is currently propagated over HTTP only, the
+`telemetry-processor` spans form a separate trace rather than joining the
+ingestion trace across the `Kafka` boundary; the script validates each service's
+spans independently. Override the defaults with `-IngestionBaseUrl` and
+`-JaegerBaseUrl` if you changed the local ports. You can also verify manually in
+the `Jaeger` UI at `http://localhost:16686` by searching for both the
+`ingestion-service` and `telemetry-processor` services.
 
 ### Notes
 
