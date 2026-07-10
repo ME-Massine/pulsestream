@@ -146,6 +146,18 @@ services:
     networks:
       - pulsestream-net
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: pulsestream-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"        # Jaeger UI
+      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"   # OTLP gRPC receiver
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"   # OTLP HTTP receiver
+    networks:
+      - pulsestream-net
+
   grafana:
     image: grafana/grafana:11.1.4
     container_name: pulsestream-grafana

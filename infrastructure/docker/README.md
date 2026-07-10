@@ -12,6 +12,7 @@ The local platform includes:
 - `Redis`
 - `Prometheus`
 - `Grafana`
+- `Jaeger`
 
 ### Files
 
@@ -68,6 +69,9 @@ docker compose down -v
 | Redis      | 6379 |
 | Prometheus | 9090 |
 | Grafana    | 3000 |
+| Jaeger UI  | 16686 |
+| Jaeger OTLP gRPC | 4317 |
+| Jaeger OTLP HTTP | 4318 |
 
 ### Kafka Broker Configuration
 
@@ -148,6 +152,27 @@ Default local credentials are:
 
 The `Prometheus` datasource is provisioned automatically as the default datasource and points to `http://prometheus:9090` on the internal Docker network.
 
+### Jaeger
+
+`Jaeger` is the local distributed tracing backend. The all-in-one container runs the collector, storage, and query UI in a single process, with the OTLP receiver enabled via `COLLECTOR_OTLP_ENABLED`.
+
+The `Jaeger` UI is available at `http://localhost:16686` by default, or at the port configured by `JAEGER_UI_PORT`.
+
+Both services export traces over OTLP to `Jaeger`:
+
+| Endpoint | Port | Used by |
+| :------- | :--- | :------ |
+| OTLP gRPC | 4317 | OpenTelemetry exporters (gRPC) |
+| OTLP HTTP | 4318 | OpenTelemetry exporters (HTTP/protobuf) |
+
+`ingestion-service` and `telemetry-processor` are instrumented with the OpenTelemetry Spring Boot starter and default to exporting traces to `http://localhost:4318` (OTLP HTTP). Because the services run on the host rather than in `Docker Compose`, they reach the container through the published host port. Override the target with `PULSESTREAM_OTEL_EXPORTER_OTLP_ENDPOINT`, or set `PULSESTREAM_OTEL_TRACES_EXPORTER=console` to fall back to console export.
+
+To verify traces end to end:
+
+1. Start the local platform (`docker compose up -d`) and confirm the `pulsestream-jaeger` container is running.
+2. Start `ingestion-service` (and optionally `telemetry-processor`) from the repository root.
+3. Send traffic to the service, then open `http://localhost:16686`, select the `ingestion-service` service, and search for traces.
+
 ### Notes
 
 - `Kafka` is exposed on `localhost:9092` for local development.
@@ -155,4 +180,5 @@ The `Prometheus` datasource is provisioned automatically as the default datasour
 - Topics are created by the `kafka-init` one-shot container, which exits after completion.
 - `Prometheus` scrapes `ingestion-service` (`host.docker.internal:8081/actuator/prometheus`) at a 15s interval, in addition to itself. The service runs on the host, not in `Docker Compose`, so `extra_hosts` maps `host.docker.internal` to the host gateway.
 - `Grafana` uses the credentials defined in `.env`, persists data in the `grafana_data` volume, and provisions `Prometheus` as its default datasource.
+- `Jaeger` runs as an all-in-one container with the OTLP receiver enabled; traces are stored in memory and reset when the container restarts.
 - `Kafka topics` are managed manually or via scripts defined in the project and follow the naming convention `telemetry.events.*`.
