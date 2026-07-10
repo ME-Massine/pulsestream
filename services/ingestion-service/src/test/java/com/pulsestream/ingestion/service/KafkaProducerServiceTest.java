@@ -119,6 +119,56 @@ class KafkaProducerServiceTest {
     }
 
     @Test
+    @DisplayName("should reroute the failed event to the DLQ topic when the raw publish fails")
+    void shouldRerouteFailedEventToDeadLetterQueue() {
+        TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
+        KafkaException kafkaException = new KafkaException("broker unavailable");
+
+        CompletableFuture<SendResult<String, TelemetryEvent>> rawFuture = new CompletableFuture<>();
+        rawFuture.completeExceptionally(kafkaException);
+        CompletableFuture<SendResult<String, TelemetryEvent>> dlqFuture = new CompletableFuture<>();
+        dlqFuture.complete(sendResult());
+
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+                .thenReturn(rawFuture);
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getDlq(), "evt-001", telemetryEvent))
+                .thenReturn(dlqFuture);
+
+        assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
+                .isInstanceOf(TelemetryPublishingException.class)
+                .hasMessage("Failed to publish telemetry event to Kafka")
+                .hasCause(kafkaException);
+
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getDlq(), "evt-001", telemetryEvent);
+    }
+
+    @Test
+    @DisplayName("should not crash when the DLQ reroute also fails")
+    void shouldNotCrashWhenDeadLetterQueueRerouteAlsoFails() {
+        TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
+        KafkaException rawException = new KafkaException("broker unavailable");
+        KafkaException dlqException = new KafkaException("dlq unavailable");
+
+        CompletableFuture<SendResult<String, TelemetryEvent>> rawFuture = new CompletableFuture<>();
+        rawFuture.completeExceptionally(rawException);
+        CompletableFuture<SendResult<String, TelemetryEvent>> dlqFuture = new CompletableFuture<>();
+        dlqFuture.completeExceptionally(dlqException);
+
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+                .thenReturn(rawFuture);
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getDlq(), "evt-001", telemetryEvent))
+                .thenReturn(dlqFuture);
+
+        assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
+                .isInstanceOf(TelemetryPublishingException.class)
+                .hasMessage("Failed to publish telemetry event to Kafka")
+                .hasCause(rawException);
+
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getDlq(), "evt-001", telemetryEvent);
+    }
+
+    @Test
     @DisplayName("should reject blank tenant id when event id is blank")
     void shouldRejectBlankTenantIdWhenEventIdIsBlank() {
         TelemetryEvent telemetryEvent = telemetryEvent(" ", " ");
