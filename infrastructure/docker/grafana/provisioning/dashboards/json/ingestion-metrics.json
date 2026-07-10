@@ -26,18 +26,18 @@
     },
     {
       "id": 2,
-      "title": "Success vs Failure Rate",
+      "title": "Success vs Failure Count",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "fieldConfig": {
-        "defaults": { "unit": "reqps" },
+        "defaults": { "unit": "short" },
         "overrides": []
       },
       "targets": [
         {
-          "expr": "sum(rate(http_server_requests_seconds_count{job=\"ingestion-service\", uri=\"/api/v1/events\"}[1m])) by (outcome)",
-          "legendFormat": "{{outcome}}"
+          "expr": "sum(increase(http_server_requests_seconds_count{job=\"ingestion-service\", uri=\"/api/v1/events\"}[$__range])) by (outcome)",
+          "legendFormat": "{{outcome}} count"
         }
       ]
     },
