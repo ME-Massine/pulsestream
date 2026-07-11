@@ -29,6 +29,8 @@ public class DeadLetterPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(DeadLetterPublisher.class);
 
+    private static final String SOURCE_SERVICE = "telemetry-processor";
+
     private final KafkaTemplate<String, String> dlqKafkaTemplate;
     private final TelemetryProcessorKafkaProperties kafkaProperties;
     private final ObjectMapper objectMapper;
@@ -63,7 +65,8 @@ public class DeadLetterPublisher {
 
         try {
             messageKey = resolveMessageKey(event);
-            DeadLetterEvent deadLetterEvent = new DeadLetterEvent(event, describe(cause), Instant.now(clock));
+            DeadLetterEvent deadLetterEvent =
+                    new DeadLetterEvent(event, describe(cause), SOURCE_SERVICE, Instant.now(clock));
             String dlqValue = renderDeadLetterValue(deadLetterEvent);
 
             dlqKafkaTemplate.send(dlqTopic, messageKey, dlqValue)
@@ -73,7 +76,7 @@ public class DeadLetterPublisher {
                     dlqTopic,
                     messageKey,
                     event.eventId(),
-                    deadLetterEvent.errorReason()
+                    deadLetterEvent.errorMessage()
             );
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();

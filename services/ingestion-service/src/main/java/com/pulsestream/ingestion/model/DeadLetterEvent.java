@@ -8,9 +8,9 @@ import java.time.Instant;
  * Wraps the original event together with the failure metadata needed to triage it later.
  */
 public record DeadLetterEvent(
-        TelemetryEvent originalEvent,
+        TelemetryEvent event,
         String errorMessage,
         String sourceService,
-        @JsonFormat(shape = JsonFormat.Shape.STRING) Instant timestamp
+        @JsonFormat(shape = JsonFormat.Shape.STRING) Instant failedAt
 ) {
 }

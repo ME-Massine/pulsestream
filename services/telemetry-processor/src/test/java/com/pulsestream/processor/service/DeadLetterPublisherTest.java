@@ -1,5 +1,7 @@
 package com.pulsestream.processor.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.model.TelemetryEvent;
@@ -38,6 +40,8 @@ class DeadLetterPublisherTest {
 
     private DeadLetterPublisher deadLetterPublisher;
 
+    private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+
     private static final Instant FIXED_INSTANT = Instant.parse("2026-04-01T09:30:00Z");
 
     @BeforeEach
@@ -45,13 +49,13 @@ class DeadLetterPublisherTest {
         kafkaProperties = new TelemetryProcessorKafkaProperties();
         Clock fixedClock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
         deadLetterPublisher = new DeadLetterPublisher(
-                dlqKafkaTemplate, kafkaProperties, new ObjectMapper().findAndRegisterModules(), fixedClock
+                dlqKafkaTemplate, kafkaProperties, objectMapper, fixedClock
         );
     }
 
     @Test
-    @DisplayName("should publish the failed event to the DLQ topic with error reason and timestamp")
-    void shouldPublishFailedEventToDlqTopicWithMetadata() {
+    @DisplayName("should publish the failed event to the DLQ topic with the shared envelope contract")
+    void shouldPublishFailedEventToDlqTopicWithMetadata() throws JsonProcessingException {
         TelemetryEvent event = telemetryEvent("evt-001", "factory-01");
         RuntimeException cause = new IllegalStateException("normalization exploded");
         CompletableFuture<SendResult<String, String>> future = CompletableFuture.completedFuture(null);
@@ -64,10 +68,16 @@ class DeadLetterPublisherTest {
         ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
         verify(dlqKafkaTemplate).send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), valueCaptor.capture());
 
-        String dlqValue = valueCaptor.getValue();
-        assertThat(dlqValue).contains("evt-001");
-        assertThat(dlqValue).contains("IllegalStateException: normalization exploded");
-        assertThat(dlqValue).contains("2026-04-01T09:30:00Z");
+        // Parse the generated JSON and assert the shared DLQ envelope contract (same field
+        // names as the ingestion-service producer) rather than relying on substring matches,
+        // so a field rename that breaks cross-service consistency fails this test.
+        JsonNode dlqNode = objectMapper.readTree(valueCaptor.getValue());
+        assertThat(dlqNode.hasNonNull("event")).isTrue();
+        assertThat(dlqNode.path("event").path("eventId").asText()).isEqualTo("evt-001");
+        assertThat(dlqNode.path("errorMessage").asText())
+                .isEqualTo("IllegalStateException: normalization exploded");
+        assertThat(dlqNode.path("sourceService").asText()).isEqualTo("telemetry-processor");
+        assertThat(dlqNode.path("failedAt").asText()).isEqualTo("2026-04-01T09:30:00Z");
     }
 
     @Test

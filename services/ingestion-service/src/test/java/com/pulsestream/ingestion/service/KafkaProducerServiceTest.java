@@ -1,6 +1,7 @@
 package com.pulsestream.ingestion.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pulsestream.ingestion.config.PulsestreamKafkaProperties;
 import com.pulsestream.ingestion.exception.TelemetryPublishingException;
@@ -139,7 +140,7 @@ class KafkaProducerServiceTest {
 
     @Test
     @DisplayName("should reroute the failed event to the DLQ topic wrapped with error metadata")
-    void shouldRerouteFailedEventToDeadLetterQueueWithMetadata() {
+    void shouldRerouteFailedEventToDeadLetterQueueWithMetadata() throws JsonProcessingException {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         KafkaException kafkaException = new KafkaException("broker unavailable");
 
@@ -165,11 +166,16 @@ class KafkaProducerServiceTest {
                 .send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), dlqValueCaptor.capture());
 
         String dlqValue = dlqValueCaptor.getValue();
-        // The original payload is preserved, wrapped with error metadata.
-        assertThat(dlqValue).contains("evt-001").contains("sensor-1042");
-        assertThat(dlqValue).contains("KafkaException: broker unavailable");
-        assertThat(dlqValue).contains("ingestion-service");
-        assertThat(dlqValue).contains("2026-04-01T09:30:00Z");
+        // Parse the generated JSON and assert the shared DLQ envelope contract rather than
+        // relying on substring matches, so a field rename that breaks the cross-service
+        // structure fails this test.
+        JsonNode dlqNode = objectMapper.readTree(dlqValue);
+        assertThat(dlqNode.hasNonNull("event")).isTrue();
+        assertThat(dlqNode.path("event").path("eventId").asText()).isEqualTo("evt-001");
+        assertThat(dlqNode.path("event").path("payload").path("deviceId").asText()).isEqualTo("sensor-1042");
+        assertThat(dlqNode.path("errorMessage").asText()).isEqualTo("KafkaException: broker unavailable");
+        assertThat(dlqNode.path("sourceService").asText()).isEqualTo("ingestion-service");
+        assertThat(dlqNode.path("failedAt").asText()).isEqualTo("2026-04-01T09:30:00Z");
     }
 
     @Test

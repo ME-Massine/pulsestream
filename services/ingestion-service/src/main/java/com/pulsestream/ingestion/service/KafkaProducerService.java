@@ -132,7 +132,7 @@ public class KafkaProducerService {
         } catch (Exception ex) {
             log.warn(
                     "Falling back to non-JSON DLQ representation for eventId={} due to serialization failure",
-                    deadLetterEvent.originalEvent().eventId(),
+                    deadLetterEvent.event().eventId(),
                     ex
             );
             return String.valueOf(deadLetterEvent);
