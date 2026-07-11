@@ -1,16 +1,20 @@
 package com.pulsestream.ingestion.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pulsestream.ingestion.config.PulsestreamKafkaProperties;
 import com.pulsestream.ingestion.exception.TelemetryPublishingException;
+import com.pulsestream.ingestion.model.DeadLetterEvent;
 import com.pulsestream.ingestion.model.TelemetryEvent;
-import com.pulsestream.ingestion.serialization.TelemetryEventSerializer;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
@@ -21,24 +25,40 @@ public class KafkaProducerService {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaProducerService.class);
 
+    private static final String SOURCE_SERVICE = "ingestion-service";
+
     private final KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate;
 
     private final KafkaTemplate<String, String> dlqKafkaTemplate;
 
-    private final TelemetryEventSerializer telemetryEventSerializer;
+    private final ObjectMapper objectMapper;
 
     private final PulsestreamKafkaProperties kafkaProperties;
 
+    private final Clock clock;
+
+    @Autowired
     public KafkaProducerService(
             KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate,
             KafkaTemplate<String, String> dlqKafkaTemplate,
-            TelemetryEventSerializer telemetryEventSerializer,
+            ObjectMapper objectMapper,
             PulsestreamKafkaProperties kafkaProperties
+    ) {
+        this(telemetryKafkaTemplate, dlqKafkaTemplate, objectMapper, kafkaProperties, Clock.systemUTC());
+    }
+
+    KafkaProducerService(
+            KafkaTemplate<String, TelemetryEvent> telemetryKafkaTemplate,
+            KafkaTemplate<String, String> dlqKafkaTemplate,
+            ObjectMapper objectMapper,
+            PulsestreamKafkaProperties kafkaProperties,
+            Clock clock
     ) {
         this.telemetryKafkaTemplate = telemetryKafkaTemplate;
         this.dlqKafkaTemplate = dlqKafkaTemplate;
-        this.telemetryEventSerializer = telemetryEventSerializer;
+        this.objectMapper = objectMapper;
         this.kafkaProperties = kafkaProperties;
+        this.clock = clock;
     }
 
     public void publishTelemetryEvent(TelemetryEvent telemetryEvent) {
@@ -68,11 +88,17 @@ public class KafkaProducerService {
 
     private void routeToDeadLetterQueue(TelemetryEvent telemetryEvent, String messageKey, Throwable cause) {
         String dlqTopic = kafkaProperties.getTopics().getDlq();
-        // Render the DLQ value up-front as a String using a serializer that is
-        // independent of the raw-topic JSON path. Even when the raw publish failed
-        // because the event could not be serialized, the original payload is still
-        // preserved here (falling back to the record's text form if needed).
-        String dlqValue = renderDeadLetterValue(telemetryEvent);
+        DeadLetterEvent deadLetterEvent = new DeadLetterEvent(
+                telemetryEvent,
+                describeError(cause),
+                SOURCE_SERVICE,
+                Instant.now(clock)
+        );
+        // Render the DLQ value up-front as a String using logic that is independent of the
+        // raw-topic JSON path. Even when the raw publish failed because the event could not
+        // be serialized, the original payload and failure metadata are still preserved here
+        // (falling back to the envelope's text form if needed).
+        String dlqValue = renderDeadLetterValue(deadLetterEvent);
 
         try {
             sendBlocking(dlqKafkaTemplate, dlqTopic, messageKey, dlqValue);
@@ -81,7 +107,7 @@ public class KafkaProducerService {
                     dlqTopic,
                     messageKey,
                     telemetryEvent.eventId(),
-                    cause != null ? cause.toString() : "unknown"
+                    deadLetterEvent.errorMessage()
             );
         } catch (KafkaSendFailure dlqFailure) {
             log.error(
@@ -97,20 +123,29 @@ public class KafkaProducerService {
     /**
      * Produces the string value published to the DLQ. Preferring JSON keeps the DLQ
      * record consistent with the raw topic, but because a raw-topic serialization
-     * failure would recur here, any serialization error falls back to the record's
-     * text representation so the original payload is never silently dropped.
+     * failure would recur here, any serialization error falls back to the envelope's
+     * text representation so the original payload and metadata are never silently dropped.
      */
-    private String renderDeadLetterValue(TelemetryEvent telemetryEvent) {
+    private String renderDeadLetterValue(DeadLetterEvent deadLetterEvent) {
         try {
-            return telemetryEventSerializer.serialize(telemetryEvent);
-        } catch (RuntimeException ex) {
+            return objectMapper.writeValueAsString(deadLetterEvent);
+        } catch (Exception ex) {
             log.warn(
                     "Falling back to non-JSON DLQ representation for eventId={} due to serialization failure",
-                    telemetryEvent.eventId(),
+                    deadLetterEvent.originalEvent().eventId(),
                     ex
             );
-            return String.valueOf(telemetryEvent);
+            return String.valueOf(deadLetterEvent);
         }
+    }
+
+    private String describeError(Throwable cause) {
+        if (cause == null) {
+            return "Unknown publishing failure";
+        }
+        return StringUtils.hasText(cause.getMessage())
+                ? cause.getClass().getSimpleName() + ": " + cause.getMessage()
+                : cause.getClass().getSimpleName();
     }
 
     private <V> void sendBlocking(

@@ -1,20 +1,20 @@
 package com.pulsestream.ingestion.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pulsestream.ingestion.config.PulsestreamKafkaProperties;
 import com.pulsestream.ingestion.exception.TelemetryPublishingException;
 import com.pulsestream.ingestion.model.TelemetryEvent;
 import com.pulsestream.ingestion.model.TelemetryPayload;
-import com.pulsestream.ingestion.serialization.TelemetryEventSerializer;
-import com.pulsestream.ingestion.serialization.TelemetrySerializationException;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
 
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.errors.SerializationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -24,6 +24,7 @@ import org.springframework.kafka.support.SendResult;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -32,19 +33,23 @@ import static org.mockito.Mockito.when;
 
 class KafkaProducerServiceTest {
 
+    private static final Instant FIXED_INSTANT = Instant.parse("2026-04-01T09:30:00Z");
+
     @SuppressWarnings("unchecked")
     private final KafkaTemplate<String, TelemetryEvent> kafkaTemplate = mock(KafkaTemplate.class);
 
     @SuppressWarnings("unchecked")
     private final KafkaTemplate<String, String> dlqKafkaTemplate = mock(KafkaTemplate.class);
 
-    private final TelemetryEventSerializer telemetryEventSerializer =
-            new TelemetryEventSerializer(new ObjectMapper().findAndRegisterModules());
+    private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     private final PulsestreamKafkaProperties kafkaProperties = new PulsestreamKafkaProperties();
 
-    private final KafkaProducerService kafkaProducerService =
-            new KafkaProducerService(kafkaTemplate, dlqKafkaTemplate, telemetryEventSerializer, kafkaProperties);
+    private final Clock fixedClock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
+
+    private final KafkaProducerService kafkaProducerService = new KafkaProducerService(
+            kafkaTemplate, dlqKafkaTemplate, objectMapper, kafkaProperties, fixedClock
+    );
 
     @Test
     @DisplayName("should publish telemetry events to the configured raw topic")
@@ -133,8 +138,8 @@ class KafkaProducerServiceTest {
     }
 
     @Test
-    @DisplayName("should reroute the failed event to the DLQ topic when the raw publish fails")
-    void shouldRerouteFailedEventToDeadLetterQueue() {
+    @DisplayName("should reroute the failed event to the DLQ topic wrapped with error metadata")
+    void shouldRerouteFailedEventToDeadLetterQueueWithMetadata() {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         KafkaException kafkaException = new KafkaException("broker unavailable");
 
@@ -158,44 +163,52 @@ class KafkaProducerServiceTest {
         ArgumentCaptor<String> dlqValueCaptor = ArgumentCaptor.forClass(String.class);
         verify(dlqKafkaTemplate)
                 .send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), dlqValueCaptor.capture());
-        // The original payload is preserved in the DLQ record.
-        assertThat(dlqValueCaptor.getValue()).contains("evt-001").contains("sensor-1042");
+
+        String dlqValue = dlqValueCaptor.getValue();
+        // The original payload is preserved, wrapped with error metadata.
+        assertThat(dlqValue).contains("evt-001").contains("sensor-1042");
+        assertThat(dlqValue).contains("KafkaException: broker unavailable");
+        assertThat(dlqValue).contains("ingestion-service");
+        assertThat(dlqValue).contains("2026-04-01T09:30:00Z");
     }
 
     @Test
-    @DisplayName("should preserve the payload in the DLQ even when the event cannot be serialized")
-    void shouldRerouteToDeadLetterQueueWhenRawSerializationFails() {
+    @DisplayName("should preserve the payload and metadata in the DLQ even when the envelope cannot be serialized")
+    void shouldRerouteToDeadLetterQueueWhenEnvelopeSerializationFails() throws JsonProcessingException {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
+        KafkaException kafkaException = new KafkaException("broker unavailable");
 
-        // The raw publish fails because the value cannot be serialized, and the shared
-        // JSON serializer would fail identically when rendering the DLQ value.
-        SerializationException serializationException = new SerializationException("cannot serialize event");
-        TelemetryEventSerializer failingSerializer = mock(TelemetryEventSerializer.class);
-        when(failingSerializer.serialize(telemetryEvent))
-                .thenThrow(new TelemetrySerializationException("boom", serializationException));
+        ObjectMapper failingObjectMapper = mock(ObjectMapper.class);
+        when(failingObjectMapper.writeValueAsString(any()))
+                .thenThrow(new JsonProcessingException("boom") {});
 
-        KafkaProducerService serviceWithFailingSerializer =
-                new KafkaProducerService(kafkaTemplate, dlqKafkaTemplate, failingSerializer, kafkaProperties);
+        KafkaProducerService serviceWithFailingObjectMapper = new KafkaProducerService(
+                kafkaTemplate, dlqKafkaTemplate, failingObjectMapper, kafkaProperties, fixedClock
+        );
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
-                .thenThrow(serializationException);
-
+        CompletableFuture<SendResult<String, TelemetryEvent>> rawFuture = new CompletableFuture<>();
+        rawFuture.completeExceptionally(kafkaException);
         CompletableFuture<SendResult<String, String>> dlqFuture = new CompletableFuture<>();
         dlqFuture.complete(dlqSendResult());
+
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+                .thenReturn(rawFuture);
         when(dlqKafkaTemplate.send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), anyString()))
                 .thenReturn(dlqFuture);
 
-        assertThatThrownBy(() -> serviceWithFailingSerializer.publishTelemetryEvent(telemetryEvent))
+        assertThatThrownBy(() -> serviceWithFailingObjectMapper.publishTelemetryEvent(telemetryEvent))
                 .isInstanceOf(TelemetryPublishingException.class)
                 .hasMessage("Failed to publish telemetry event to Kafka")
-                .hasCause(serializationException);
+                .hasCause(kafkaException);
 
         // Despite the serialization failure, the DLQ receives a fallback representation
-        // that still carries the original event id and payload.
+        // that still carries the original event id, payload, and failure metadata.
         ArgumentCaptor<String> dlqValueCaptor = ArgumentCaptor.forClass(String.class);
         verify(dlqKafkaTemplate)
                 .send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), dlqValueCaptor.capture());
-        assertThat(dlqValueCaptor.getValue()).contains("evt-001").contains("sensor-1042");
+        String dlqValue = dlqValueCaptor.getValue();
+        assertThat(dlqValue).contains("evt-001").contains("sensor-1042");
+        assertThat(dlqValue).contains("ingestion-service");
     }
 
     @Test
