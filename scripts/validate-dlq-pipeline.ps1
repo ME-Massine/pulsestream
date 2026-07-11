@@ -1,0 +1,144 @@
+[CmdletBinding()]
+param(
+    [string] $KafkaContainer = "pulsestream-kafka",
+    [string] $BootstrapServer = "localhost:9092",
+    [string] $RawTopic = "telemetry.events.raw",
+    [string] $DlqTopic = "telemetry.events.dlq",
+    [string] $ProcessorBaseUrl = "http://localhost:8082",
+    [string] $ProcessorSourceService = "telemetry-processor",
+    # How long each DLQ read waits (ms) for the console consumer to drain the
+    # topic before it times out and returns. The consumer prints a benign
+    # TimeoutException to stderr when idle for this long; that is expected.
+    [int] $ConsumeTimeoutMs = 8000,
+    [int] $TimeoutSeconds = 60
+)
+
+$ErrorActionPreference = "Stop"
+
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
+
+# A telemetry event that passes JSON deserialization into the processor's
+# TelemetryEvent record but fails processing: the payload is null, so the
+# normalization step's non-null assertion throws and the consumer routes the
+# event to the DLQ. This is the deterministic way to exercise the processing
+# failure path end to end, because valid events accepted by ingestion cannot
+# reach the processor with a null payload.
+function New-PoisonEventJson {
+    param([Parameter(Mandatory)] [string] $EventId)
+
+    @{
+        eventId   = $EventId
+        tenantId  = "dlq-validation"
+        eventType = "telemetry.reading"
+        timestamp = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        source    = "validate-dlq-pipeline"
+        version   = "1.0"
+        payload   = $null
+    } | ConvertTo-Json -Compress -Depth 5
+}
+
+function Publish-RawEvent {
+    param([Parameter(Mandatory)] [string] $Json)
+
+    # kafka-console-producer reads one message per stdin line, so the value must
+    # be single-line (compact) JSON. Piping the string in closes stdin after the
+    # line, which produces exactly one record.
+    $Json | docker exec -i $KafkaContainer kafka-console-producer `
+        --bootstrap-server $BootstrapServer `
+        --topic $RawTopic 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "kafka-console-producer failed to publish to $RawTopic (exit $LASTEXITCODE)."
+    }
+}
+
+function Read-DlqRecordForEvent {
+    param([Parameter(Mandatory)] [string] $EventId)
+
+    # Read the DLQ from the beginning and stop after an idle window. stderr
+    # carries the expected idle TimeoutException, so it is discarded; only the
+    # message values on stdout are inspected.
+    $output = docker exec $KafkaContainer kafka-console-consumer `
+        --bootstrap-server $BootstrapServer `
+        --topic $DlqTopic `
+        --from-beginning `
+        --timeout-ms $ConsumeTimeoutMs 2>$null
+
+    foreach ($line in @($output)) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $record = $line | ConvertFrom-Json
+        } catch {
+            # Non-JSON lines are not DLQ records we care about.
+            continue
+        }
+
+        if ($record.event.eventId -eq $EventId) {
+            return $record
+        }
+    }
+
+    return $null
+}
+
+Write-Host "Validating DLQ pipeline end to end..."
+
+# 1. The telemetry-processor must be running and consuming before we publish the
+#    poison event, otherwise nothing routes it to the DLQ.
+Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
+    -FailureMessage "telemetry-processor health endpoint did not report UP within $TimeoutSeconds seconds." `
+    -Operation {
+        $result = Invoke-JsonGet "$ProcessorBaseUrl/actuator/health"
+        Confirm-Condition `
+            -Condition ($result.status -eq "UP") `
+            -SuccessMessage "telemetry-processor health endpoint is UP" `
+            -FailureMessage "telemetry-processor health endpoint did not report UP"
+    }
+
+# 2. Publish a poison event to the raw topic. The unique event id lets us locate
+#    the exact DLQ record it produces.
+$eventId = [Guid]::NewGuid().ToString()
+Publish-RawEvent -Json (New-PoisonEventJson -EventId $eventId)
+Write-Host "[ok] Published poison telemetry event to '$RawTopic' (eventId: $eventId)"
+
+# 3. Acceptance criterion: the failed event appears in the DLQ topic. Retry
+#    because the processor consumes and reroutes asynchronously.
+$dlqRecord = Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
+    -FailureMessage "No DLQ record for eventId $eventId appeared in '$DlqTopic' within $TimeoutSeconds seconds." `
+    -Operation {
+        $record = Read-DlqRecordForEvent -EventId $eventId
+        Confirm-Condition `
+            -Condition ($null -ne $record) `
+            -SuccessMessage "Failed event is present in DLQ topic '$DlqTopic' for eventId $eventId" `
+            -FailureMessage "Failed event is not yet present in DLQ topic '$DlqTopic' for eventId $eventId"
+
+        $record
+    }
+
+# 4. Acceptance criterion: the routing metadata confirms the processor rerouted
+#    the event. The DLQ envelope records which producer emitted it and why, which
+#    is the machine-readable counterpart to the processor's routing log line.
+Confirm-Condition -Permanent `
+    -Condition ($dlqRecord.sourceService -eq $ProcessorSourceService) `
+    -SuccessMessage "DLQ record was routed by '$ProcessorSourceService'" `
+    -FailureMessage "DLQ record sourceService was '$($dlqRecord.sourceService)', expected '$ProcessorSourceService'"
+
+Confirm-Condition -Permanent `
+    -Condition ([bool]$dlqRecord.errorMessage) `
+    -SuccessMessage "DLQ record carries a failure reason: $($dlqRecord.errorMessage)" `
+    -FailureMessage "DLQ record is missing the errorMessage failure reason"
+
+# 5. Acceptance criterion: no system crash. The processor must still be healthy
+#    after handling the failed event.
+$health = Invoke-JsonGet "$ProcessorBaseUrl/actuator/health"
+Confirm-Condition -Permanent `
+    -Condition ($health.status -eq "UP") `
+    -SuccessMessage "telemetry-processor is still UP after routing the failed event" `
+    -FailureMessage "telemetry-processor is no longer UP after routing the failed event (status: $($health.status))"
+
+Write-Host "[ok] DLQ pipeline validation completed."

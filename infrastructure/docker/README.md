@@ -26,6 +26,7 @@ The local platform includes:
 - `../../scripts/validate-prometheus-metrics.ps1` — validates local ingestion-service metrics collection through `Prometheus`
 - `../../scripts/validate-grafana-datasource.ps1` — validates the `Grafana` `Prometheus` datasource is healthy and returns query data
 - `../../scripts/validate-kafka-dlq-topic.ps1` — validates the `telemetry.events.dlq` topic exists, is partitioned/replicated correctly, and follows the DLQ naming convention
+- `../../scripts/validate-dlq-pipeline.ps1` — publishes a poison event and validates it is rerouted to `telemetry.events.dlq` end to end without crashing the processor
 - `../../scripts/validate-distributed-tracing.ps1` — generates a request and validates the tracing flow across services through `Jaeger`
 
 ### Usage
@@ -122,6 +123,25 @@ The script runs `kafka-topics --describe` against the running broker and checks 
 - the `telemetry.events.dlq` topic is visible via the Kafka CLI
 - it has 1 partition and a replication factor of 1
 - its name follows the `<domain>.<entity>.dlq` naming convention from [`docs/architecture/topics.md`](../../docs/architecture/topics.md)
+
+#### DLQ Pipeline Validation
+
+The topic check above confirms the DLQ *exists*; this flow confirms the DLQ is actually *fed* when processing fails. After starting the platform and the `telemetry-processor`, run the validation script from the repository root:
+
+```powershell
+.\scripts\validate-dlq-pipeline.ps1
+```
+
+The script publishes a poison event to `telemetry.events.raw` — valid JSON that deserializes into the processor's event type but carries a `null` payload, so normalization fails and the consumer reroutes it. Using the `Kafka` CLI against the running broker, it then checks that:
+
+- `telemetry-processor` reports `UP` before the event is published (so it is consuming)
+- the failed event appears in `telemetry.events.dlq`, located by its unique `eventId`
+- the DLQ record's routing metadata confirms the reroute: `sourceService` is `telemetry-processor` and a non-empty `errorMessage` captures the failure reason
+- `telemetry-processor` is still `UP` afterwards, i.e. the failure did not crash it
+
+Override the defaults with `-KafkaContainer`, `-BootstrapServer`, and `-ProcessorBaseUrl` if you changed the local container name or ports.
+
+> The poison event exercises the **processor** DLQ path, which is the path that deposits records into the topic in a running system. The `ingestion-service` DLQ path only fires when the raw-topic publish itself fails (e.g. the broker is down); in that state the DLQ publish would fail too, so it cannot be validated end to end against a healthy broker. Invalid events sent to the ingestion API are rejected with `400` by request validation *before* any publish and never reach the DLQ.
 
 ### Prometheus Metrics Validation
 
