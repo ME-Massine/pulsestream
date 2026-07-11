@@ -4,6 +4,7 @@ import com.pulsestream.processor.model.NormalizedTelemetryEvent;
 import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.service.AnomalyProcessingService;
+import com.pulsestream.processor.service.DeadLetterPublisher;
 import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import com.pulsestream.processor.service.TelemetryProcessingService;
@@ -22,17 +23,20 @@ public class TelemetryEventConsumer {
     private final TelemetryAnomalyDetectionService anomalyDetectionService;
     private final AnomalyProcessingService anomalyProcessingService;
     private final TelemetryProcessingService processingService;
+    private final DeadLetterPublisher deadLetterPublisher;
 
     public TelemetryEventConsumer(
             TelemetryNormalizationService normalizationService,
             TelemetryAnomalyDetectionService anomalyDetectionService,
             AnomalyProcessingService anomalyProcessingService,
-            TelemetryProcessingService processingService
+            TelemetryProcessingService processingService,
+            DeadLetterPublisher deadLetterPublisher
     ) {
         this.normalizationService = normalizationService;
         this.anomalyDetectionService = anomalyDetectionService;
         this.anomalyProcessingService = anomalyProcessingService;
         this.processingService = processingService;
+        this.deadLetterPublisher = deadLetterPublisher;
     }
 
     @KafkaListener(
@@ -43,6 +47,20 @@ public class TelemetryEventConsumer {
     public void consumeTelemetryEvent(TelemetryEvent telemetryEvent) {
         Assert.notNull(telemetryEvent, "telemetryEvent must not be null");
 
+        try {
+            processTelemetryEvent(telemetryEvent);
+        } catch (RuntimeException ex) {
+            log.error(
+                    "Failed to process telemetry event eventId={} tenantId={}; routing to DLQ",
+                    telemetryEvent.eventId(),
+                    telemetryEvent.tenantId(),
+                    ex
+            );
+            deadLetterPublisher.publish(telemetryEvent, ex);
+        }
+    }
+
+    private void processTelemetryEvent(TelemetryEvent telemetryEvent) {
         NormalizedTelemetryEvent normalizedEvent =
                 normalizationService.normalize(telemetryEvent);
 
