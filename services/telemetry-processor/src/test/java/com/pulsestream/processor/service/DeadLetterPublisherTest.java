@@ -100,6 +100,21 @@ class DeadLetterPublisherTest {
         verify(dlqKafkaTemplate).send(eq(kafkaProperties.getTopics().getDlq()), eq("factory-01"), anyString());
     }
 
+    @Test
+    @DisplayName("should not crash and should use a null key when both event id and tenant id are blank")
+    void shouldNotCrashWhenEventIdAndTenantIdAreBlank() {
+        TelemetryEvent event = telemetryEvent(" ", " ");
+        RuntimeException cause = new IllegalStateException("boom");
+        CompletableFuture<SendResult<String, String>> future = CompletableFuture.completedFuture(null);
+
+        when(dlqKafkaTemplate.send(eq(kafkaProperties.getTopics().getDlq()), eq(null), anyString()))
+                .thenReturn(future);
+
+        assertThatCode(() -> deadLetterPublisher.publish(event, cause)).doesNotThrowAnyException();
+
+        verify(dlqKafkaTemplate).send(eq(kafkaProperties.getTopics().getDlq()), eq(null), anyString());
+    }
+
     private TelemetryEvent telemetryEvent(String eventId, String tenantId) {
         return new TelemetryEvent(
                 eventId,

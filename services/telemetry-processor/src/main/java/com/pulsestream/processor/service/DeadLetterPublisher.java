@@ -59,11 +59,13 @@ public class DeadLetterPublisher {
         Assert.notNull(event, "event must not be null");
 
         String dlqTopic = kafkaProperties.getTopics().getDlq();
-        String messageKey = resolveMessageKey(event);
-        DeadLetterEvent deadLetterEvent = new DeadLetterEvent(event, describe(cause), Instant.now(clock));
-        String dlqValue = renderDeadLetterValue(deadLetterEvent);
+        String messageKey = null;
 
         try {
+            messageKey = resolveMessageKey(event);
+            DeadLetterEvent deadLetterEvent = new DeadLetterEvent(event, describe(cause), Instant.now(clock));
+            String dlqValue = renderDeadLetterValue(deadLetterEvent);
+
             dlqKafkaTemplate.send(dlqTopic, messageKey, dlqValue)
                     .get(publishTimeoutMillis(), TimeUnit.MILLISECONDS);
             log.warn(
@@ -110,9 +112,11 @@ public class DeadLetterPublisher {
             return event.eventId().trim();
         }
 
-        Assert.hasText(event.tenantId(), "event must contain a non-blank tenantId when eventId is blank");
+        if (StringUtils.hasText(event.tenantId())) {
+            return event.tenantId().trim();
+        }
 
-        return event.tenantId().trim();
+        return null;
     }
 
     private long publishTimeoutMillis() {
