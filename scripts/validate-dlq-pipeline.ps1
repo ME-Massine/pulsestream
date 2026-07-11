@@ -42,13 +42,15 @@ function Publish-RawEvent {
 
     # kafka-console-producer reads one message per stdin line, so the value must
     # be single-line (compact) JSON. Piping the string in closes stdin after the
-    # line, which produces exactly one record.
-    $Json | docker exec -i $KafkaContainer kafka-console-producer `
+    # line, which produces exactly one record. stderr is captured (not discarded)
+    # so a publish failure surfaces the broker error in the thrown message.
+    $producerOutput = $Json | docker exec -i $KafkaContainer kafka-console-producer `
         --bootstrap-server $BootstrapServer `
-        --topic $RawTopic 2>&1 | Out-Null
+        --topic $RawTopic 2>&1
 
     if ($LASTEXITCODE -ne 0) {
-        throw "kafka-console-producer failed to publish to $RawTopic (exit $LASTEXITCODE)."
+        $detail = (@($producerOutput) -join [Environment]::NewLine).Trim()
+        throw "kafka-console-producer failed to publish to $RawTopic (exit $LASTEXITCODE).$(if ($detail) { " $detail" })"
     }
 }
 
@@ -82,6 +84,21 @@ function Read-DlqRecordForEvent {
     }
 
     return $null
+}
+
+function Test-ProcessorRoutingLog {
+    param([Parameter(Mandatory)] [string] $EventId)
+
+    # The processor emits a WARN routing log line the moment it reroutes a failed
+    # event: "Routed failed telemetry event to DLQ ... eventId=<id> reason=...".
+    # It runs on the host, so its logs are not reachable via docker; instead the
+    # `logfile` actuator endpoint serves the log file over HTTP. We match the
+    # routing message and the specific eventId on the same line so the assertion
+    # is scoped to the event this run produced.
+    $logContent = Invoke-TextGet "$ProcessorBaseUrl/actuator/logfile"
+
+    $pattern = "Routed failed telemetry event to DLQ.*eventId=$([regex]::Escape($EventId))"
+    return [bool]([regex]::IsMatch($logContent, $pattern))
 }
 
 Write-Host "Validating DLQ pipeline end to end..."
@@ -133,7 +150,21 @@ Confirm-Condition -Permanent `
     -SuccessMessage "DLQ record carries a failure reason: $($dlqRecord.errorMessage)" `
     -FailureMessage "DLQ record is missing the errorMessage failure reason"
 
-# 5. Acceptance criterion: no system crash. The processor must still be healthy
+# 5. Acceptance criterion: logs confirm routing. The processor must have logged
+#    its successful DLQ-routing message for this exact event. Retry because the
+#    log write and the actuator logfile read are independent of the DLQ topic
+#    read above and may lag slightly behind it.
+Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
+    -FailureMessage "No routing log line for eventId $eventId was found in the telemetry-processor logfile within $TimeoutSeconds seconds." `
+    -Operation {
+        Confirm-Condition `
+            -Condition (Test-ProcessorRoutingLog -EventId $eventId) `
+            -SuccessMessage "telemetry-processor logs confirm the event was routed to the DLQ (eventId $eventId)" `
+            -FailureMessage "telemetry-processor logs do not yet confirm routing for eventId $eventId"
+    }
+
+# 6. Acceptance criterion: no system crash. The processor must still be healthy
 #    after handling the failed event.
 $health = Invoke-JsonGet "$ProcessorBaseUrl/actuator/health"
 Confirm-Condition -Permanent `

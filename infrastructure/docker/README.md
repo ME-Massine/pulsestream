@@ -137,7 +137,10 @@ The script publishes a poison event to `telemetry.events.raw` — valid JSON tha
 - `telemetry-processor` reports `UP` before the event is published (so it is consuming)
 - the failed event appears in `telemetry.events.dlq`, located by its unique `eventId`
 - the DLQ record's routing metadata confirms the reroute: `sourceService` is `telemetry-processor` and a non-empty `errorMessage` captures the failure reason
+- the processor's logs confirm the reroute: the `logfile` actuator endpoint contains the `Routed failed telemetry event to DLQ ... eventId=<id>` line for this event
 - `telemetry-processor` is still `UP` afterwards, i.e. the failure did not crash it
+
+> The log assertion reads `telemetry-processor`'s logs over the `logfile` actuator endpoint, so the service must be configured to write a log file (the default `logging.file.name` in `application.yml` does this). Override the path with `PULSESTREAM_LOG_FILE` if needed.
 
 Override the defaults with `-KafkaContainer`, `-BootstrapServer`, and `-ProcessorBaseUrl` if you changed the local container name or ports.
 

@@ -37,7 +37,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus
+        include: health,info,prometheus,logfile
   endpoint:
     health:
       show-details: never
@@ -46,6 +46,12 @@ management:
       enabled: ${PULSESTREAM_DB_HEALTH_ENABLED:false}
 
 logging:
+  # A log file is configured so the `logfile` actuator endpoint can serve the
+  # processor's logs over HTTP. This lets the DLQ pipeline validation assert
+  # that the routing log line was emitted for a specific event, which the
+  # service otherwise only writes to stdout when run on the host.
+  file:
+    name: ${PULSESTREAM_LOG_FILE:logs/telemetry-processor.log}
   level:
     root: INFO
     com.pulsestream.processor: INFO
