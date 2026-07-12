@@ -3,6 +3,7 @@ package com.pulsestream.processor.config;
 import java.util.HashMap;
 import java.util.Map;
 
+import com.pulsestream.processor.model.DeadLetterEvent;
 import com.pulsestream.processor.model.TelemetryEvent;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.springframework.context.annotation.Bean;
@@ -43,6 +44,41 @@ public class KafkaConsumerConfiguration {
                 new ConcurrentKafkaListenerContainerFactory<>();
 
         factory.setConsumerFactory(telemetryConsumerFactory);
+        factory.setConcurrency(kafkaProperties.getConsumer().getConcurrency());
+
+        return factory;
+    }
+
+    @Bean
+    public ConsumerFactory<String, DeadLetterEvent> dlqConsumerFactory(
+            TelemetryProcessorKafkaProperties kafkaProperties
+    ) {
+        Map<String, Object> consumerProperties = new HashMap<>();
+
+        // Shared consumer properties are applied first so the DLQ-specific overrides below
+        // (group id, deserialization target type) always win, even if the shared map also
+        // configures a default type for the raw-topic consumer.
+        consumerProperties.putAll(kafkaProperties.getConsumer().getProperties());
+        consumerProperties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaProperties.getBootstrapServers());
+        consumerProperties.put(ConsumerConfig.GROUP_ID_CONFIG, kafkaProperties.getConsumer().getDlqGroupId());
+        consumerProperties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, kafkaProperties.getConsumer().getKeyDeserializer());
+        consumerProperties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, kafkaProperties.getConsumer().getValueDeserializer());
+        consumerProperties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, kafkaProperties.getConsumer().getAutoOffsetReset());
+        consumerProperties.put(JsonDeserializer.VALUE_DEFAULT_TYPE, DeadLetterEvent.class.getName());
+        consumerProperties.put(JsonDeserializer.TRUSTED_PACKAGES, DeadLetterEvent.class.getPackageName());
+
+        return new DefaultKafkaConsumerFactory<>(consumerProperties);
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, DeadLetterEvent> dlqKafkaListenerContainerFactory(
+            ConsumerFactory<String, DeadLetterEvent> dlqConsumerFactory,
+            TelemetryProcessorKafkaProperties kafkaProperties
+    ) {
+        ConcurrentKafkaListenerContainerFactory<String, DeadLetterEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+
+        factory.setConsumerFactory(dlqConsumerFactory);
         factory.setConcurrency(kafkaProperties.getConsumer().getConcurrency());
 
         return factory;

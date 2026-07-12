@@ -4,8 +4,8 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -22,14 +22,16 @@ class KafkaConsumerConfigurationTest {
                     "pulsestream.kafka.consumer.concurrency=2",
                     "pulsestream.kafka.consumer.properties.spring.json.trusted.packages=com.pulsestream.processor.dto",
                     "pulsestream.kafka.consumer.properties.spring.json.use.type.headers=false",
-                    "pulsestream.kafka.topics.raw=telemetry.events.raw"
+                    "pulsestream.kafka.topics.raw=telemetry.events.raw",
+                    "pulsestream.kafka.consumer.dlq-group-id=telemetry-processor-dlq-replay",
+                    "pulsestream.kafka.topics.dlq=telemetry.events.dlq"
             );
 
     @Test
     void shouldCreateKafkaConsumerInfrastructureForRawTelemetryTopic() {
         contextRunner.run(context -> {
-            assertThat(context).hasSingleBean(ConsumerFactory.class);
-            assertThat(context).hasSingleBean(ConcurrentKafkaListenerContainerFactory.class);
+            assertThat(context).hasBean("telemetryConsumerFactory");
+            assertThat(context).hasBean("telemetryKafkaListenerContainerFactory");
 
             TelemetryProcessorKafkaProperties properties =
                     context.getBean(TelemetryProcessorKafkaProperties.class);
@@ -38,12 +40,37 @@ class KafkaConsumerConfigurationTest {
             assertThat(properties.getConsumer().getGroupId()).isEqualTo("telemetry-processor");
             assertThat(properties.getConsumer().getConcurrency()).isEqualTo(2);
 
-            ConsumerFactory<?, ?> consumerFactory = context.getBean(ConsumerFactory.class);
+            ConsumerFactory<?, ?> consumerFactory =
+                    (ConsumerFactory<?, ?>) context.getBean("telemetryConsumerFactory");
 
             assertThat(consumerFactory.getConfigurationProperties())
                     .containsEntry(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
                     .containsEntry(ConsumerConfig.GROUP_ID_CONFIG, "telemetry-processor")
-                    .containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+                    .containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+                    .containsEntry(JsonDeserializer.VALUE_DEFAULT_TYPE, "com.pulsestream.processor.model.TelemetryEvent");
+        });
+    }
+
+    @Test
+    void shouldCreateKafkaConsumerInfrastructureForDlqTopicWithItsOwnGroupAndType() {
+        contextRunner.run(context -> {
+            assertThat(context).hasBean("dlqConsumerFactory");
+            assertThat(context).hasBean("dlqKafkaListenerContainerFactory");
+
+            TelemetryProcessorKafkaProperties properties =
+                    context.getBean(TelemetryProcessorKafkaProperties.class);
+
+            assertThat(properties.getTopics().getDlq()).isEqualTo("telemetry.events.dlq");
+            assertThat(properties.getConsumer().getDlqGroupId()).isEqualTo("telemetry-processor-dlq-replay");
+
+            ConsumerFactory<?, ?> dlqConsumerFactory =
+                    (ConsumerFactory<?, ?>) context.getBean("dlqConsumerFactory");
+
+            assertThat(dlqConsumerFactory.getConfigurationProperties())
+                    .containsEntry(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
+                    .containsEntry(ConsumerConfig.GROUP_ID_CONFIG, "telemetry-processor-dlq-replay")
+                    .containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+                    .containsEntry(JsonDeserializer.VALUE_DEFAULT_TYPE, "com.pulsestream.processor.model.DeadLetterEvent");
         });
     }
 
