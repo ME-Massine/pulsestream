@@ -28,6 +28,8 @@ This document covers **strategy and scope only**. Implementation is tracked sepa
     the DLQ **directly on first failure**; there is no configured processing retry policy on the
     listener container, so a processor-sourced DLQ record means "failed once," not "retries exhausted."
 - See [topics.md](./topics.md) and [event-schema.md](./event-schema.md) for the topic and envelope.
+- Each DLQ record is a `DeadLetterEvent` **wrapper** (nested `event` plus failure metadata), so replay
+  must unwrap the nested `TelemetryEvent` before republishing — see [Replay Flow](#replay-flow).
 - Replay targets specific failed events by `eventId`.
 - Low blast radius — only previously-failed events are affected.
 
@@ -152,10 +154,18 @@ guarantees replay does not *silently* duplicate persisted state via the upsert r
 2. The replay process reads the matching records from the source topic. For a raw-topic replay it first
    snapshots each partition's current end offset and only reads up to that boundary, so records it
    republishes during the run are not re-consumed by the same run (see [Raw topic](#2-raw-topic-telemetryeventsraw)).
-3. Each record keeps its original envelope and `eventId`; replay metadata (`replay`/`replayedAt`/`replaySource`)
+3. The replay process normalizes each record to a raw `TelemetryEvent`, because the two sources carry
+   different shapes:
+   - **DLQ-sourced:** a DLQ record is a `DeadLetterEvent` **wrapper** (`event`, `errorMessage`,
+     `sourceService`, `failedAt`), not a raw event. The replay process must **extract the nested
+     `DeadLetterEvent.event`** and republish only that `TelemetryEvent`. Publishing the wrapper itself
+     would not match the processor's expected `telemetry.events.raw` schema and would fail
+     deserialization.
+   - **Raw-sourced:** the record is already a `TelemetryEvent` and is republished as-is.
+   The extracted/original `eventId` is preserved; replay metadata (`replay`/`replayedAt`/`replaySource`)
    is attached via the transport chosen in the follow-up (Kafka headers or an envelope extension — see
    [Replay Trigger Mechanism](#replay-trigger-mechanism)), and is audit-only until then.
-4. The record is published back to `telemetry.events.raw`.
+4. The resulting `TelemetryEvent` is published back to `telemetry.events.raw`.
 5. `telemetry-processor` consumes it through its **existing** subscription to `telemetry.events.raw` —
    no new topic subscription or listener is required, for either DLQ-sourced or raw-sourced replays.
    `query-service` is listed as a **planned** consumer of `telemetry.events.processed` and
@@ -168,9 +178,9 @@ guarantees replay does not *silently* duplicate persisted state via the upsert r
 
 ```mermaid
 flowchart LR
-    DLQ[telemetry.events.dlq] -->|selected eventIds| R[Replay Process]
+    DLQ[telemetry.events.dlq] -->|selected eventIds, unwrap DeadLetterEvent.event| R[Replay Process]
     RAW[telemetry.events.raw] -->|offset/time range| R
-    R -->|republish, eventId unchanged, +replay metadata| RAW
+    R -->|republish TelemetryEvent, eventId unchanged, +replay metadata| RAW
     RAW --> C[telemetry-processor]
     R --> LOG[Replay Audit Log]
 ```
