@@ -20,7 +20,10 @@ This document covers **strategy and scope only**. Implementation is tracked sepa
 ### 1. Dead Letter Queue (`telemetry.events.dlq`)
 
 - Primary replay source.
-- Contains events that failed processing after retries were exhausted (see [topics.md](./topics.md), [event-schema.md](./event-schema.md)).
+- Contains events routed to the DLQ when processing threw. Today `TelemetryEventConsumer` catches the
+  failure and publishes to the DLQ **directly on first failure** — there is no configured processing
+  retry policy on the listener container, so "DLQ" currently means "failed once," not "retries
+  exhausted" (see [topics.md](./topics.md), [event-schema.md](./event-schema.md)).
 - Replay targets specific failed events by `eventId`.
 - Low blast radius — only previously-failed events are affected.
 
@@ -29,6 +32,13 @@ This document covers **strategy and scope only**. Implementation is tracked sepa
 - Used for bulk reprocessing: schema migrations, bug fixes in `telemetry-processor` that require reprocessing telemetry that was already handled once.
 - Replay targets a time range or offset range rather than individual event IDs.
 - Higher blast radius — replays events that already flowed through the system once, so downstream consumers and the `telemetry.events.processed` topic are affected.
+- **Bounded to avoid self-consumption.** Because raw-topic replay both *reads from* and *republishes
+  to* `telemetry.events.raw`, it must not consume the records it just produced (which would loop
+  indefinitely). The replay process **snapshots the current end offset of each partition at replay
+  start** and only consumes up to those fixed ending offsets. Records republished during the run land
+  at offsets beyond the snapshot and are therefore never re-read by the same run. An offset/time
+  selection also naturally terminates at a past boundary; the end-offset snapshot is the required rule
+  when the selection is expressed as "everything up to now."
 
 ---
 
@@ -101,6 +111,25 @@ This also answers the "replaying the same source twice" case: because the `event
 original one, re-triggering a replay upserts the same row again rather than creating an additional row
 — the persisted state converges to the latest replay's result instead of accumulating duplicates.
 
+**Limitation: convergence holds only when classification does not cross the normal/anomaly boundary.**
+The processor persists a `processed_telemetry` row only for **normal** events;
+`AnomalyProcessingService` publishes to `telemetry.events.anomalies` and writes **no** row. So the
+upsert-by-`event_id` convergence above is complete only for normal→normal replays. The boundary cases
+are *not* reconciled by upsert alone:
+
+- **Normal → anomaly on replay:** the new run takes the anomaly branch and never touches
+  `processed_telemetry`, so the original (now-incorrect) normal row is **left behind** — upsert never
+  fires because nothing writes the table.
+- **Anomaly → normal on replay:** the new run inserts a normal row (none existed, since anomalies were
+  never persisted); the previously emitted anomaly message on `telemetry.events.anomalies` remains as
+  historical audit.
+
+Reconciling reclassification — i.e. **retracting, tombstoning, or versioning** the stale
+`processed_telemetry` row when an event flips normal→anomaly (and defining how consumers of the
+anomalies topic supersede an earlier classification) — is **not solved by this doc and is assigned to
+#126**. Until #126 defines it, this is a documented limitation: replay converges persisted state only
+when the classification is unchanged.
+
 **Downstream idempotency is explicitly deferred, not solved here.** Reusing `eventId` as the Kafka
 message key preserves partition affinity but does **not** deduplicate messages: every replay execution
 emits a fresh message to `telemetry.events.processed` and, for anomalies,
@@ -116,7 +145,9 @@ guarantees replay does not *silently* duplicate persisted state via the upsert r
 ## Replay Flow
 
 1. Operator selects a source: DLQ (specific `eventId`s) or raw topic (offset/time range).
-2. The replay process reads the matching records from the source topic.
+2. The replay process reads the matching records from the source topic. For a raw-topic replay it first
+   snapshots each partition's current end offset and only reads up to that boundary, so records it
+   republishes during the run are not re-consumed by the same run (see [Raw topic](#2-raw-topic-telemetryeventsraw)).
 3. Each record keeps its original envelope and `eventId`; replay metadata (`replay`/`replayedAt`/`replaySource`)
    is attached via the transport chosen in the follow-up (Kafka headers or an envelope extension — see
    [Replay Trigger Mechanism](#replay-trigger-mechanism)), and is audit-only until then.
@@ -162,5 +193,6 @@ flowchart LR
 - Implementation of the upsert-by-`event_id` persistence change (#126).
 - Implementation of replay-metadata transport (Kafka headers or envelope fields) (#126).
 - The consumer-side deduplication contract for `telemetry.events.processed` / `telemetry.events.anomalies` (#126).
-- Automatic retry policies from the DLQ.
+- Reconciling reclassification across the normal/anomaly boundary — retracting/tombstoning/versioning a stale `processed_telemetry` row when a replay flips an event's classification (#126).
+- Automatic retry policies from the DLQ (and, by extension, changing the current "DLQ on first failure" behavior).
 - Replay tooling UI.
