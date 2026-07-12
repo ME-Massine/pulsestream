@@ -20,10 +20,14 @@ This document covers **strategy and scope only**. Implementation is tracked sepa
 ### 1. Dead Letter Queue (`telemetry.events.dlq`)
 
 - Primary replay source.
-- Contains events routed to the DLQ when processing threw. Today `TelemetryEventConsumer` catches the
-  failure and publishes to the DLQ **directly on first failure** — there is no configured processing
-  retry policy on the listener container, so "DLQ" currently means "failed once," not "retries
-  exhausted" (see [topics.md](./topics.md), [event-schema.md](./event-schema.md)).
+- Contains events routed to the DLQ by **either** service, both writing the shared `DeadLetterEvent`
+  structure and identifying themselves via `sourceService`:
+  - **`ingestion-service`** — when publishing an accepted event to `telemetry.events.raw` fails, it
+    preserves the event in the DLQ so it is not lost.
+  - **`telemetry-processor`** — when `TelemetryEventConsumer` processing throws, it routes the event to
+    the DLQ **directly on first failure**; there is no configured processing retry policy on the
+    listener container, so a processor-sourced DLQ record means "failed once," not "retries exhausted."
+- See [topics.md](./topics.md) and [event-schema.md](./event-schema.md) for the topic and envelope.
 - Replay targets specific failed events by `eventId`.
 - Low blast radius — only previously-failed events are affected.
 
@@ -49,7 +53,7 @@ This document covers **strategy and scope only**. Implementation is tracked sepa
   - selection (event IDs for DLQ, offset/time range for raw)
 - There is no automatic retry loop from the DLQ. Keeping replay manual bounds the blast radius and keeps a human in the loop for bulk raw-topic replays.
 - Replayed events are published back to **`telemetry.events.raw`** — the same topic they originated from (directly, for raw-sourced replay, or after being read out of the DLQ, for DLQ-sourced replay). This matches #124's scope ("publish events back to `telemetry.events.raw`") and avoids introducing a topic that isn't defined in [topics.md](./topics.md) or provisioned anywhere. There is no separate `telemetry.events.replay` topic.
-- Each replayed event carries additional envelope metadata (in addition to the standard envelope defined in [event-schema.md](./event-schema.md)):
+- Each replayed event carries additional replay metadata alongside the standard envelope defined in [event-schema.md](./event-schema.md) (carried as Kafka headers or envelope fields — see below):
 
 | Field        | Description                                  |
 |--------------|-----------------------------------------------|
@@ -180,7 +184,10 @@ flowchart LR
   replayed events themselves; the only behavior change is at the persistence layer (see next bullet)
   plus a metadata-transport addition (headers or envelope fields), both deferred to follow-ups.
 - Reuses the existing DLQ (`telemetry.events.dlq`) as the primary failure-recovery source rather than introducing a new failure-handling mechanism.
-- Follows the standard event envelope from [event-schema.md](./event-schema.md), extended with replay-specific metadata rather than a separate schema.
+- Follows the standard event envelope from [event-schema.md](./event-schema.md). Replay metadata rides
+  alongside it rather than in a separate schema; with the preferred Kafka-headers transport the
+  envelope is left **unchanged**, and only the envelope-extension option would add replay-specific
+  fields to it.
 - Depends on a persistence-layer change (upsert-by-`event_id` instead of skip-on-duplicate) to make
   any replay — DLQ-sourced or raw-topic — supersede a prior result if one exists; tracked as a
   follow-up implementation issue, not part of this strategy doc.
