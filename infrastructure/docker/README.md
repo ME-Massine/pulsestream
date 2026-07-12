@@ -137,12 +137,18 @@ The script publishes a poison event to `telemetry.events.raw` — valid JSON tha
 - `telemetry-processor` reports `UP` before the event is published (so it is consuming)
 - the failed event appears in `telemetry.events.dlq`, located by its unique `eventId`
 - the DLQ record's routing metadata confirms the reroute: `sourceService` is `telemetry-processor` and a non-empty `errorMessage` captures the failure reason
-- the processor's logs confirm the reroute: the `logfile` actuator endpoint contains the `Routed failed telemetry event to DLQ ... eventId=<id>` line for this event
+- the processor's logs confirm the reroute: its log file contains the `Routed failed telemetry event to DLQ ... eventId=<id>` line for this event
 - `telemetry-processor` is still `UP` afterwards, i.e. the failure did not crash it
 
-> The log assertion reads `telemetry-processor`'s logs over the `logfile` actuator endpoint, so the service must be configured to write a log file (the default `logging.file.name` in `application.yml` does this). Override the path with `PULSESTREAM_LOG_FILE` if needed.
+> The log assertion reads `telemetry-processor`'s log file directly from disk, so the processor must be started with a log file configured — for example by setting the standard Spring Boot property when you launch it:
+>
+> ```powershell
+> $env:LOGGING_FILE_NAME = "logs/telemetry-processor.log"; .\mvnw.cmd spring-boot:run
+> ```
+>
+> The script defaults to `services/telemetry-processor/logs/telemetry-processor.log`; point `-ProcessorLogFile` at another path if you configured a different location. This keeps logs off any unauthenticated HTTP endpoint — no actuator or service configuration change is required.
 
-Override the defaults with `-KafkaContainer`, `-BootstrapServer`, and `-ProcessorBaseUrl` if you changed the local container name or ports.
+Override the defaults with `-KafkaContainer`, `-BootstrapServer`, `-ProcessorBaseUrl`, and `-ProcessorLogFile` if you changed the local container name, ports, or log location.
 
 > The poison event exercises the **processor** DLQ path, which is the path that deposits records into the topic in a running system. The `ingestion-service` DLQ path only fires when the raw-topic publish itself fails (e.g. the broker is down); in that state the DLQ publish would fail too, so it cannot be validated end to end against a healthy broker. Invalid events sent to the ingestion API are rejected with `400` by request validation *before* any publish and never reach the DLQ.
 

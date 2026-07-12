@@ -6,6 +6,12 @@ param(
     [string] $DlqTopic = "telemetry.events.dlq",
     [string] $ProcessorBaseUrl = "http://localhost:8082",
     [string] $ProcessorSourceService = "telemetry-processor",
+    # Path to the telemetry-processor log file the routing-log assertion reads.
+    # The processor runs on the host, so its logs are read directly from disk
+    # rather than over HTTP. Start the processor with a log file configured
+    # (e.g. LOGGING_FILE_NAME=logs/telemetry-processor.log) so this file exists.
+    # Default resolves to services/telemetry-processor/logs/telemetry-processor.log.
+    [string] $ProcessorLogFile = (Join-Path $PSScriptRoot "..\services\telemetry-processor\logs\telemetry-processor.log"),
     # How long each DLQ read waits (ms) for the console consumer to drain the
     # topic before it times out and returns. The consumer prints a benign
     # TimeoutException to stderr when idle for this long; that is expected.
@@ -30,7 +36,7 @@ function New-PoisonEventJson {
         eventId   = $EventId
         tenantId  = "dlq-validation"
         eventType = "telemetry.reading"
-        timestamp = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        timestamp = [DateTime]::UtcNow.ToString("o")
         source    = "validate-dlq-pipeline"
         version   = "1.0"
         payload   = $null
@@ -78,7 +84,11 @@ function Read-DlqRecordForEvent {
             continue
         }
 
-        if ($record.event.eventId -eq $EventId) {
+        # Defensively locate the nested event id: a record missing the `event`
+        # object (or a future envelope shape) simply isn't the one we published,
+        # so skip it rather than dereferencing a null property.
+        $recordEventId = if ($null -ne $record.event) { $record.event.eventId } else { $null }
+        if ($recordEventId -eq $EventId) {
             return $record
         }
     }
@@ -91,11 +101,19 @@ function Test-ProcessorRoutingLog {
 
     # The processor emits a WARN routing log line the moment it reroutes a failed
     # event: "Routed failed telemetry event to DLQ ... eventId=<id> reason=...".
-    # It runs on the host, so its logs are not reachable via docker; instead the
-    # `logfile` actuator endpoint serves the log file over HTTP. We match the
-    # routing message and the specific eventId on the same line so the assertion
-    # is scoped to the event this run produced.
-    $logContent = Invoke-TextGet "$ProcessorBaseUrl/actuator/logfile"
+    # It runs on the host, so we read its log file directly from disk rather than
+    # exposing logs over an unauthenticated actuator endpoint. The file exists
+    # only if the processor was started with a log file configured (see
+    # -ProcessorLogFile). We match the routing message and the specific eventId on
+    # the same line so the assertion is scoped to the event this run produced.
+    if (-not (Test-Path -LiteralPath $ProcessorLogFile)) {
+        return $false
+    }
+
+    $logContent = Get-Content -LiteralPath $ProcessorLogFile -Raw -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrEmpty($logContent)) {
+        return $false
+    }
 
     $pattern = "Routed failed telemetry event to DLQ.*eventId=$([regex]::Escape($EventId))"
     return [bool]([regex]::IsMatch($logContent, $pattern))
@@ -152,7 +170,7 @@ Confirm-Condition -Permanent `
 
 # 5. Acceptance criterion: logs confirm routing. The processor must have logged
 #    its successful DLQ-routing message for this exact event. Retry because the
-#    log write and the actuator logfile read are independent of the DLQ topic
+#    log write and the on-disk log file read are independent of the DLQ topic
 #    read above and may lag slightly behind it.
 Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
