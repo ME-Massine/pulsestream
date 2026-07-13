@@ -48,11 +48,16 @@ function Publish-RawEvent {
 
     # kafka-console-producer reads one message per stdin line, so the value must
     # be single-line (compact) JSON. Piping the string in closes stdin after the
-    # line, which produces exactly one record. stderr is captured (not discarded)
-    # so a publish failure surfaces the broker error in the thrown message.
-    $producerOutput = $Json | docker exec -i $KafkaContainer kafka-console-producer `
-        --bootstrap-server $BootstrapServer `
-        --topic $RawTopic 2>&1
+    # line, which produces exactly one record.
+    #
+    # stderr is merged into stdout *inside the container* (the `2>&1` runs in the
+    # container's shell, not in PowerShell). This keeps any broker error in
+    # $producerOutput for diagnostics while ensuring no native stderr reaches
+    # PowerShell: under Windows PowerShell 5.1 with $ErrorActionPreference =
+    # "Stop", native command stderr surfaced to PowerShell is promoted to a
+    # terminating NativeCommandError, which would make publishing fail spuriously.
+    $producerOutput = $Json | docker exec -i $KafkaContainer `
+        sh -c "kafka-console-producer --bootstrap-server $BootstrapServer --topic $RawTopic 2>&1"
 
     if ($LASTEXITCODE -ne 0) {
         $detail = (@($producerOutput) -join [Environment]::NewLine).Trim()
@@ -63,14 +68,18 @@ function Publish-RawEvent {
 function Read-DlqRecordForEvent {
     param([Parameter(Mandatory)] [string] $EventId)
 
-    # Read the DLQ from the beginning and stop after an idle window. stderr
-    # carries the expected idle TimeoutException, so it is discarded; only the
-    # message values on stdout are inspected.
-    $output = docker exec $KafkaContainer kafka-console-consumer `
-        --bootstrap-server $BootstrapServer `
-        --topic $DlqTopic `
-        --from-beginning `
-        --timeout-ms $ConsumeTimeoutMs 2>$null
+    # Read the DLQ from the beginning and stop after an idle window. The console
+    # consumer prints an expected idle TimeoutException to stderr once it drains
+    # the topic; only the message values on stdout are inspected.
+    #
+    # stderr is redirected to /dev/null *inside the container* (the `2>/dev/null`
+    # runs in the container's shell, not in PowerShell) so it never reaches
+    # PowerShell. Under Windows PowerShell 5.1 with $ErrorActionPreference =
+    # "Stop", redirecting native stderr in PowerShell (2>$null) promotes that
+    # benign TimeoutException to a terminating error, which would make this read
+    # report a false negative against a perfectly healthy DLQ pipeline.
+    $output = docker exec $KafkaContainer `
+        sh -c "kafka-console-consumer --bootstrap-server $BootstrapServer --topic $DlqTopic --from-beginning --timeout-ms $ConsumeTimeoutMs 2>/dev/null"
 
     foreach ($line in @($output)) {
         if ([string]::IsNullOrWhiteSpace($line)) {
