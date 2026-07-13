@@ -73,6 +73,7 @@ pulsestream:
     bootstrap-servers: ${PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
       group-id: ${PULSESTREAM_KAFKA_CONSUMER_GROUP_ID:telemetry-processor}
+      dlq-group-id: ${PULSESTREAM_KAFKA_CONSUMER_DLQ_GROUP_ID:telemetry-processor-dlq-replay}
       key-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_KEY_DESERIALIZER:org.apache.kafka.common.serialization.StringDeserializer}
       value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JsonDeserializer}
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}

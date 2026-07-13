@@ -44,6 +44,8 @@ public class TelemetryProcessorKafkaProperties {
 
         private String groupId = "telemetry-processor";
 
+        private String dlqGroupId = "telemetry-processor-dlq-replay";
+
         private String keyDeserializer = StringDeserializer.class.getName();
 
         private String valueDeserializer = JsonDeserializer.class.getName();
@@ -60,6 +62,14 @@ public class TelemetryProcessorKafkaProperties {
 
         public void setGroupId(String groupId) {
             this.groupId = groupId;
+        }
+
+        public String getDlqGroupId() {
+            return dlqGroupId;
+        }
+
+        public void setDlqGroupId(String dlqGroupId) {
+            this.dlqGroupId = dlqGroupId;
         }
 
         public String getKeyDeserializer() {
