@@ -54,6 +54,18 @@ This document covers **strategy and scope only**. Implementation is tracked sepa
   - source (`dlq` or `raw`)
   - selection (event IDs for DLQ, offset/time range for raw)
 - There is no automatic retry loop from the DLQ. Keeping replay manual bounds the blast radius and keeps a human in the loop for bulk raw-topic replays.
+
+### DLQ replay trigger (#125)
+
+DLQ replay is triggered through an actuator endpoint on `telemetry-processor` (`management.endpoints.web.base-path`, default `/actuator`). It starts and stops the `dlq-replay-listener` container, which is registered with `autoStartup=false` and otherwise stays idle:
+
+| Operation | Effect |
+|-----------|--------|
+| `GET /actuator/dlqreplay` | Report whether the replay listener is running |
+| `POST /actuator/dlqreplay/start` | Start the listener — it drains the DLQ and republishes each event to `telemetry.events.raw` |
+| `POST /actuator/dlqreplay/stop` | Stop the listener |
+
+`start`/`stop` are idempotent, and the listener stops itself on a failed republish (no-data-loss policy from #124), so the record is redelivered on the next start. Offset/time-range selection for raw-topic replay is not covered by this trigger.
 - Replayed events are published back to **`telemetry.events.raw`** — the same topic they originated from (directly, for raw-sourced replay, or after being read out of the DLQ, for DLQ-sourced replay). This matches #124's scope ("publish events back to `telemetry.events.raw`") and avoids introducing a topic that isn't defined in [topics.md](./topics.md) or provisioned anywhere. There is no separate `telemetry.events.replay` topic.
 - Each replayed event carries additional replay metadata alongside the standard envelope defined in [event-schema.md](./event-schema.md) (carried as Kafka headers or envelope fields — see below):
 
