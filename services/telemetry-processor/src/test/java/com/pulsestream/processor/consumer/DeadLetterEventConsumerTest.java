@@ -5,8 +5,13 @@ import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.model.DeadLetterEvent;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
+import com.pulsestream.processor.service.ReplayEventPublisher;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -22,18 +27,44 @@ import java.time.Instant;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
+@ExtendWith(MockitoExtension.class)
 class DeadLetterEventConsumerTest {
 
-    private final DeadLetterEventConsumer consumer = new DeadLetterEventConsumer();
+    @Mock
+    private ReplayEventPublisher replayEventPublisher;
+
+    private DeadLetterEventConsumer consumer;
+
+    @BeforeEach
+    void setUp() {
+        consumer = new DeadLetterEventConsumer(replayEventPublisher);
+    }
 
     @Test
-    @DisplayName("should read and parse a dead-letter event without throwing")
+    @DisplayName("should read, parse, and republish the wrapped event to the raw topic")
     void shouldReadAndParseDeadLetterEventWithoutThrowing() {
         DeadLetterEvent deadLetterEvent = deadLetterEvent();
 
         assertThatCode(() -> consumer.consumeDeadLetterEvent(deadLetterEvent))
                 .doesNotThrowAnyException();
+
+        verify(replayEventPublisher).publish(deadLetterEvent.event());
+    }
+
+    @Test
+    @DisplayName("should propagate a republish failure instead of swallowing it")
+    void shouldPropagateRepublishFailure() {
+        DeadLetterEvent deadLetterEvent = deadLetterEvent();
+        RuntimeException publishFailure = new RuntimeException("broker unavailable");
+        doThrow(publishFailure).when(replayEventPublisher).publish(deadLetterEvent.event());
+
+        assertThatThrownBy(() -> consumer.consumeDeadLetterEvent(deadLetterEvent))
+                .isSameAs(publishFailure);
     }
 
     @Test
@@ -42,6 +73,8 @@ class DeadLetterEventConsumerTest {
         assertThatThrownBy(() -> consumer.consumeDeadLetterEvent(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("deadLetterEvent must not be null");
+
+        verifyNoInteractions(replayEventPublisher);
     }
 
     @Test
@@ -54,6 +87,8 @@ class DeadLetterEventConsumerTest {
         assertThatThrownBy(() -> consumer.consumeDeadLetterEvent(deadLetterEvent))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("deadLetterEvent.event must not be null");
+
+        verifyNoInteractions(replayEventPublisher);
     }
 
     @Test
@@ -104,7 +139,7 @@ class DeadLetterEventConsumerTest {
 
         @Bean
         DeadLetterEventConsumer deadLetterEventConsumer() {
-            return new DeadLetterEventConsumer();
+            return new DeadLetterEventConsumer(mock(ReplayEventPublisher.class));
         }
     }
 

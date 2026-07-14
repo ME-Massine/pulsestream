@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.CommonContainerStoppingErrorHandler;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 
 @Configuration
@@ -80,6 +81,14 @@ public class KafkaConsumerConfiguration {
 
         factory.setConsumerFactory(dlqConsumerFactory);
         factory.setConcurrency(kafkaProperties.getConsumer().getConcurrency());
+
+        // No-data-loss policy for replay (#124): when a republish fails, DeadLetterEventConsumer lets
+        // the exception propagate. This handler stops the replay container without committing the
+        // failed record's offset, so the record stays uncommitted and is redelivered when an operator
+        // restarts the listener — the offset only advances after a successful republish. Without it,
+        // Spring Kafka's default handler would eventually recover (skip) the record and let the offset
+        // advance, silently dropping the DLQ record.
+        factory.setCommonErrorHandler(new CommonContainerStoppingErrorHandler());
 
         return factory;
     }
