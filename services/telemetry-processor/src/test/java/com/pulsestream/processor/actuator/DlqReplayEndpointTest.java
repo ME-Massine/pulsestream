@@ -1,5 +1,8 @@
 package com.pulsestream.processor.actuator;
 
+import java.util.List;
+import java.util.Set;
+
 import com.pulsestream.processor.consumer.DeadLetterEventConsumer;
 import com.pulsestream.processor.model.DlqReplayStatus;
 import com.pulsestream.processor.service.DlqReplayService;
@@ -43,36 +46,48 @@ class DlqReplayEndpointTest {
     @Test
     @DisplayName("read operation should report the current replay listener state")
     void statusShouldReportListenerState() {
-        DlqReplayStatus running = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, true);
+        DlqReplayStatus running = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, true, Set.of("evt-1"));
         when(dlqReplayService.status()).thenReturn(running);
 
         assertThat(endpoint.status()).isEqualTo(running);
     }
 
     @Test
-    @DisplayName("'start' action should trigger a replay and return 200")
+    @DisplayName("'start' action should trigger a replay of the selected events and return 200")
     void controlStartShouldTriggerReplay() {
-        DlqReplayStatus started = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, true);
-        when(dlqReplayService.start()).thenReturn(started);
+        Set<String> selection = Set.of("evt-1", "evt-2");
+        DlqReplayStatus started = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, true, selection);
+        when(dlqReplayService.start(selection)).thenReturn(started);
 
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("start");
+        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("start", List.of("evt-1", "evt-2"));
 
-        verify(dlqReplayService).start();
+        verify(dlqReplayService).start(selection);
         verify(dlqReplayService, never()).stop();
         assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_OK);
         assertThat(response.getBody()).isEqualTo(started);
     }
 
     @Test
+    @DisplayName("'start' without a selection should return 400 without touching the replay listener")
+    void controlStartWithoutSelectionShouldReturnBadRequest() {
+        WebEndpointResponse<DlqReplayStatus> emptyResponse = endpoint.control("start", List.of());
+        WebEndpointResponse<DlqReplayStatus> nullResponse = endpoint.control("start", null);
+
+        assertThat(emptyResponse.getStatus()).isEqualTo(WebEndpointResponse.STATUS_BAD_REQUEST);
+        assertThat(nullResponse.getStatus()).isEqualTo(WebEndpointResponse.STATUS_BAD_REQUEST);
+        verifyNoInteractions(dlqReplayService);
+    }
+
+    @Test
     @DisplayName("'stop' action should stop the replay and return 200")
     void controlStopShouldStopReplay() {
-        DlqReplayStatus stopped = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, false);
+        DlqReplayStatus stopped = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, false, Set.of());
         when(dlqReplayService.stop()).thenReturn(stopped);
 
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("stop");
+        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("stop", null);
 
         verify(dlqReplayService).stop();
-        verify(dlqReplayService, never()).start();
+        verify(dlqReplayService, never()).start(org.mockito.ArgumentMatchers.anySet());
         assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_OK);
         assertThat(response.getBody()).isEqualTo(stopped);
     }
@@ -80,19 +95,19 @@ class DlqReplayEndpointTest {
     @Test
     @DisplayName("action matching should be case-insensitive")
     void controlShouldBeCaseInsensitive() {
-        DlqReplayStatus started = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, true);
-        when(dlqReplayService.start()).thenReturn(started);
+        DlqReplayStatus started = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, true, Set.of("evt-1"));
+        when(dlqReplayService.start(Set.of("evt-1"))).thenReturn(started);
 
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("START");
+        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("START", List.of("evt-1"));
 
-        verify(dlqReplayService).start();
+        verify(dlqReplayService).start(Set.of("evt-1"));
         assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_OK);
     }
 
     @Test
     @DisplayName("an unknown action should return 400 without touching the replay listener")
     void controlUnknownActionShouldReturnBadRequest() {
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("resume");
+        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("resume", List.of("evt-1"));
 
         assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_BAD_REQUEST);
         assertThat(response.getBody()).isNull();
@@ -102,7 +117,7 @@ class DlqReplayEndpointTest {
     @Test
     @DisplayName("a null action should return 400 without touching the replay listener")
     void controlNullActionShouldReturnBadRequest() {
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control(null);
+        WebEndpointResponse<DlqReplayStatus> response = endpoint.control(null, List.of("evt-1"));
 
         assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_BAD_REQUEST);
         assertThat(response.getBody()).isNull();

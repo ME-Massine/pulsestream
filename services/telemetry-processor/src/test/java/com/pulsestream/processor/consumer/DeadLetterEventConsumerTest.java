@@ -5,7 +5,9 @@ import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.model.DeadLetterEvent;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
+import com.pulsestream.processor.service.DlqReplaySession;
 import com.pulsestream.processor.service.ReplayEventPublisher;
+import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -18,11 +20,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.ConsumerSeekAware;
 import org.springframework.kafka.listener.MessageListenerContainer;
 
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -38,17 +43,21 @@ class DeadLetterEventConsumerTest {
     @Mock
     private ReplayEventPublisher replayEventPublisher;
 
+    private DlqReplaySession replaySession;
+
     private DeadLetterEventConsumer consumer;
 
     @BeforeEach
     void setUp() {
-        consumer = new DeadLetterEventConsumer(replayEventPublisher);
+        replaySession = new DlqReplaySession();
+        consumer = new DeadLetterEventConsumer(replayEventPublisher, replaySession);
     }
 
     @Test
-    @DisplayName("should read, parse, and republish the wrapped event to the raw topic")
-    void shouldReadAndParseDeadLetterEventWithoutThrowing() {
+    @DisplayName("should republish a selected event to the raw topic")
+    void shouldRepublishSelectedEvent() {
         DeadLetterEvent deadLetterEvent = deadLetterEvent();
+        replaySession.begin(Set.of(deadLetterEvent.event().eventId()));
 
         assertThatCode(() -> consumer.consumeDeadLetterEvent(deadLetterEvent))
                 .doesNotThrowAnyException();
@@ -57,9 +66,22 @@ class DeadLetterEventConsumerTest {
     }
 
     @Test
+    @DisplayName("should skip an event that is not in the current replay selection")
+    void shouldSkipUnselectedEvent() {
+        DeadLetterEvent deadLetterEvent = deadLetterEvent();
+        replaySession.begin(Set.of("some-other-event"));
+
+        assertThatCode(() -> consumer.consumeDeadLetterEvent(deadLetterEvent))
+                .doesNotThrowAnyException();
+
+        verifyNoInteractions(replayEventPublisher);
+    }
+
+    @Test
     @DisplayName("should propagate a republish failure instead of swallowing it")
     void shouldPropagateRepublishFailure() {
         DeadLetterEvent deadLetterEvent = deadLetterEvent();
+        replaySession.begin(Set.of(deadLetterEvent.event().eventId()));
         RuntimeException publishFailure = new RuntimeException("broker unavailable");
         doThrow(publishFailure).when(replayEventPublisher).publish(deadLetterEvent.event());
 
@@ -89,6 +111,29 @@ class DeadLetterEventConsumerTest {
                 .hasMessage("deadLetterEvent.event must not be null");
 
         verifyNoInteractions(replayEventPublisher);
+    }
+
+    @Test
+    @DisplayName("should rewind partitions to the beginning while a replay selection is active")
+    void shouldSeekToBeginningWhenReplayActive() {
+        replaySession.begin(Set.of("evt-001"));
+        TopicPartition partition = new TopicPartition("telemetry.events.dlq", 0);
+        ConsumerSeekAware.ConsumerSeekCallback callback = mock(ConsumerSeekAware.ConsumerSeekCallback.class);
+
+        consumer.onPartitionsAssigned(Map.of(partition, 0L), callback);
+
+        verify(callback).seekToBeginning(Set.of(partition));
+    }
+
+    @Test
+    @DisplayName("should not rewind partitions when no replay selection is active")
+    void shouldNotSeekWhenReplayInactive() {
+        TopicPartition partition = new TopicPartition("telemetry.events.dlq", 0);
+        ConsumerSeekAware.ConsumerSeekCallback callback = mock(ConsumerSeekAware.ConsumerSeekCallback.class);
+
+        consumer.onPartitionsAssigned(Map.of(partition, 0L), callback);
+
+        verifyNoInteractions(callback);
     }
 
     @Test
@@ -139,7 +184,7 @@ class DeadLetterEventConsumerTest {
 
         @Bean
         DeadLetterEventConsumer deadLetterEventConsumer() {
-            return new DeadLetterEventConsumer(mock(ReplayEventPublisher.class));
+            return new DeadLetterEventConsumer(mock(ReplayEventPublisher.class), new DlqReplaySession());
         }
     }
 

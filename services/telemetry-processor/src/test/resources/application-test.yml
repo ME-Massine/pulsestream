@@ -4,6 +4,11 @@ spring:
       - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
 
 management:
+  # Run the management surface on its own random port during tests (the main service binds a random
+  # port too) so the separate management interface is exercised without a fixed-port collision.
+  server:
+    port: 0
+    address: 127.0.0.1
   health:
     db:
       enabled: false

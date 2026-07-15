@@ -11,10 +11,12 @@ import com.pulsestream.processor.exception.TelemetryPublishingException;
 import com.pulsestream.processor.model.DeadLetterEvent;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
+import com.pulsestream.processor.service.DlqReplaySession;
 import com.pulsestream.processor.service.ReplayEventPublisher;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import org.apache.kafka.clients.admin.Admin;
@@ -82,7 +84,10 @@ class DeadLetterReplayRedeliveryTest {
             return null;
         }).when(publisher).publish(any());
 
-        DeadLetterEventConsumer consumer = new DeadLetterEventConsumer(publisher);
+        // Select evt-001 for replay so the consumer republishes it (replay is selective, #125).
+        DlqReplaySession replaySession = new DlqReplaySession();
+        replaySession.begin(Set.of("evt-001"));
+        DeadLetterEventConsumer consumer = new DeadLetterEventConsumer(publisher, replaySession);
         ConcurrentMessageListenerContainer<String, DeadLetterEvent> container = replayContainer(consumer);
 
         produceDeadLetterEvent();
