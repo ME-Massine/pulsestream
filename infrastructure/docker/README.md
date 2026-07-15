@@ -148,7 +148,7 @@ The script publishes a poison event to `telemetry.events.raw` — valid JSON tha
 >
 > The script defaults to `services/telemetry-processor/logs/telemetry-processor.log`; point `-ProcessorLogFile` at another path if you configured a different location. This keeps logs off any unauthenticated HTTP endpoint — no actuator or service configuration change is required.
 
-Override the defaults with `-KafkaContainer`, `-BootstrapServer`, `-ProcessorBaseUrl`, and `-ProcessorLogFile` if you changed the local container name, ports, or log location.
+Override the defaults with `-KafkaContainer`, `-BootstrapServer`, `-ProcessorManagementBaseUrl`, and `-ProcessorLogFile` if you changed the local container name, management port, or log location.
 
 > The poison event exercises the **processor** DLQ path, which is the path that deposits records into the topic in a running system. The `ingestion-service` DLQ path only fires when the raw-topic publish itself fails (e.g. the broker is down); in that state the DLQ publish would fail too, so it cannot be validated end to end against a healthy broker. Invalid events sent to the ingestion API are rejected with `400` by request validation *before* any publish and never reach the DLQ.
 

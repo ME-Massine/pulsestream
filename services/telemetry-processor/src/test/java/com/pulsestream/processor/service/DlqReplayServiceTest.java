@@ -5,6 +5,7 @@ import java.util.Set;
 
 import com.pulsestream.processor.consumer.DeadLetterEventConsumer;
 import com.pulsestream.processor.model.DlqReplayStatus;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -130,12 +131,13 @@ class DlqReplayServiceTest {
     }
 
     @Test
-    @DisplayName("an idle event for the replay listener should stop it and clear the selection once the backlog is drained")
-    void idleEventShouldStopDrainedReplayListener() {
+    @DisplayName("an idle event from the replay child container should stop the parent and clear the selection")
+    void idleEventFromReplayChildShouldStopDrainedReplayListener() {
         replaySession.begin(Set.of("evt-1"));
+        when(container.getListenerId()).thenReturn(DeadLetterEventConsumer.LISTENER_ID);
         when(container.isRunning()).thenReturn(true);
         ListenerContainerIdleEvent event = idleEventFor(
-                DeadLetterEventConsumer.LISTENER_ID,
+                DeadLetterEventConsumer.LISTENER_ID + "-0",
                 container,
                 List.of(new TopicPartition("telemetry.events.dlq", 0))
         );
@@ -152,8 +154,9 @@ class DlqReplayServiceTest {
     @DisplayName("an idle event before partition assignment should not stop the replay listener")
     void idleEventBeforePartitionAssignmentShouldBeIgnored() {
         replaySession.begin(Set.of("evt-1"));
+        when(container.getListenerId()).thenReturn(DeadLetterEventConsumer.LISTENER_ID);
         ListenerContainerIdleEvent event = idleEventFor(
-                DeadLetterEventConsumer.LISTENER_ID,
+                DeadLetterEventConsumer.LISTENER_ID + "-0",
                 container,
                 List.of()
         );
@@ -167,11 +170,18 @@ class DlqReplayServiceTest {
     @Test
     @DisplayName("an idle event for another listener should be ignored")
     void idleEventForOtherListenerShouldBeIgnored() {
-        ListenerContainerIdleEvent event = idleEventFor("some-other-listener", container, List.of());
+        MessageListenerContainer otherContainer = mock(MessageListenerContainer.class);
+        when(otherContainer.getListenerId()).thenReturn("some-other-listener");
+        ListenerContainerIdleEvent event = idleEventFor(
+                "some-other-listener-0",
+                otherContainer,
+                List.of(new TopicPartition("some.other.topic", 0))
+        );
 
         service.onListenerContainerIdle(event);
 
         verify(container, never()).stop(any(Runnable.class));
+        verify(otherContainer, never()).stop(any(Runnable.class));
     }
 
     @Test
@@ -201,15 +211,15 @@ class DlqReplayServiceTest {
             MessageListenerContainer container,
             List<TopicPartition> assignedPartitions
     ) {
-        ListenerContainerIdleEvent event = mock(ListenerContainerIdleEvent.class);
-        when(event.getListenerId()).thenReturn(listenerId);
-        if (listenerId.equals(DeadLetterEventConsumer.LISTENER_ID)) {
-            when(event.getTopicPartitions()).thenReturn(assignedPartitions);
-            if (!assignedPartitions.isEmpty()) {
-                when(event.getContainer(MessageListenerContainer.class)).thenReturn(container);
-            }
-        }
-        return event;
+        return new ListenerContainerIdleEvent(
+                new Object(),
+                container,
+                30_000L,
+                listenerId,
+                assignedPartitions,
+                mock(Consumer.class),
+                false
+        );
     }
 
     private void givenRegisteredContainer() {

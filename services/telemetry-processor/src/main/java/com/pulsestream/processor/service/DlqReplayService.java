@@ -133,7 +133,14 @@ public class DlqReplayService {
      */
     @EventListener
     public void onListenerContainerIdle(ListenerContainerIdleEvent event) {
-        if (!DeadLetterEventConsumer.LISTENER_ID.equals(event.getListenerId())) {
+        MessageListenerContainer container = event.getContainer(MessageListenerContainer.class);
+
+        // ConcurrentMessageListenerContainer publishes idle events from a child container whose
+        // listener id is suffixed (for example, "dlq-replay-listener-0"), even when concurrency is
+        // one. Match the registered parent container instead of the child event id so production
+        // idle events are not ignored.
+        if (container == null
+                || !DeadLetterEventConsumer.LISTENER_ID.equals(container.getListenerId())) {
             return;
         }
 
@@ -145,8 +152,7 @@ public class DlqReplayService {
             return;
         }
 
-        MessageListenerContainer container = event.getContainer(MessageListenerContainer.class);
-        if (container == null || !container.isRunning()) {
+        if (!container.isRunning()) {
             return;
         }
 
