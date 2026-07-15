@@ -1,6 +1,7 @@
 package com.pulsestream.processor.service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.pulsestream.processor.consumer.DeadLetterEventConsumer;
@@ -30,6 +31,9 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class DlqReplayServiceTest {
 
+    private static final TopicPartition DLQ_PARTITION =
+            new TopicPartition("telemetry.events.dlq", 0);
+
     @Mock
     private ObjectProvider<KafkaListenerEndpointRegistry> listenerRegistryProvider;
 
@@ -39,6 +43,9 @@ class DlqReplayServiceTest {
     @Mock
     private MessageListenerContainer container;
 
+    @Mock
+    private DlqReplayBoundarySnapshotter boundarySnapshotter;
+
     private DlqReplaySession replaySession;
 
     private DlqReplayService service;
@@ -46,13 +53,14 @@ class DlqReplayServiceTest {
     @BeforeEach
     void setUp() {
         replaySession = new DlqReplaySession();
-        service = new DlqReplayService(listenerRegistryProvider, replaySession);
+        service = new DlqReplayService(listenerRegistryProvider, replaySession, boundarySnapshotter);
     }
 
     @Test
     @DisplayName("start() should record the selection and start the replay listener when it is stopped")
     void startShouldStartStoppedListener() {
         givenRegisteredContainer();
+        when(boundarySnapshotter.snapshot()).thenReturn(replayBoundary(0, 2));
         when(container.isRunning()).thenReturn(false, true);
 
         DlqReplayStatus status = service.start(Set.of("evt-1", "evt-2"));
@@ -61,7 +69,7 @@ class DlqReplayServiceTest {
         assertThat(status.listenerId()).isEqualTo(DeadLetterEventConsumer.LISTENER_ID);
         assertThat(status.running()).isTrue();
         assertThat(status.selectedEventIds()).containsExactlyInAnyOrder("evt-1", "evt-2");
-        assertThat(replaySession.isSelected("evt-1")).isTrue();
+        assertThat(replaySession.shouldReplay("evt-1", DLQ_PARTITION, 0)).isTrue();
     }
 
     @Test
@@ -90,7 +98,7 @@ class DlqReplayServiceTest {
     @DisplayName("stop() should stop the replay listener and clear the selection when it is running")
     void stopShouldStopRunningListener() {
         givenRegisteredContainer();
-        replaySession.begin(Set.of("evt-1"));
+        beginReplay("evt-1");
         when(container.isRunning()).thenReturn(true, false);
 
         DlqReplayStatus status = service.stop();
@@ -118,7 +126,7 @@ class DlqReplayServiceTest {
     @DisplayName("status() should report the current running state and selection without touching the listener")
     void statusShouldReportRunningState() {
         givenRegisteredContainer();
-        replaySession.begin(Set.of("evt-1"));
+        beginReplay("evt-1");
         when(container.isRunning()).thenReturn(true);
 
         DlqReplayStatus status = service.status();
@@ -133,13 +141,14 @@ class DlqReplayServiceTest {
     @Test
     @DisplayName("an idle event from the replay child container should stop the parent and clear the selection")
     void idleEventFromReplayChildShouldStopDrainedReplayListener() {
-        replaySession.begin(Set.of("evt-1"));
+        beginReplay("evt-1");
+        replaySession.recordProcessed(DLQ_PARTITION, 0);
         when(container.getListenerId()).thenReturn(DeadLetterEventConsumer.LISTENER_ID);
         when(container.isRunning()).thenReturn(true);
         ListenerContainerIdleEvent event = idleEventFor(
                 DeadLetterEventConsumer.LISTENER_ID + "-0",
                 container,
-                List.of(new TopicPartition("telemetry.events.dlq", 0))
+                List.of(DLQ_PARTITION)
         );
 
         service.onListenerContainerIdle(event);
@@ -153,7 +162,7 @@ class DlqReplayServiceTest {
     @Test
     @DisplayName("an idle event before partition assignment should not stop the replay listener")
     void idleEventBeforePartitionAssignmentShouldBeIgnored() {
-        replaySession.begin(Set.of("evt-1"));
+        beginReplay("evt-1");
         when(container.getListenerId()).thenReturn(DeadLetterEventConsumer.LISTENER_ID);
         ListenerContainerIdleEvent event = idleEventFor(
                 DeadLetterEventConsumer.LISTENER_ID + "-0",
@@ -165,6 +174,36 @@ class DlqReplayServiceTest {
 
         verify(container, never()).stop(any(Runnable.class));
         assertThat(replaySession.isActive()).isTrue();
+    }
+
+    @Test
+    @DisplayName("processing the final trigger-time record should stop the replay immediately")
+    void finalBoundaryRecordShouldStopReplay() {
+        givenRegisteredContainer();
+        beginReplay("evt-1");
+        when(container.isRunning()).thenReturn(true);
+
+        service.onReplayRecordProcessed(DLQ_PARTITION, 0);
+
+        ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
+        verify(container).stop(callback.capture());
+        assertThat(replaySession.isActive()).isFalse();
+        callback.getValue().run();
+        assertThat(replaySession.selectedEventIds()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("start should complete without starting the listener when the snapshot is empty")
+    void startShouldCompleteImmediatelyForEmptyBoundary() {
+        givenRegisteredContainer();
+        when(boundarySnapshotter.snapshot()).thenReturn(replayBoundary(5, 5));
+        when(container.isRunning()).thenReturn(false);
+
+        DlqReplayStatus status = service.start(Set.of("evt-1"));
+
+        verify(container, never()).start();
+        assertThat(status.running()).isFalse();
+        assertThat(status.selectedEventIds()).isEmpty();
     }
 
     @Test
@@ -226,5 +265,13 @@ class DlqReplayServiceTest {
         when(listenerRegistryProvider.getIfAvailable()).thenReturn(listenerRegistry);
         when(listenerRegistry.getListenerContainer(DeadLetterEventConsumer.LISTENER_ID))
                 .thenReturn(container);
+    }
+
+    private void beginReplay(String... eventIds) {
+        replaySession.begin(Set.of(eventIds), replayBoundary(0, 1));
+    }
+
+    private Map<TopicPartition, DlqReplayPartitionRange> replayBoundary(long start, long end) {
+        return Map.of(DLQ_PARTITION, new DlqReplayPartitionRange(start, end));
     }
 }

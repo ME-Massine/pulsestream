@@ -1,9 +1,11 @@
 package com.pulsestream.processor.service;
 
+import java.util.Map;
 import java.util.Set;
 
 import com.pulsestream.processor.consumer.DeadLetterEventConsumer;
 import com.pulsestream.processor.model.DlqReplayStatus;
+import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -22,12 +24,13 @@ import org.springframework.util.Assert;
  * specific set of {@code eventId}s. Replay is <strong>selective</strong> (only the requested events
  * are republished) and <strong>bounded</strong>:
  * <ul>
- *   <li>{@link #start(Set)} records the selected {@code eventId}s and starts the container, which
- *       re-scans the dead-letter backlog and republishes only the selected events back onto
- *       {@code telemetry.events.raw} (#124).</li>
- *   <li>Once the backlog is drained the container goes idle; {@link #onListenerContainerIdle} stops
- *       it automatically, so the listener does not stay running to sweep up future dead-letter
- *       records (the strategy requires "no automatic retry loop from the DLQ").</li>
+ *   <li>{@link #start(Set)} records the selected {@code eventId}s and snapshots each DLQ
+ *       partition's beginning and end offsets before starting the container. The listener re-scans
+ *       those ranges and republishes only the selected events to {@code telemetry.events.raw}
+ *       (#124).</li>
+ *   <li>The listener stops as soon as it reaches every captured end offset. Records appended after
+ *       the trigger cannot extend the run, preserving the strategy's "no automatic retry loop from
+ *       the DLQ" requirement. {@link #onListenerContainerIdle} is a completion fallback only.</li>
  *   <li>{@link #stop()} halts an in-progress replay on demand. The container also stops itself on a
  *       failed republish (no-data-loss policy from #124) so the record is redelivered on the next
  *       start.</li>
@@ -45,12 +48,16 @@ public class DlqReplayService {
 
     private final DlqReplaySession replaySession;
 
+    private final DlqReplayBoundarySnapshotter boundarySnapshotter;
+
     public DlqReplayService(
             ObjectProvider<KafkaListenerEndpointRegistry> listenerRegistryProvider,
-            DlqReplaySession replaySession
+            DlqReplaySession replaySession,
+            DlqReplayBoundarySnapshotter boundarySnapshotter
     ) {
         this.listenerRegistryProvider = listenerRegistryProvider;
         this.replaySession = replaySession;
+        this.boundarySnapshotter = boundarySnapshotter;
     }
 
     /**
@@ -75,11 +82,23 @@ public class DlqReplayService {
         }
 
         Set<String> selection = Set.copyOf(eventIds);
-        replaySession.begin(selection);
+        Map<TopicPartition, DlqReplayPartitionRange> boundary = boundarySnapshotter.snapshot();
+        replaySession.begin(selection, boundary);
+
+        if (replaySession.claimCompletionIfBoundaryReached()) {
+            log.info(
+                    "DLQ replay listener '{}' has no records in its trigger-time boundary; start request is complete",
+                    DeadLetterEventConsumer.LISTENER_ID
+            );
+            replaySession.clear();
+            return statusOf(container);
+        }
+
         log.info(
-                "Starting DLQ replay listener '{}' to replay {} selected event(s)",
+                "Starting DLQ replay listener '{}' to replay {} selected event(s) across {} bounded partition(s)",
                 DeadLetterEventConsumer.LISTENER_ID,
-                selection.size()
+                selection.size(),
+                boundary.size()
         );
         container.start();
 
@@ -120,13 +139,29 @@ public class DlqReplayService {
     }
 
     /**
-     * Stops the replay listener once it has drained the current dead-letter backlog. Spring Kafka
-     * publishes a {@link ListenerContainerIdleEvent} when the container has had no records for the
-     * configured idle interval. Once the consumer has assigned partitions, this means the fixed
-     * backlog has been fully scanned. Idle events published before assignment are ignored so a slow
-     * consumer-group join cannot be mistaken for a successful drain. This bounds a replay run to the
-     * backlog present when it was triggered rather than leaving the listener running to replay future
-     * dead-letter records.
+     * Records successful handling of one record and stops the replay as soon as all trigger-time
+     * partition ranges have been scanned. Records appended after the snapshot cannot extend a run.
+     */
+    public void onReplayRecordProcessed(TopicPartition partition, long offset) {
+        replaySession.recordProcessed(partition, offset);
+        if (!replaySession.claimCompletionIfBoundaryReached()) {
+            return;
+        }
+
+        MessageListenerContainer container = requireContainer();
+        if (!container.isRunning()) {
+            replaySession.clear();
+            return;
+        }
+
+        stopCompletedReplay(container);
+    }
+
+    /**
+     * Handles Spring Kafka's idle signal as a fallback completion check. The replay normally stops
+     * immediately after processing the final offset in its trigger-time snapshot. An idle event can
+     * stop it only when every captured partition range is already complete; assignment alone is not
+     * treated as proof that the backlog was drained. Events published before assignment are ignored.
      * <p>
      * The idle event is delivered on the consumer thread, so the container is stopped asynchronously
      * (a synchronous {@code stop()} would deadlock waiting for that same thread to finish).
@@ -156,8 +191,14 @@ public class DlqReplayService {
             return;
         }
 
+        if (replaySession.claimCompletionIfBoundaryReached()) {
+            stopCompletedReplay(container);
+        }
+    }
+
+    private void stopCompletedReplay(MessageListenerContainer container) {
         log.info(
-                "DLQ replay listener '{}' drained the dead-letter backlog; stopping it",
+                "DLQ replay listener '{}' reached its trigger-time backlog boundary; stopping it",
                 DeadLetterEventConsumer.LISTENER_ID
         );
         container.stop(replaySession::clear);

@@ -86,8 +86,8 @@ pulsestream:
       value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JsonDeserializer}
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
       concurrency: ${PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY:1}
-      # Idle window after which a running DLQ replay listener is considered to have drained the
-      # backlog and is stopped automatically (bounded replay, #125).
+      # Fallback idle signal for bounded DLQ replay. The listener stops only after reaching the
+      # per-partition end offsets captured when the replay was triggered (#125).
       dlq-replay-idle-timeout: ${PULSESTREAM_KAFKA_DLQ_REPLAY_IDLE_TIMEOUT:30s}
       properties:
         spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.model}

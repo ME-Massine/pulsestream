@@ -82,11 +82,9 @@ public class KafkaConsumerConfiguration {
         factory.setConsumerFactory(dlqConsumerFactory);
         factory.setConcurrency(kafkaProperties.getConsumer().getConcurrency());
 
-        // Bounded replay (#125): a replay run must stop after it has drained the dead-letter backlog
-        // that existed when it was triggered, rather than staying up to replay future records. The
-        // container publishes a ListenerContainerIdleEvent once it has had no records for this
-        // interval — for the replay listener re-scanning a fixed backlog that means "backlog
-        // drained" — and DlqReplayService stops the container in response.
+        // Bounded replay (#125) primarily stops when the listener reaches the per-partition end
+        // offsets captured at trigger time. Idle events are retained as a fallback signal, but
+        // DlqReplayService stops on idle only after every captured range has been scanned.
         factory.getContainerProperties().setIdleEventInterval(
                 kafkaProperties.getConsumer().getDlqReplayIdleTimeout().toMillis()
         );

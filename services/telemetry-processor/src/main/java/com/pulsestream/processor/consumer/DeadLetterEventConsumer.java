@@ -3,8 +3,10 @@ package com.pulsestream.processor.consumer;
 import java.util.Map;
 
 import com.pulsestream.processor.model.DeadLetterEvent;
+import com.pulsestream.processor.service.DlqReplayService;
 import com.pulsestream.processor.service.DlqReplaySession;
 import com.pulsestream.processor.service.ReplayEventPublisher;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,9 +33,9 @@ import org.springframework.util.Assert;
  *       beginning (see {@link #onPartitionsAssigned}), so an operator can target any historical
  *       dead-letter event regardless of what a previous run already consumed.</li>
  *   <li><strong>Bounded.</strong> The container is registered with {@code autoStartup = "false"} so
- *       it stays stopped until an operator explicitly triggers a replay, and it stops itself again
- *       once the current backlog is drained (an idle event handled by {@code DlqReplayService}) — it
- *       does not sit running to sweep up future dead-letter records.</li>
+ *       it stays stopped until an operator explicitly triggers a replay. Each trigger captures the
+ *       current beginning/end offsets, and the listener stops after scanning those ranges. Records
+ *       appended later cannot extend the run.</li>
  * </ul>
  * Start it via {@code DlqReplayService.start(...)}, which records the selection and starts the
  * container.
@@ -49,9 +51,16 @@ public class DeadLetterEventConsumer implements ConsumerSeekAware {
 
     private final DlqReplaySession replaySession;
 
-    public DeadLetterEventConsumer(ReplayEventPublisher replayEventPublisher, DlqReplaySession replaySession) {
+    private final DlqReplayService dlqReplayService;
+
+    public DeadLetterEventConsumer(
+            ReplayEventPublisher replayEventPublisher,
+            DlqReplaySession replaySession,
+            DlqReplayService dlqReplayService
+    ) {
         this.replayEventPublisher = replayEventPublisher;
         this.replaySession = replaySession;
+        this.dlqReplayService = dlqReplayService;
     }
 
     @KafkaListener(
@@ -61,38 +70,44 @@ public class DeadLetterEventConsumer implements ConsumerSeekAware {
             containerFactory = "dlqKafkaListenerContainerFactory",
             autoStartup = "false"
     )
-    public void consumeDeadLetterEvent(DeadLetterEvent deadLetterEvent) {
+    public void consumeDeadLetterEvent(ConsumerRecord<String, DeadLetterEvent> record) {
+        Assert.notNull(record, "record must not be null");
+        DeadLetterEvent deadLetterEvent = record.value();
         Assert.notNull(deadLetterEvent, "deadLetterEvent must not be null");
         Assert.notNull(deadLetterEvent.event(), "deadLetterEvent.event must not be null");
 
         String eventId = deadLetterEvent.event().eventId();
+        TopicPartition partition = new TopicPartition(record.topic(), record.partition());
 
-        if (!replaySession.isSelected(eventId)) {
+        if (!replaySession.shouldReplay(eventId, partition, record.offset())) {
             log.debug(
-                    "Skipping DLQ event eventId={} tenantId={}: not in the current replay selection",
+                    "Skipping DLQ event eventId={} tenantId={} partition={} offset={}: not selected or outside the trigger-time boundary",
                     eventId,
-                    deadLetterEvent.event().tenantId()
+                    deadLetterEvent.event().tenantId(),
+                    record.partition(),
+                    record.offset()
             );
-            return;
+        } else {
+            log.info(
+                    "Replaying selected DLQ event eventId={} tenantId={} sourceService={} errorMessage={} failedAt={}",
+                    eventId,
+                    deadLetterEvent.event().tenantId(),
+                    deadLetterEvent.sourceService(),
+                    deadLetterEvent.errorMessage(),
+                    deadLetterEvent.failedAt()
+            );
+
+            replayEventPublisher.publish(deadLetterEvent.event());
         }
 
-        log.info(
-                "Replaying selected DLQ event eventId={} tenantId={} sourceService={} errorMessage={} failedAt={}",
-                eventId,
-                deadLetterEvent.event().tenantId(),
-                deadLetterEvent.sourceService(),
-                deadLetterEvent.errorMessage(),
-                deadLetterEvent.failedAt()
-        );
-
-        replayEventPublisher.publish(deadLetterEvent.event());
+        dlqReplayService.onReplayRecordProcessed(partition, record.offset());
     }
 
     /**
      * Rewinds the assigned partitions to the beginning on each replay start so the run re-scans the
-     * whole dead-letter backlog and can find any selected {@code eventId}, independent of the replay
-     * consumer group's previously committed offsets. Non-selected records are read and skipped in
-     * {@link #consumeDeadLetterEvent}.
+     * trigger-time dead-letter range and can find any selected {@code eventId}, independent of the
+     * replay consumer group's previously committed offsets. The captured end offsets bound the scan;
+     * non-selected records within it are read and skipped in {@link #consumeDeadLetterEvent}.
      */
     @Override
     public void onPartitionsAssigned(Map<TopicPartition, Long> assignments, ConsumerSeekCallback callback) {
