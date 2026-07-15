@@ -1,5 +1,7 @@
 package com.pulsestream.processor.config;
 
+import java.time.Duration;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -28,6 +30,7 @@ class TelemetryProcessorKafkaPropertiesTest {
             assertThat(properties.getConsumer().getGroupId()).isEqualTo("telemetry-processor");
             assertThat(properties.getConsumer().getAutoOffsetReset()).isEqualTo("earliest");
             assertThat(properties.getConsumer().getConcurrency()).isEqualTo(2);
+            assertThat(properties.getConsumer().getDlqReplayIdleTimeout()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getTopics().getRaw()).isEqualTo("telemetry.events.raw");
         });
     }

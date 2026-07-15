@@ -97,6 +97,7 @@ class DlqReplayActuatorIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).contains("eventIds selection must not be empty");
     }
 
     @Test

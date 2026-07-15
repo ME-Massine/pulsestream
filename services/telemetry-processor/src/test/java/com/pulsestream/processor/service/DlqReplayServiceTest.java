@@ -1,9 +1,11 @@
 package com.pulsestream.processor.service;
 
+import java.util.List;
 import java.util.Set;
 
 import com.pulsestream.processor.consumer.DeadLetterEventConsumer;
 import com.pulsestream.processor.model.DlqReplayStatus;
+import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -132,7 +134,11 @@ class DlqReplayServiceTest {
     void idleEventShouldStopDrainedReplayListener() {
         replaySession.begin(Set.of("evt-1"));
         when(container.isRunning()).thenReturn(true);
-        ListenerContainerIdleEvent event = idleEventFor(DeadLetterEventConsumer.LISTENER_ID, container);
+        ListenerContainerIdleEvent event = idleEventFor(
+                DeadLetterEventConsumer.LISTENER_ID,
+                container,
+                List.of(new TopicPartition("telemetry.events.dlq", 0))
+        );
 
         service.onListenerContainerIdle(event);
 
@@ -143,9 +149,25 @@ class DlqReplayServiceTest {
     }
 
     @Test
+    @DisplayName("an idle event before partition assignment should not stop the replay listener")
+    void idleEventBeforePartitionAssignmentShouldBeIgnored() {
+        replaySession.begin(Set.of("evt-1"));
+        ListenerContainerIdleEvent event = idleEventFor(
+                DeadLetterEventConsumer.LISTENER_ID,
+                container,
+                List.of()
+        );
+
+        service.onListenerContainerIdle(event);
+
+        verify(container, never()).stop(any(Runnable.class));
+        assertThat(replaySession.isActive()).isTrue();
+    }
+
+    @Test
     @DisplayName("an idle event for another listener should be ignored")
     void idleEventForOtherListenerShouldBeIgnored() {
-        ListenerContainerIdleEvent event = idleEventFor("some-other-listener", container);
+        ListenerContainerIdleEvent event = idleEventFor("some-other-listener", container, List.of());
 
         service.onListenerContainerIdle(event);
 
@@ -174,11 +196,18 @@ class DlqReplayServiceTest {
                 .hasMessageContaining("Kafka listener registry is not available");
     }
 
-    private ListenerContainerIdleEvent idleEventFor(String listenerId, MessageListenerContainer container) {
+    private ListenerContainerIdleEvent idleEventFor(
+            String listenerId,
+            MessageListenerContainer container,
+            List<TopicPartition> assignedPartitions
+    ) {
         ListenerContainerIdleEvent event = mock(ListenerContainerIdleEvent.class);
         when(event.getListenerId()).thenReturn(listenerId);
         if (listenerId.equals(DeadLetterEventConsumer.LISTENER_ID)) {
-            when(event.getContainer(MessageListenerContainer.class)).thenReturn(container);
+            when(event.getTopicPartitions()).thenReturn(assignedPartitions);
+            if (!assignedPartitions.isEmpty()) {
+                when(event.getContainer(MessageListenerContainer.class)).thenReturn(container);
+            }
         }
         return event;
     }

@@ -1,6 +1,7 @@
 package com.pulsestream.processor.actuator;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.pulsestream.processor.consumer.DeadLetterEventConsumer;
@@ -59,7 +60,7 @@ class DlqReplayEndpointTest {
         DlqReplayStatus started = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, true, selection);
         when(dlqReplayService.start(selection)).thenReturn(started);
 
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("start", List.of("evt-1", "evt-2"));
+        WebEndpointResponse<Object> response = endpoint.control("start", List.of("evt-1", "evt-2"));
 
         verify(dlqReplayService).start(selection);
         verify(dlqReplayService, never()).stop();
@@ -70,11 +71,15 @@ class DlqReplayEndpointTest {
     @Test
     @DisplayName("'start' without a selection should return 400 without touching the replay listener")
     void controlStartWithoutSelectionShouldReturnBadRequest() {
-        WebEndpointResponse<DlqReplayStatus> emptyResponse = endpoint.control("start", List.of());
-        WebEndpointResponse<DlqReplayStatus> nullResponse = endpoint.control("start", null);
+        WebEndpointResponse<Object> emptyResponse = endpoint.control("start", List.of());
+        WebEndpointResponse<Object> nullResponse = endpoint.control("start", null);
 
         assertThat(emptyResponse.getStatus()).isEqualTo(WebEndpointResponse.STATUS_BAD_REQUEST);
         assertThat(nullResponse.getStatus()).isEqualTo(WebEndpointResponse.STATUS_BAD_REQUEST);
+        assertThat(emptyResponse.getBody())
+                .isEqualTo(Map.of("error", "eventIds selection must not be empty"));
+        assertThat(nullResponse.getBody())
+                .isEqualTo(Map.of("error", "eventIds selection must not be empty"));
         verifyNoInteractions(dlqReplayService);
     }
 
@@ -84,7 +89,7 @@ class DlqReplayEndpointTest {
         DlqReplayStatus stopped = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, false, Set.of());
         when(dlqReplayService.stop()).thenReturn(stopped);
 
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("stop", null);
+        WebEndpointResponse<Object> response = endpoint.control("stop", null);
 
         verify(dlqReplayService).stop();
         verify(dlqReplayService, never()).start(org.mockito.ArgumentMatchers.anySet());
@@ -98,7 +103,7 @@ class DlqReplayEndpointTest {
         DlqReplayStatus started = new DlqReplayStatus(DeadLetterEventConsumer.LISTENER_ID, true, Set.of("evt-1"));
         when(dlqReplayService.start(Set.of("evt-1"))).thenReturn(started);
 
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("START", List.of("evt-1"));
+        WebEndpointResponse<Object> response = endpoint.control("START", List.of("evt-1"));
 
         verify(dlqReplayService).start(Set.of("evt-1"));
         assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_OK);
@@ -107,20 +112,26 @@ class DlqReplayEndpointTest {
     @Test
     @DisplayName("an unknown action should return 400 without touching the replay listener")
     void controlUnknownActionShouldReturnBadRequest() {
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control("resume", List.of("evt-1"));
+        WebEndpointResponse<Object> response = endpoint.control("resume", List.of("evt-1"));
 
         assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_BAD_REQUEST);
-        assertThat(response.getBody()).isNull();
+        assertThat(response.getBody()).isEqualTo(Map.of(
+                "error", "Unknown action",
+                "allowed", List.of("start", "stop")
+        ));
         verifyNoInteractions(dlqReplayService);
     }
 
     @Test
     @DisplayName("a null action should return 400 without touching the replay listener")
     void controlNullActionShouldReturnBadRequest() {
-        WebEndpointResponse<DlqReplayStatus> response = endpoint.control(null, List.of("evt-1"));
+        WebEndpointResponse<Object> response = endpoint.control(null, List.of("evt-1"));
 
         assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_BAD_REQUEST);
-        assertThat(response.getBody()).isNull();
+        assertThat(response.getBody()).isEqualTo(Map.of(
+                "error", "Unknown action",
+                "allowed", List.of("start", "stop")
+        ));
         verifyNoInteractions(dlqReplayService);
     }
 }

@@ -88,7 +88,7 @@ pulsestream:
       concurrency: ${PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY:1}
       # Idle window after which a running DLQ replay listener is considered to have drained the
       # backlog and is stopped automatically (bounded replay, #125).
-      dlq-replay-idle-timeout: ${PULSESTREAM_KAFKA_DLQ_REPLAY_IDLE_TIMEOUT:3s}
+      dlq-replay-idle-timeout: ${PULSESTREAM_KAFKA_DLQ_REPLAY_IDLE_TIMEOUT:30s}
       properties:
         spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.model}
         spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
