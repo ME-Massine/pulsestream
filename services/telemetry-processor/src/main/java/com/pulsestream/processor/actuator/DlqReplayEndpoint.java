@@ -3,6 +3,7 @@ package com.pulsestream.processor.actuator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -55,7 +56,7 @@ public class DlqReplayEndpoint {
     }
 
     @WriteOperation
-    public WebEndpointResponse<DlqReplayStatus> control(
+    public WebEndpointResponse<Object> control(
             @Selector String action,
             @Nullable List<String> eventIds
     ) {
@@ -64,13 +65,16 @@ public class DlqReplayEndpoint {
         return switch (normalizedAction) {
             case ACTION_START -> startReplay(eventIds);
             case ACTION_STOP -> new WebEndpointResponse<>(dlqReplayService.stop());
-            default -> new WebEndpointResponse<>(WebEndpointResponse.STATUS_BAD_REQUEST);
+            default -> badRequest(Map.of(
+                    "error", "Unknown action",
+                    "allowed", List.of(ACTION_START, ACTION_STOP)
+            ));
         };
     }
 
-    private WebEndpointResponse<DlqReplayStatus> startReplay(@Nullable List<String> eventIds) {
+    private WebEndpointResponse<Object> startReplay(@Nullable List<String> eventIds) {
         if (eventIds == null) {
-            return new WebEndpointResponse<>(WebEndpointResponse.STATUS_BAD_REQUEST);
+            return missingSelection();
         }
 
         Set<String> selection = eventIds.stream()
@@ -80,9 +84,17 @@ public class DlqReplayEndpoint {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
         if (selection.isEmpty()) {
-            return new WebEndpointResponse<>(WebEndpointResponse.STATUS_BAD_REQUEST);
+            return missingSelection();
         }
 
         return new WebEndpointResponse<>(dlqReplayService.start(selection));
+    }
+
+    private WebEndpointResponse<Object> missingSelection() {
+        return badRequest(Map.of("error", "eventIds selection must not be empty"));
+    }
+
+    private WebEndpointResponse<Object> badRequest(Map<String, ?> body) {
+        return new WebEndpointResponse<>(body, WebEndpointResponse.STATUS_BAD_REQUEST);
     }
 }

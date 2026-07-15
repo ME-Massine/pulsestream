@@ -59,7 +59,8 @@ public class DlqReplayService {
      * a replay is already running.
      *
      * @param eventIds the {@code eventId}s to replay; must not be empty
-     * @return the listener state after the request
+     * @return the current observed listener state immediately after issuing the request; container
+     *         start is asynchronous, so this may still show the previous state while it transitions
      */
     public DlqReplayStatus start(Set<String> eventIds) {
         Assert.notEmpty(eventIds, "eventIds selection must not be empty");
@@ -89,7 +90,8 @@ public class DlqReplayService {
      * Stops the DLQ replay listener so it no longer replays dead-letter events and clears the active
      * selection. No-op on the container if the listener is already stopped.
      *
-     * @return the listener state after the request
+     * @return the current observed listener state immediately after issuing the request; container
+     *         stop is asynchronous, so this may still show the previous state while it transitions
      */
     public DlqReplayStatus stop() {
         MessageListenerContainer container = requireContainer();
@@ -120,9 +122,11 @@ public class DlqReplayService {
     /**
      * Stops the replay listener once it has drained the current dead-letter backlog. Spring Kafka
      * publishes a {@link ListenerContainerIdleEvent} when the container has had no records for the
-     * configured idle interval, which — for the replay listener started against a fixed backlog —
-     * means the backlog has been fully scanned. This bounds a replay run to the backlog present when
-     * it was triggered rather than leaving the listener running to replay future dead-letter records.
+     * configured idle interval. Once the consumer has assigned partitions, this means the fixed
+     * backlog has been fully scanned. Idle events published before assignment are ignored so a slow
+     * consumer-group join cannot be mistaken for a successful drain. This bounds a replay run to the
+     * backlog present when it was triggered rather than leaving the listener running to replay future
+     * dead-letter records.
      * <p>
      * The idle event is delivered on the consumer thread, so the container is stopped asynchronously
      * (a synchronous {@code stop()} would deadlock waiting for that same thread to finish).
@@ -130,6 +134,14 @@ public class DlqReplayService {
     @EventListener
     public void onListenerContainerIdle(ListenerContainerIdleEvent event) {
         if (!DeadLetterEventConsumer.LISTENER_ID.equals(event.getListenerId())) {
+            return;
+        }
+
+        if (event.getTopicPartitions() == null || event.getTopicPartitions().isEmpty()) {
+            log.debug(
+                    "Ignoring idle event for DLQ replay listener '{}' while awaiting partition assignment",
+                    DeadLetterEventConsumer.LISTENER_ID
+            );
             return;
         }
 

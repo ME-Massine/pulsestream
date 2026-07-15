@@ -54,7 +54,7 @@ public class TelemetryProcessorKafkaProperties {
 
         private Integer concurrency = 1;
 
-        private java.time.Duration dlqReplayIdleTimeout = java.time.Duration.ofSeconds(3);
+        private java.time.Duration dlqReplayIdleTimeout = java.time.Duration.ofSeconds(30);
 
         private Map<String, String> properties = new LinkedHashMap<>();
 
