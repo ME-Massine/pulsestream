@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingestion-service-config
+  namespace: pulsestream
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: ingestion-service
+data:
+  PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  PULSESTREAM_OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318

@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  namespace: pulsestream
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: kafka
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/component: kafka
+  ports:
+    - name: internal
+      port: 29092
+      targetPort: 29092
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: pulsestream
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: kafka
+spec:
+  selector:
+    app.kubernetes.io/component: kafka
+  ports:
+    - name: internal
+      port: 29092
+      targetPort: 29092

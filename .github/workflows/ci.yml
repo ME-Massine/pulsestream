@@ -54,3 +54,14 @@ jobs:
 
       - name: Confirm Java is available
         run: java -version
+
+  kubernetes-manifests:
+    name: Validate Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate kustomization
+        shell: pwsh
+        run: ./scripts/validate-kubernetes-manifests.ps1

@@ -11,7 +11,7 @@ This document serves as the official record for tracking the current engineering
 | **Phase 3** | Core Event Pipeline | 🚧 In Progress |
 | **Phase 4** | Observability and Monitoring | 🚧 Foundations Started |
 | **Phase 5** | Reliability and Resilience | ⏳ Planned |
-| **Phase 6** | Kubernetes Deployment | ⏳ Planned |
+| **Phase 6** | Kubernetes Deployment | 🚧 Manifests implemented, pending live-cluster verification |
 
 ---
 
@@ -50,6 +50,13 @@ The goal of creating a reproducible local platform environment has been achieved
 docker compose up -d
 ```
 The configuration is managed via the [infrastructure/docker/docker-compose.yml](infrastructure/docker/docker-compose.yml) file.
+
+### Kubernetes Deployment (Phase 6, manifests)
+The platform's Kubernetes manifests, kept as the cluster counterpart to the local Docker Compose stack (same images, env var contracts, Kafka topics, Postgres schema, and Grafana dashboards), can be applied with:
+```bash
+kubectl apply -k infrastructure/kubernetes
+```
+See [infrastructure/kubernetes/README.md](infrastructure/kubernetes/README.md) for prerequisites, image build/load steps, and what's deployed.
 
 ### Core Event Pipeline Implemented So Far
 The current checkout includes:
@@ -96,7 +103,9 @@ This phase will expand the current observability foundation. The services alread
 The focus will shift toward enhancing the platform's fault tolerance. This includes the implementation of dead-letter queues (DLQs), event replay capabilities, robust retry mechanisms, and failure isolation patterns to ensure system stability under stress.
 
 ### Phase 6 — Kubernetes Deployment
-The final phase involves transitioning the platform to a production-grade Kubernetes environment. This includes the development of Kubernetes manifests, service deployment strategies, and the orchestration of the Kafka cluster and observability stack within the cluster.
+The platform can now be deployed to Kubernetes with a single `kubectl apply -k infrastructure/kubernetes`. Manifests are implemented for both services (`ingestion-service`, `telemetry-processor`), Kafka/Zookeeper, PostgreSQL, Redis, and the observability stack (Prometheus, Grafana, Jaeger), including HPAs for both application services and NodePort/Ingress exposure for the ingestion API. Details in [infrastructure/kubernetes/README.md](infrastructure/kubernetes/README.md).
+
+Deliberately deferred: the issue's original scope named `analytics-consumer` and `query-service`, which do not exist yet in this repo (only `ingestion-service` and `telemetry-processor` are implemented) — Kubernetes manifests for those services will follow once they're built. Kafka-consumer-lag-based autoscaling is provided as an optional KEDA `ScaledObject` rather than a default HPA, since vanilla Kubernetes HPA cannot read consumer group lag on its own. This phase has not yet been verified against a live cluster.
 
 ---
 
@@ -124,7 +133,8 @@ docs/
 └─ roadmap.md
 
 infrastructure/
-└─ docker/
+├─ docker/
+└─ kubernetes/
 ```
 
 ---

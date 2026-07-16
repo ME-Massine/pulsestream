@@ -1,0 +1,44 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pulsestream
+
+resources:
+  - namespace.yaml
+  - secrets/postgres-secret.yaml
+  - secrets/grafana-secret.yaml
+  - postgres/init-configmap.yaml
+  - postgres/statefulset.yaml
+  - postgres/service.yaml
+  - redis/deployment.yaml
+  - redis/service.yaml
+  - kafka/zookeeper-statefulset.yaml
+  - kafka/zookeeper-service.yaml
+  - kafka/kafka-statefulset.yaml
+  - kafka/kafka-service.yaml
+  - kafka/init-topics-configmap.yaml
+  - kafka/kafka-topics-job.yaml
+  - ingestion-service/configmap.yaml
+  - ingestion-service/deployment.yaml
+  - ingestion-service/service.yaml
+  - ingestion-service/hpa.yaml
+  - telemetry-processor/configmap.yaml
+  - telemetry-processor/deployment.yaml
+  - telemetry-processor/service.yaml
+  - telemetry-processor/hpa.yaml
+  - networking/ingestion-ingress.yaml
+  - observability/prometheus-rbac.yaml
+  - observability/prometheus-configmap.yaml
+  - observability/prometheus-deployment.yaml
+  - observability/prometheus-service.yaml
+  - observability/grafana-provisioning-configmap.yaml
+  - observability/grafana-dashboards-configmap.yaml
+  - observability/grafana-deployment.yaml
+  - observability/grafana-service.yaml
+  - observability/jaeger-deployment.yaml
+  - observability/jaeger-service.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: pulsestream
+    includeSelectors: false

@@ -1,0 +1,172 @@
+# Mirrors observability/grafana/dashboards/*.json (version-controlled
+# dashboard source, see issue #110). Keep this in sync with that directory.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: pulsestream
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: grafana
+data:
+  ingestion-metrics.json: |
+    {
+      "uid": "pulsestream-ingestion-metrics",
+      "title": "Ingestion Metrics",
+      "tags": ["pulsestream", "ingestion"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "5s",
+      "time": { "from": "now-15m", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request Rate",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+          "fieldConfig": {
+            "defaults": { "unit": "reqps" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_count{job=\"ingestion-service\", uri=\"/api/v1/events\"}[1m]))",
+              "legendFormat": "requests/s"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Success vs Failure Count",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "short" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(http_server_requests_seconds_count{job=\"ingestion-service\", uri=\"/api/v1/events\"}[$__range])) by (outcome)",
+              "legendFormat": "{{outcome}} count"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Average Ingestion Latency",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "s" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_sum{job=\"ingestion-service\", uri=\"/api/v1/events\"}[1m])) / sum(rate(http_server_requests_seconds_count{job=\"ingestion-service\", uri=\"/api/v1/events\"}[1m]))",
+              "legendFormat": "avg latency"
+            }
+          ]
+        }
+      ]
+    }
+  service-health.json: |
+    {
+      "uid": "pulsestream-service-health",
+      "title": "Service Health",
+      "tags": ["pulsestream"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "5s",
+      "time": { "from": "now-15m", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "job",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "query": "label_values(process_uptime_seconds, job)",
+            "refresh": 2,
+            "includeAll": true,
+            "multi": true,
+            "current": { "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "JVM Memory Used",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "fieldConfig": {
+            "defaults": { "unit": "bytes" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(jvm_memory_used_bytes{job=~\"$job\"}) by (job)",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "CPU Usage",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "fieldConfig": {
+            "defaults": { "unit": "percentunit", "max": 1, "min": 0 },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "process_cpu_usage{job=~\"$job\"}",
+              "legendFormat": "{{job}} process"
+            },
+            {
+              "expr": "system_cpu_usage{job=~\"$job\"}",
+              "legendFormat": "{{job}} system"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Uptime",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "dtdurations" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "process_uptime_seconds{job=~\"$job\"}",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Request Count",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "reqps" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_count{job=~\"$job\"}[1m])) by (job)",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        }
+      ]
+    }

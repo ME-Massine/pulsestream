@@ -1,0 +1,33 @@
+# Optional: Kafka-consumer-lag-based autoscaling for telemetry-processor.
+#
+# Vanilla Kubernetes HPA (see hpa.yaml) only supports CPU/memory out of the
+# box. Scaling on consumer lag needs an external metrics source; KEDA is the
+# standard way to do that for Kafka. This manifest is NOT part of the default
+# kustomization because it requires the KEDA operator (https://keda.sh) to be
+# installed in the cluster first. Once KEDA is installed, apply it with:
+#
+#   kubectl apply -f infrastructure/kubernetes/telemetry-processor/keda-scaledobject.optional.yaml
+#
+# It replaces hpa.yaml's role for this Deployment — KEDA generates its own
+# HorizontalPodAutoscaler, so don't run both against the same Deployment.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: telemetry-processor-kafka-lag
+  namespace: pulsestream
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: telemetry-processor
+spec:
+  scaleTargetRef:
+    name: telemetry-processor
+  minReplicaCount: 2
+  maxReplicaCount: 6
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka:29092
+        consumerGroup: telemetry-processor
+        topic: telemetry.events.raw
+        lagThreshold: "500"
+        offsetResetPolicy: earliest

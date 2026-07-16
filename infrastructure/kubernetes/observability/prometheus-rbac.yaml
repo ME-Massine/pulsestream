@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: pulsestream
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: prometheus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pulsestream-prometheus
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pulsestream-prometheus
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: pulsestream
+roleRef:
+  kind: ClusterRole
+  name: pulsestream-prometheus
+  apiGroup: rbac.authorization.k8s.io

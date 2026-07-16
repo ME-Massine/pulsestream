@@ -1,0 +1,27 @@
+# Requires an ingress controller (e.g. ingress-nginx) installed in the
+# cluster. For local kubectl/minikube/kind workflows without a controller,
+# use the ingestion-service-nodeport Service instead
+# (infrastructure/kubernetes/ingestion-service/service.yaml).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingestion-service
+  namespace: pulsestream
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: ingestion-service
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pulsestream.local
+      http:
+        paths:
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: ingestion-service
+                port:
+                  number: 8081

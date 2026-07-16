@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telemetry-processor-config
+  namespace: pulsestream
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+    app.kubernetes.io/component: telemetry-processor
+data:
+  PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  PULSESTREAM_POSTGRES_URL: jdbc:postgresql://postgres:5432/pulsestream
+  PULSESTREAM_DB_HEALTH_ENABLED: "true"
+  PULSESTREAM_OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
