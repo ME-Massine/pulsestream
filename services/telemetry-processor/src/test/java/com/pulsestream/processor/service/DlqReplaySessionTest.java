@@ -43,4 +43,42 @@ class DlqReplaySessionTest {
         assertThat(session.claimCompletionIfBoundaryReached()).isFalse();
         assertThat(session.isActive()).isFalse();
     }
+
+    @Test
+    void shouldClaimIdleFallbackStopOnlyOnceWhileActive() {
+        DlqReplaySession session = new DlqReplaySession();
+        assertThat(session.claimIdleFallbackStop()).isFalse();
+
+        session.begin(
+                Set.of("evt-1"),
+                Map.of(PARTITION, new DlqReplayPartitionRange(3, 5))
+        );
+
+        assertThat(session.claimIdleFallbackStop()).isTrue();
+        assertThat(session.claimIdleFallbackStop()).isFalse();
+        assertThat(session.isActive()).isFalse();
+    }
+
+    @Test
+    void clearScopedToARunShouldNotWipeANewerRun() {
+        DlqReplaySession session = new DlqReplaySession();
+        session.begin(
+                Set.of("evt-1"),
+                Map.of(PARTITION, new DlqReplayPartitionRange(3, 5))
+        );
+        long firstRunId = session.currentRunId();
+
+        session.begin(
+                Set.of("evt-2"),
+                Map.of(PARTITION, new DlqReplayPartitionRange(5, 7))
+        );
+
+        session.clearIfRunIs(firstRunId);
+        assertThat(session.isActive()).isTrue();
+        assertThat(session.selectedEventIds()).containsExactly("evt-2");
+
+        session.clearIfRunIs(session.currentRunId());
+        assertThat(session.isActive()).isFalse();
+        assertThat(session.selectedEventIds()).isEmpty();
+    }
 }

@@ -95,6 +95,20 @@ class DlqReplayServiceTest {
     }
 
     @Test
+    @DisplayName("start() should be a no-op while a previous run's consumer is still stopping")
+    void startShouldBeNoOpWhileConsumerIsStillStopping() {
+        givenRegisteredContainer();
+        when(container.isRunning()).thenReturn(false);
+        when(container.isChildRunning()).thenReturn(true);
+
+        service.start(Set.of("evt-2"));
+
+        verify(container, never()).start();
+        verify(boundarySnapshotter, never()).snapshot();
+        assertThat(replaySession.isActive()).isFalse();
+    }
+
+    @Test
     @DisplayName("stop() should stop the replay listener and clear the selection when it is running")
     void stopShouldStopRunningListener() {
         givenRegisteredContainer();
@@ -157,6 +171,47 @@ class DlqReplayServiceTest {
         verify(container).stop(callback.capture());
         callback.getValue().run();
         assertThat(replaySession.isActive()).isFalse();
+    }
+
+    @Test
+    @DisplayName("an idle event before the boundary is reached should stop the stalled replay as a fallback")
+    void idleEventBeforeBoundaryReachedShouldStopStalledReplay() {
+        beginReplay("evt-1");
+        when(container.getListenerId()).thenReturn(DeadLetterEventConsumer.LISTENER_ID);
+        when(container.isRunning()).thenReturn(true);
+        ListenerContainerIdleEvent event = idleEventFor(
+                DeadLetterEventConsumer.LISTENER_ID + "-0",
+                container,
+                List.of(DLQ_PARTITION)
+        );
+
+        service.onListenerContainerIdle(event);
+
+        ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
+        verify(container).stop(callback.capture());
+        callback.getValue().run();
+        assertThat(replaySession.isActive()).isFalse();
+        assertThat(replaySession.selectedEventIds()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a late stop callback from a finished run should not clear a newer run's session")
+    void staleStopCallbackShouldNotClearNewerRun() {
+        givenRegisteredContainer();
+        beginReplay("evt-1");
+        when(container.isRunning()).thenReturn(true);
+
+        service.onReplayRecordProcessed(DLQ_PARTITION, 0);
+
+        ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
+        verify(container).stop(callback.capture());
+
+        // Operator triggers the next replay before the previous stop callback fires.
+        replaySession.begin(Set.of("evt-2"), replayBoundary(0, 3));
+        callback.getValue().run();
+
+        assertThat(replaySession.isActive()).isTrue();
+        assertThat(replaySession.selectedEventIds()).containsExactly("evt-2");
     }
 
     @Test

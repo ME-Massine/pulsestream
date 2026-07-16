@@ -30,14 +30,18 @@ import org.springframework.util.Assert;
  *       (#124).</li>
  *   <li>The listener stops as soon as it reaches every captured end offset. Records appended after
  *       the trigger cannot extend the run, preserving the strategy's "no automatic retry loop from
- *       the DLQ" requirement. {@link #onListenerContainerIdle} is a completion fallback only.</li>
+ *       the DLQ" requirement. {@link #onListenerContainerIdle} is the fallback: it stops the
+ *       listener when the boundary is already scanned, and also stops it (with a warning) when the
+ *       listener goes idle before reaching the boundary — for example because tail records in the
+ *       captured ranges were removed by retention — so a replay can never run forever.</li>
  *   <li>{@link #stop()} halts an in-progress replay on demand. The container also stops itself on a
  *       failed republish (no-data-loss policy from #124) so the record is redelivered on the next
  *       start.</li>
  * </ul>
- * {@link #start(Set)} and {@link #stop()} are idempotent — issuing a trigger against a listener that
- * is already in the requested state is a safe no-op — so repeated or concurrent operator requests
- * do not fail.
+ * {@link #start(Set)} and {@link #stop()} are serialized and idempotent — issuing a trigger against
+ * a listener that is already in the requested state (or still transitioning out of it) is a safe
+ * no-op — so repeated or concurrent operator requests do not fail and cannot interleave their
+ * snapshot-and-begin steps.
  */
 @Service
 public class DlqReplayService {
@@ -63,17 +67,21 @@ public class DlqReplayService {
     /**
      * Starts a selective DLQ replay for the given {@code eventId}s. Only dead-letter records whose
      * {@code eventId} is in {@code eventIds} are republished; every other record is skipped. No-op if
-     * a replay is already running.
+     * a replay is already running or its consumer is still draining after a stop request.
      *
      * @param eventIds the {@code eventId}s to replay; must not be empty
      * @return the current observed listener state immediately after issuing the request; container
      *         start is asynchronous, so this may still show the previous state while it transitions
      */
-    public DlqReplayStatus start(Set<String> eventIds) {
+    public synchronized DlqReplayStatus start(Set<String> eventIds) {
         Assert.notEmpty(eventIds, "eventIds selection must not be empty");
         MessageListenerContainer container = requireContainer();
 
-        if (container.isRunning()) {
+        // isRunning() flips false as soon as a stop is requested, but the consumer thread may
+        // still be draining records against the previous session. Treat that window as busy too,
+        // so a new selection cannot clobber (or be scanned against) a run that has not fully
+        // terminated yet.
+        if (container.isRunning() || container.isChildRunning()) {
             log.info(
                     "DLQ replay listener '{}' is already running; start request is a no-op",
                     DeadLetterEventConsumer.LISTENER_ID
@@ -112,7 +120,7 @@ public class DlqReplayService {
      * @return the current observed listener state immediately after issuing the request; container
      *         stop is asynchronous, so this may still show the previous state while it transitions
      */
-    public DlqReplayStatus stop() {
+    public synchronized DlqReplayStatus stop() {
         MessageListenerContainer container = requireContainer();
 
         if (container.isRunning()) {
@@ -158,10 +166,13 @@ public class DlqReplayService {
     }
 
     /**
-     * Handles Spring Kafka's idle signal as a fallback completion check. The replay normally stops
-     * immediately after processing the final offset in its trigger-time snapshot. An idle event can
-     * stop it only when every captured partition range is already complete; assignment alone is not
-     * treated as proof that the backlog was drained. Events published before assignment are ignored.
+     * Handles Spring Kafka's idle signal as the fallback stop for a replay run. The replay normally
+     * stops immediately after processing the final offset in its trigger-time snapshot; an idle
+     * event then simply confirms completion. If the listener goes idle with partitions assigned
+     * <em>before</em> reaching the boundary, the tail of a captured range can no longer be
+     * delivered (for example after retention cleanup), so the run is stopped with a warning rather
+     * than left scanning forever. Events published before partition assignment are ignored, since
+     * assignment alone is not proof that the backlog was drained.
      * <p>
      * The idle event is delivered on the consumer thread, so the container is stopped asynchronously
      * (a synchronous {@code stop()} would deadlock waiting for that same thread to finish).
@@ -193,6 +204,19 @@ public class DlqReplayService {
 
         if (replaySession.claimCompletionIfBoundaryReached()) {
             stopCompletedReplay(container);
+            return;
+        }
+
+        if (replaySession.claimIdleFallbackStop()) {
+            log.warn(
+                    "DLQ replay listener '{}' went idle for {} ms before reaching its trigger-time"
+                            + " boundary; stopping it. Records at the tail of the captured ranges"
+                            + " may no longer exist (for example after retention cleanup) and were"
+                            + " not replayed",
+                    DeadLetterEventConsumer.LISTENER_ID,
+                    event.getIdleTime()
+            );
+            stopReplayRun(container);
         }
     }
 
@@ -201,7 +225,15 @@ public class DlqReplayService {
                 "DLQ replay listener '{}' reached its trigger-time backlog boundary; stopping it",
                 DeadLetterEventConsumer.LISTENER_ID
         );
-        container.stop(replaySession::clear);
+        stopReplayRun(container);
+    }
+
+    private void stopReplayRun(MessageListenerContainer container) {
+        // The stop completes asynchronously, so scope the cleanup callback to the run it belongs
+        // to: a late callback from this run must not wipe the session of a replay that an operator
+        // triggers after the container has stopped.
+        long runId = replaySession.currentRunId();
+        container.stop(() -> replaySession.clearIfRunIs(runId));
     }
 
     private DlqReplayStatus statusOf(MessageListenerContainer container) {

@@ -207,10 +207,15 @@ class DeadLetterEventConsumerTest {
     static class ListenerTestConfiguration extends KafkaConsumerConfiguration {
 
         @Bean
-        DeadLetterEventConsumer deadLetterEventConsumer() {
+        DlqReplaySession dlqReplaySession() {
+            return new DlqReplaySession();
+        }
+
+        @Bean
+        DeadLetterEventConsumer deadLetterEventConsumer(DlqReplaySession dlqReplaySession) {
             return new DeadLetterEventConsumer(
                     mock(ReplayEventPublisher.class),
-                    new DlqReplaySession(),
+                    dlqReplaySession,
                     mock(DlqReplayService.class)
             );
         }

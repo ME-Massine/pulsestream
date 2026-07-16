@@ -5,6 +5,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.kafka.common.TopicPartition;
@@ -36,15 +37,23 @@ public class DlqReplaySession {
     private final AtomicBoolean completionClaimed = new AtomicBoolean();
 
     /**
+     * Monotonically increasing id of the current replay run. Asynchronous cleanup (the container
+     * stop callback) is scoped to the run it belongs to via {@link #clearIfRunIs(long)} so a late
+     * callback from a finished run cannot wipe the state of a replay triggered after it.
+     */
+    private final AtomicLong runId = new AtomicLong();
+
+    /**
      * Records the selection and trigger-time partition ranges for a new replay run.
      *
      * @param eventIds the {@code eventId}s the operator asked to replay; copied defensively
      * @param ranges the inclusive/exclusive offset ranges present when the replay was triggered
      */
-    public void begin(
+    public synchronized void begin(
             Set<String> eventIds,
             Map<TopicPartition, DlqReplayPartitionRange> ranges
     ) {
+        runId.incrementAndGet();
         Map<TopicPartition, DlqReplayPartitionRange> immutableRanges = Map.copyOf(ranges);
         scannedOffsets.clear();
         immutableRanges.forEach((partition, range) ->
@@ -57,11 +66,30 @@ public class DlqReplaySession {
     /**
      * Clears the selection and offset boundary once a replay run finishes, stops, or fails.
      */
-    public void clear() {
+    public synchronized void clear() {
         selectedEventIds.set(Set.of());
         partitionRanges.set(Map.of());
         scannedOffsets.clear();
         completionClaimed.set(false);
+    }
+
+    /**
+     * @return the id of the current replay run, captured to scope asynchronous cleanup callbacks
+     */
+    public long currentRunId() {
+        return runId.get();
+    }
+
+    /**
+     * Clears the session only if no newer run has begun since {@code expectedRunId} was captured
+     * with {@link #currentRunId()}. Container stops complete asynchronously, so a stop callback
+     * from a finished run may fire after an operator has already triggered the next replay; this
+     * guard keeps that callback from wiping the newer run's selection and boundary.
+     */
+    public synchronized void clearIfRunIs(long expectedRunId) {
+        if (runId.get() == expectedRunId) {
+            clear();
+        }
     }
 
     /**
@@ -113,6 +141,16 @@ public class DlqReplaySession {
                 ) >= entry.getValue().endOffset());
 
         return boundaryReached && completionClaimed.compareAndSet(false, true);
+    }
+
+    /**
+     * Atomically claims a fallback stop for an active run that went idle before reaching its
+     * trigger-time boundary — for example because tail records in the captured ranges were removed
+     * by retention and can never be delivered. Only the caller that changes the completion state
+     * receives {@code true}, mirroring {@link #claimCompletionIfBoundaryReached()}.
+     */
+    public boolean claimIdleFallbackStop() {
+        return isActive() && completionClaimed.compareAndSet(false, true);
     }
 
     /**

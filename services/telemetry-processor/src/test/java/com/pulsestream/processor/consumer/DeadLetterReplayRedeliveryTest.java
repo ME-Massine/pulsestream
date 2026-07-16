@@ -103,22 +103,30 @@ class DeadLetterReplayRedeliveryTest {
                 mock(DlqReplayService.class)
         );
         ConcurrentMessageListenerContainer<String, DeadLetterEvent> container =
-                replayContainer(consumer, DLQ_TOPIC, DLQ_GROUP);
+                replayContainer(consumer, replaySession, DLQ_TOPIC, DLQ_GROUP);
 
         produceDeadLetterEvent(DLQ_TOPIC);
 
-        // Phase 1: first republish fails -> container stops, offset not committed.
+        // Phase 1: first republish fails -> container stops, offset not committed, session cleared.
         container.start();
         waitUntil(() -> publishAttempts.get() >= 1, "first republish attempt");
         waitUntil(() -> !container.isRunning(), "container stopped after failed republish");
+        waitUntil(() -> !replaySession.isActive(), "replay session cleared after failed republish");
 
         assertThat(publishAttempts.get()).isEqualTo(1);
         assertThat(container.isRunning()).isFalse();
+        assertThat(replaySession.selectedEventIds())
+                .as("a failed republish must not leave a stale selection behind")
+                .isEmpty();
         assertThat(committedOffset(DLQ_GROUP, PARTITION))
                 .as("offset must not advance on a failed republish")
                 .isEqualTo(-1L);
 
-        // Phase 2: operator restarts -> record is redelivered, succeeds, offset advances.
+        // Phase 2: operator triggers a new replay -> record is redelivered, succeeds, offset advances.
+        replaySession.begin(
+                Set.of("evt-001"),
+                Map.of(PARTITION, new DlqReplayPartitionRange(0, 1))
+        );
         container.start();
         waitUntil(() -> publishAttempts.get() >= 2, "redelivered republish attempt");
         waitUntil(() -> committedOffset(DLQ_GROUP, PARTITION) == 1L, "offset committed after successful republish");
@@ -163,7 +171,7 @@ class DeadLetterReplayRedeliveryTest {
                 replayService
         );
         ConcurrentMessageListenerContainer<String, DeadLetterEvent> container =
-                replayContainer(consumer, BOUNDARY_TOPIC, BOUNDARY_GROUP);
+                replayContainer(consumer, replaySession, BOUNDARY_TOPIC, BOUNDARY_GROUP);
 
         container.start();
         waitUntil(() -> handledRecords.get() >= 2, "original and appended DLQ records handled");
@@ -177,6 +185,7 @@ class DeadLetterReplayRedeliveryTest {
 
     private ConcurrentMessageListenerContainer<String, DeadLetterEvent> replayContainer(
             DeadLetterEventConsumer consumer,
+            DlqReplaySession replaySession,
             String topic,
             String groupId
     ) {
@@ -192,7 +201,7 @@ class DeadLetterReplayRedeliveryTest {
         ConsumerFactory<String, DeadLetterEvent> consumerFactory =
                 configuration.dlqConsumerFactory(properties);
         ConcurrentKafkaListenerContainerFactory<String, DeadLetterEvent> factory =
-                configuration.dlqKafkaListenerContainerFactory(consumerFactory, properties);
+                configuration.dlqKafkaListenerContainerFactory(consumerFactory, properties, replaySession);
 
         // Build the container from the real factory so its CommonContainerStoppingErrorHandler applies.
         ConcurrentMessageListenerContainer<String, DeadLetterEvent> container =
