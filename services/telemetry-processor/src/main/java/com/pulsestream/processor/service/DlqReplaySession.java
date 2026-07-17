@@ -1,5 +1,6 @@
 package com.pulsestream.processor.service;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,6 +35,13 @@ public class DlqReplaySession {
 
     private final ConcurrentMap<TopicPartition, Long> scannedOffsets = new ConcurrentHashMap<>();
 
+    /**
+     * Partitions whose consumer child has gone idle before reaching its trigger-time end offset.
+     * Tracked per partition so the idle fallback stops the run only once <em>every</em> partition is
+     * settled, rather than the moment a single concurrent child idles while a sibling still scans.
+     */
+    private final Set<TopicPartition> idlePartitions = ConcurrentHashMap.newKeySet();
+
     private final AtomicBoolean completionClaimed = new AtomicBoolean();
 
     /**
@@ -56,6 +64,7 @@ public class DlqReplaySession {
         runId.incrementAndGet();
         Map<TopicPartition, DlqReplayPartitionRange> immutableRanges = Map.copyOf(ranges);
         scannedOffsets.clear();
+        idlePartitions.clear();
         immutableRanges.forEach((partition, range) ->
                 scannedOffsets.put(partition, range.startOffset()));
         partitionRanges.set(immutableRanges);
@@ -70,6 +79,7 @@ public class DlqReplaySession {
         selectedEventIds.set(Set.of());
         partitionRanges.set(Map.of());
         scannedOffsets.clear();
+        idlePartitions.clear();
         completionClaimed.set(false);
     }
 
@@ -134,11 +144,8 @@ public class DlqReplaySession {
             return false;
         }
 
-        boolean boundaryReached = partitionRanges.get().entrySet().stream()
-                .allMatch(entry -> scannedOffsets.getOrDefault(
-                        entry.getKey(),
-                        entry.getValue().startOffset()
-                ) >= entry.getValue().endOffset());
+        boolean boundaryReached = partitionRanges.get().keySet().stream()
+                .allMatch(this::isScannedToBoundary);
 
         return boundaryReached && completionClaimed.compareAndSet(false, true);
     }
@@ -146,11 +153,42 @@ public class DlqReplaySession {
     /**
      * Atomically claims a fallback stop for an active run that went idle before reaching its
      * trigger-time boundary — for example because tail records in the captured ranges were removed
-     * by retention and can never be delivered. Only the caller that changes the completion state
-     * receives {@code true}, mirroring {@link #claimCompletionIfBoundaryReached()}.
+     * by retention and can never be delivered.
+     * <p>
+     * The signal is <em>partition-aware</em>: a {@link org.springframework.kafka.event.ListenerContainerIdleEvent
+     * ListenerContainerIdleEvent} is published per consumer child, so with replay concurrency above
+     * one an idle event only means <em>that child's</em> partitions are drained. The idle partitions
+     * are recorded, and the stop is claimed only once every trigger-time partition is
+     * <em>settled</em> — either fully scanned to its end offset or marked idle here. This prevents a
+     * single idle child from ending a replay while a sibling child is still scanning another
+     * partition. Only the caller that changes the completion state receives {@code true}, mirroring
+     * {@link #claimCompletionIfBoundaryReached()}.
+     *
+     * @param newlyIdlePartitions the partitions assigned to the child container that went idle
      */
-    public boolean claimIdleFallbackStop() {
-        return isActive() && completionClaimed.compareAndSet(false, true);
+    public boolean claimIdleFallbackStop(Collection<TopicPartition> newlyIdlePartitions) {
+        if (!isActive()) {
+            return false;
+        }
+
+        if (newlyIdlePartitions != null) {
+            for (TopicPartition partition : newlyIdlePartitions) {
+                if (partitionRanges.get().containsKey(partition)) {
+                    idlePartitions.add(partition);
+                }
+            }
+        }
+
+        boolean everyPartitionSettled = partitionRanges.get().keySet().stream()
+                .allMatch(partition -> isScannedToBoundary(partition) || idlePartitions.contains(partition));
+
+        return everyPartitionSettled && completionClaimed.compareAndSet(false, true);
+    }
+
+    private boolean isScannedToBoundary(TopicPartition partition) {
+        DlqReplayPartitionRange range = partitionRanges.get().get(partition);
+        return range != null
+                && scannedOffsets.getOrDefault(partition, range.startOffset()) >= range.endOffset();
     }
 
     /**

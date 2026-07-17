@@ -33,7 +33,10 @@ import org.springframework.util.Assert;
  *       the DLQ" requirement. {@link #onListenerContainerIdle} is the fallback: it stops the
  *       listener when the boundary is already scanned, and also stops it (with a warning) when the
  *       listener goes idle before reaching the boundary — for example because tail records in the
- *       captured ranges were removed by retention — so a replay can never run forever.</li>
+ *       captured ranges were removed by retention — so a replay can never run forever. Idle events
+ *       are published per consumer child, so completion and fallback tracking are partition-aware:
+ *       with replay concurrency above one, one idle child does not end the run while a sibling child
+ *       is still scanning another partition.</li>
  *   <li>{@link #stop()} halts an in-progress replay on demand. The container also stops itself on a
  *       failed republish (no-data-loss policy from #124) so the record is redelivered on the next
  *       start.</li>
@@ -174,6 +177,12 @@ public class DlqReplayService {
      * than left scanning forever. Events published before partition assignment are ignored, since
      * assignment alone is not proof that the backlog was drained.
      * <p>
+     * A {@code ConcurrentMessageListenerContainer} publishes idle events from each child container
+     * with only that child's assigned partitions ({@link ListenerContainerIdleEvent#getTopicPartitions()}).
+     * The fallback stop is therefore delegated to {@link DlqReplaySession#claimIdleFallbackStop(java.util.Collection)},
+     * which stops the run only once every trigger-time partition is drained or idle — so a single
+     * idle child cannot cut a concurrent replay short while another partition is still scanning.
+     * <p>
      * The idle event is delivered on the consumer thread, so the container is stopped asynchronously
      * (a synchronous {@code stop()} would deadlock waiting for that same thread to finish).
      */
@@ -207,16 +216,23 @@ public class DlqReplayService {
             return;
         }
 
-        if (replaySession.claimIdleFallbackStop()) {
+        if (replaySession.claimIdleFallbackStop(event.getTopicPartitions())) {
             log.warn(
-                    "DLQ replay listener '{}' went idle for {} ms before reaching its trigger-time"
-                            + " boundary; stopping it. Records at the tail of the captured ranges"
-                            + " may no longer exist (for example after retention cleanup) and were"
-                            + " not replayed",
+                    "DLQ replay listener '{}' went idle for {} ms with every trigger-time partition"
+                            + " either drained or idle before reaching its boundary; stopping it."
+                            + " Records at the tail of the captured ranges may no longer exist (for"
+                            + " example after retention cleanup) and were not replayed",
                     DeadLetterEventConsumer.LISTENER_ID,
                     event.getIdleTime()
             );
             stopReplayRun(container);
+        } else {
+            log.debug(
+                    "DLQ replay listener '{}' child for partitions {} is idle, but other trigger-time"
+                            + " partitions are still scanning; keeping the replay running",
+                    DeadLetterEventConsumer.LISTENER_ID,
+                    event.getTopicPartitions()
+            );
         }
     }
 

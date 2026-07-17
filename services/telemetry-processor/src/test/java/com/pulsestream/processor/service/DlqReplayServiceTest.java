@@ -195,6 +195,39 @@ class DlqReplayServiceTest {
     }
 
     @Test
+    @DisplayName("an idle child should not stop a concurrent replay while another partition is still scanning")
+    void idleChildShouldNotStopReplayWhileSiblingPartitionStillScanning() {
+        TopicPartition partition1 = new TopicPartition("telemetry.events.dlq", 1);
+        replaySession.begin(
+                Set.of("evt-1"),
+                Map.of(
+                        DLQ_PARTITION, new DlqReplayPartitionRange(0, 1),
+                        partition1, new DlqReplayPartitionRange(0, 1)
+                )
+        );
+        when(container.getListenerId()).thenReturn(DeadLetterEventConsumer.LISTENER_ID);
+        when(container.isRunning()).thenReturn(true);
+
+        // Partition 0's child drained and idled; partition 1 has not been scanned yet, so the run
+        // must keep running rather than being cut short by the single idle child.
+        replaySession.recordProcessed(DLQ_PARTITION, 0);
+        service.onListenerContainerIdle(idleEventFor(
+                DeadLetterEventConsumer.LISTENER_ID + "-0", container, List.of(DLQ_PARTITION)));
+
+        verify(container, never()).stop(any(Runnable.class));
+        assertThat(replaySession.isActive()).isTrue();
+
+        // Partition 1's child now idles too, so every trigger-time partition is settled -> stop.
+        service.onListenerContainerIdle(idleEventFor(
+                DeadLetterEventConsumer.LISTENER_ID + "-1", container, List.of(partition1)));
+
+        ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
+        verify(container).stop(callback.capture());
+        callback.getValue().run();
+        assertThat(replaySession.isActive()).isFalse();
+    }
+
+    @Test
     @DisplayName("a late stop callback from a finished run should not clear a newer run's session")
     void staleStopCallbackShouldNotClearNewerRun() {
         givenRegisteredContainer();
