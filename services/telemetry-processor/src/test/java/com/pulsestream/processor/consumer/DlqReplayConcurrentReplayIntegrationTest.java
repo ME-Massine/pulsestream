@@ -44,6 +44,7 @@ import org.springframework.kafka.event.ListenerContainerIdleEvent;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.MessageListener;
 import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.support.TopicPartitionOffset;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.springframework.kafka.test.EmbeddedKafkaKraftBroker;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
@@ -120,10 +121,19 @@ class DlqReplayConcurrentReplayIntegrationTest {
         DlqReplayBoundarySnapshotter snapshotter =
                 new DlqReplayBoundarySnapshotter(consumerFactory, properties);
 
+        // Pin each partition to its own child via explicit assignment (assign(), not a group
+        // subscription). Subscribing by topic would let the consumer-group rebalancer decide the
+        // layout, and under load a single child can be assigned *both* partitions; if it then blocks
+        // on partition 1's gate before the sibling joins, partition 0 is never read and the run
+        // deadlocks. Explicit assignment gives a deterministic one-partition-per-child layout with no
+        // rebalance, which is exactly the topology this test needs to prove the partition-aware idle
+        // fallback. Seek to offset 0 so each child starts at the trigger-time boundary start.
         ConcurrentMessageListenerContainer<String, DeadLetterEvent> container =
                 configuration
                         .dlqKafkaListenerContainerFactory(consumerFactory, properties, session)
-                        .createContainer(TOPIC);
+                        .createContainer(
+                                new TopicPartitionOffset(TOPIC, 0, 0L),
+                                new TopicPartitionOffset(TOPIC, 1, 0L));
         // The parent bean name is the listener id the service matches on; children are suffixed.
         container.setBeanName(DeadLetterEventConsumer.LISTENER_ID);
         container.getContainerProperties().setGroupId(GROUP);
@@ -185,7 +195,8 @@ class DlqReplayConcurrentReplayIntegrationTest {
         properties.getConsumer().setDlqGroupId(GROUP);
         properties.getConsumer().setKeyDeserializer(StringDeserializer.class.getName());
         properties.getConsumer().setAutoOffsetReset("earliest");
-        // One child per partition so an idle child maps to a single partition.
+        // Two children, each explicitly pinned to one partition (see createContainer below), so an
+        // idle child maps to a single partition.
         properties.getConsumer().setConcurrency(2);
         // Idle quickly so partition 0's drained child reports idle well within the test window.
         properties.getConsumer().setDlqReplayIdleTimeout(Duration.ofMillis(250));
