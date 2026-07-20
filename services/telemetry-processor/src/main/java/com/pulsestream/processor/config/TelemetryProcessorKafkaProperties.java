@@ -54,6 +54,8 @@ public class TelemetryProcessorKafkaProperties {
 
         private Integer concurrency = 1;
 
+        private java.time.Duration dlqReplayIdleTimeout = java.time.Duration.ofSeconds(30);
+
         private Map<String, String> properties = new LinkedHashMap<>();
 
         public String getGroupId() {
@@ -102,6 +104,14 @@ public class TelemetryProcessorKafkaProperties {
 
         public void setConcurrency(Integer concurrency) {
             this.concurrency = concurrency;
+        }
+
+        public java.time.Duration getDlqReplayIdleTimeout() {
+            return dlqReplayIdleTimeout;
+        }
+
+        public void setDlqReplayIdleTimeout(java.time.Duration dlqReplayIdleTimeout) {
+            this.dlqReplayIdleTimeout = dlqReplayIdleTimeout;
         }
 
         public Map<String, String> getProperties() {

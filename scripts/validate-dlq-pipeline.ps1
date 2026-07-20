@@ -4,7 +4,9 @@ param(
     [string] $BootstrapServer = "localhost:9092",
     [string] $RawTopic = "telemetry.events.raw",
     [string] $DlqTopic = "telemetry.events.dlq",
-    [string] $ProcessorBaseUrl = "http://localhost:8082",
+    # Actuator (health) is served on the separate, loopback-bound management port (see the
+    # telemetry-processor application.yml), not on the main service port.
+    [string] $ProcessorManagementBaseUrl = "http://localhost:9083",
     [string] $ProcessorSourceService = "telemetry-processor",
     # Path to the telemetry-processor log file the routing-log assertion reads.
     # The processor runs on the host, so its logs are read directly from disk
@@ -136,7 +138,7 @@ Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
     -FailureMessage "telemetry-processor health endpoint did not report UP within $TimeoutSeconds seconds." `
     -Operation {
-        $result = Invoke-JsonGet "$ProcessorBaseUrl/actuator/health"
+        $result = Invoke-JsonGet "$ProcessorManagementBaseUrl/actuator/health"
         Confirm-Condition `
             -Condition ($result.status -eq "UP") `
             -SuccessMessage "telemetry-processor health endpoint is UP" `
@@ -193,7 +195,7 @@ Invoke-WithRetry `
 
 # 6. Acceptance criterion: no system crash. The processor must still be healthy
 #    after handling the failed event.
-$health = Invoke-JsonGet "$ProcessorBaseUrl/actuator/health"
+$health = Invoke-JsonGet "$ProcessorManagementBaseUrl/actuator/health"
 Confirm-Condition -Permanent `
     -Condition ($health.status -eq "UP") `
     -SuccessMessage "telemetry-processor is still UP after routing the failed event" `

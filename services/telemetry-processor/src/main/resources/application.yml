@@ -34,10 +34,18 @@ server:
   port: 8082
 
 management:
+  # The DLQ replay endpoint (#125) is state-changing and there is no authentication in front of the
+  # service yet, so the management surface is served on its own port bound to loopback by default
+  # rather than on the main service port. This keeps start/stop of bulk replay reachable only from
+  # the host (operators triggering it locally), not from anyone able to reach the service port.
+  # Override PULSESTREAM_MANAGEMENT_ADDRESS to expose it once an auth/network policy is in place.
+  server:
+    port: ${PULSESTREAM_MANAGEMENT_PORT:9083}
+    address: ${PULSESTREAM_MANAGEMENT_ADDRESS:127.0.0.1}
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus
+        include: health,info,prometheus,dlqreplay
   endpoint:
     health:
       show-details: never
@@ -78,6 +86,10 @@ pulsestream:
       value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JsonDeserializer}
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
       concurrency: ${PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY:1}
+      # Fallback idle signal for bounded DLQ replay (#125). The listener normally stops when it
+      # reaches the per-partition end offsets captured at trigger time; if it goes idle before
+      # reaching them (for example, tail records removed by retention), this timeout stops it.
+      dlq-replay-idle-timeout: ${PULSESTREAM_KAFKA_DLQ_REPLAY_IDLE_TIMEOUT:30s}
       properties:
         spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.model}
         spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}

@@ -54,6 +54,24 @@ This document covers **strategy and scope only**. Implementation is tracked sepa
   - source (`dlq` or `raw`)
   - selection (event IDs for DLQ, offset/time range for raw)
 - There is no automatic retry loop from the DLQ. Keeping replay manual bounds the blast radius and keeps a human in the loop for bulk raw-topic replays.
+
+### DLQ replay trigger (#125)
+
+DLQ replay is triggered through an actuator endpoint on `telemetry-processor`. Because the trigger is **state-changing** and the service is not yet fronted by authentication, the management surface is served on its own port bound to loopback by default (`management.server.port`/`management.server.address`, defaults `9083`/`127.0.0.1`) rather than on the main service port — so start/stop of replay is reachable only from the host, not from anyone able to reach the service port. The trigger starts and stops the `dlq-replay-listener` container, which is registered with `autoStartup=false` and otherwise stays idle:
+
+| Operation | Effect |
+|-----------|--------|
+| `GET /actuator/dlqreplay` | Report whether the replay listener is running and which `eventId`s it is replaying |
+| `POST /actuator/dlqreplay/start` | Replay the **selected** events — body must supply `eventId`s as a comma-delimited string, e.g. `{"eventIds": "evt-1,evt-2"}` |
+| `POST /actuator/dlqreplay/stop` | Stop the listener |
+
+Replay is **selective and bounded**, matching this strategy ("replay targets specific failed events by `eventId`", "no automatic retry loop from the DLQ"):
+
+- **Selective.** Only records whose `eventId` is in the operator-supplied selection are republished to `telemetry.events.raw`; every other dead-letter record read during the scan is skipped. A `start` without a non-empty selection is rejected (`400`). Future dead-letter records that were not selected are never automatically replayed.
+- **Repeatable.** On each `start` the listener rewinds its partitions to the beginning, so an operator can target any historical dead-letter `eventId` regardless of what a previous run consumed.
+- **Bounded.** Each `start` snapshots the DLQ partitions' beginning and end offsets before the listener runs. The listener scans only those inclusive/exclusive ranges and stops as soon as every partition reaches its captured end offset, so records appended after the trigger cannot extend the run or create an automatic retry loop. A configurable 30-second idle event is the fallback: it stops the listener once the captured ranges are scanned, and also stops it (with a warning) if the listener goes idle before reaching the boundary — for example when tail records in a captured range were removed by retention — so a replay can never run forever. `start`/`stop` are serialized and idempotent, and the listener also stops itself on a failed republish (no-data-loss policy from #124), clearing the active selection; the record's offset is not committed, so it is redelivered on the next `start`.
+
+Offset/time-range selection for raw-topic replay is not covered by this trigger.
 - Replayed events are published back to **`telemetry.events.raw`** — the same topic they originated from (directly, for raw-sourced replay, or after being read out of the DLQ, for DLQ-sourced replay). This matches #124's scope ("publish events back to `telemetry.events.raw`") and avoids introducing a topic that isn't defined in [topics.md](./topics.md) or provisioned anywhere. There is no separate `telemetry.events.replay` topic.
 - Each replayed event carries additional replay metadata alongside the standard envelope defined in [event-schema.md](./event-schema.md) (carried as Kafka headers or envelope fields — see below):
 

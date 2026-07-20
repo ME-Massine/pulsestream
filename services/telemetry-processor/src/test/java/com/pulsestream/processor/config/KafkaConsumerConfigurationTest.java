@@ -1,6 +1,7 @@
 package com.pulsestream.processor.config;
 
 import com.pulsestream.processor.model.DeadLetterEvent;
+import com.pulsestream.processor.service.DlqReplaySession;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -18,6 +19,7 @@ class KafkaConsumerConfigurationTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withUserConfiguration(TestConfiguration.class)
+            .withBean(DlqReplaySession.class)
             .withPropertyValues(
                     "pulsestream.kafka.bootstrap-servers=localhost:9092",
                     "pulsestream.kafka.consumer.group-id=telemetry-processor",
