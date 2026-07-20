@@ -85,7 +85,7 @@ The telemetry-processor consumes raw telemetry events and performs real-time ana
 
 ### Query Service
 
-**Status:** Planned. There is no `services/query-service` module in the current checkout.
+**Status:** Scaffold exists at `services/query-service`. Query business functionality (REST endpoints, data access) is still planned.
 
 The Query Service exposes APIs that allow external systems and dashboards to retrieve telemetry data and anomalies.
 
