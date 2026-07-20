@@ -6,11 +6,15 @@ import com.pulsestream.processor.model.TelemetryEnvelope;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
 
 import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 @ExtendWith(MockitoExtension.class)
 class ReplayEventPublisherTest {
@@ -38,7 +43,11 @@ class ReplayEventPublisherTest {
     @BeforeEach
     void setUp() {
         kafkaProperties = new TelemetryProcessorKafkaProperties();
-        replayEventPublisher = new ReplayEventPublisher(kafkaTemplate, kafkaProperties);
+        replayEventPublisher = new ReplayEventPublisher(
+                kafkaTemplate,
+                kafkaProperties,
+                Clock.fixed(Instant.parse("2026-04-01T09:30:00Z"), ZoneOffset.UTC)
+        );
     }
 
     @Test
@@ -47,13 +56,23 @@ class ReplayEventPublisherTest {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         CompletableFuture<SendResult<String, TelemetryEnvelope>> future = CompletableFuture.completedFuture(null);
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>any()))
                 .thenReturn(future);
 
-        assertThatCode(() -> replayEventPublisher.publish(telemetryEvent))
+        assertThatCode(() -> replayEventPublisher.publish(telemetryEvent, ReplayEventPublisher.DLQ_REPLAY_SOURCE))
                 .doesNotThrowAnyException();
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>argThat(record ->
+                record.topic().equals(kafkaProperties.getTopics().getRaw())
+                        && record.key().equals("evt-001")
+                        && record.value().equals(telemetryEvent)
+                        && new String(record.headers().lastHeader(ReplayHeaders.REPLAY).value(), StandardCharsets.UTF_8)
+                                .equals("true")
+                        && new String(record.headers().lastHeader(ReplayHeaders.REPLAYED_AT).value(), StandardCharsets.UTF_8)
+                                .equals("2026-04-01T09:30:00Z")
+                        && new String(record.headers().lastHeader(ReplayHeaders.REPLAY_SOURCE).value(), StandardCharsets.UTF_8)
+                                .equals(ReplayEventPublisher.DLQ_REPLAY_SOURCE)
+        ));
     }
 
     @Test
@@ -62,13 +81,15 @@ class ReplayEventPublisherTest {
         TelemetryEvent telemetryEvent = telemetryEvent(" ", "factory-01");
         CompletableFuture<SendResult<String, TelemetryEnvelope>> future = CompletableFuture.completedFuture(null);
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "factory-01", telemetryEvent))
+        when(kafkaTemplate.send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>any()))
                 .thenReturn(future);
 
-        assertThatCode(() -> replayEventPublisher.publish(telemetryEvent))
+        assertThatCode(() -> replayEventPublisher.publish(telemetryEvent, ReplayEventPublisher.DLQ_REPLAY_SOURCE))
                 .doesNotThrowAnyException();
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "factory-01", telemetryEvent);
+        verify(kafkaTemplate).send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>argThat(record ->
+                record.key().equals("factory-01") && record.value().equals(telemetryEvent)
+        ));
     }
 
     @Test
@@ -79,15 +100,15 @@ class ReplayEventPublisherTest {
         KafkaException kafkaException = new KafkaException("broker unavailable");
         future.completeExceptionally(kafkaException);
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>any()))
                 .thenReturn(future);
 
-        assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent))
+        assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent, ReplayEventPublisher.DLQ_REPLAY_SOURCE))
                 .isInstanceOf(TelemetryPublishingException.class)
                 .hasMessage("Failed to republish replayed event to Kafka")
                 .hasCause(kafkaException);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>any());
     }
 
     @Test
@@ -96,15 +117,15 @@ class ReplayEventPublisherTest {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         KafkaException kafkaException = new KafkaException("producer unavailable");
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>any()))
                 .thenThrow(kafkaException);
 
-        assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent))
+        assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent, ReplayEventPublisher.DLQ_REPLAY_SOURCE))
                 .isInstanceOf(TelemetryPublishingException.class)
                 .hasMessage("Failed to republish replayed event to Kafka")
                 .hasCause(kafkaException);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>any());
     }
 
     @Test
@@ -113,15 +134,15 @@ class ReplayEventPublisherTest {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         CompletableFuture<SendResult<String, TelemetryEnvelope>> future = new CompletableFuture<>();
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>any()))
                 .thenReturn(future);
 
-        assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent))
+        assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent, ReplayEventPublisher.DLQ_REPLAY_SOURCE))
                 .isInstanceOf(TelemetryPublishingException.class)
                 .hasMessage("Failed to republish replayed event to Kafka")
                 .hasCauseInstanceOf(TimeoutException.class);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>any());
     }
 
     @Test
@@ -129,7 +150,7 @@ class ReplayEventPublisherTest {
     void shouldRejectBlankTenantIdWhenEventIdIsBlank() {
         TelemetryEvent telemetryEvent = telemetryEvent(" ", " ");
 
-        assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent))
+        assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent, ReplayEventPublisher.DLQ_REPLAY_SOURCE))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("telemetryEvent must contain a non-blank tenantId when eventId is blank");
     }
@@ -137,7 +158,7 @@ class ReplayEventPublisherTest {
     @Test
     @DisplayName("should reject null telemetry events")
     void shouldRejectNullTelemetryEvents() {
-        assertThatThrownBy(() -> replayEventPublisher.publish(null))
+        assertThatThrownBy(() -> replayEventPublisher.publish(null, ReplayEventPublisher.DLQ_REPLAY_SOURCE))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("telemetryEvent must not be null");
     }

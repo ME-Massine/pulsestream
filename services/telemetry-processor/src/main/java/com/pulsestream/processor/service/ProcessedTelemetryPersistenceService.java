@@ -41,22 +41,39 @@ public class ProcessedTelemetryPersistenceService {
     }
 
     public void persist(TelemetryEvent processedEvent) {
+        persist(processedEvent, false);
+    }
+
+    /**
+     * Persists an event projection. A replay replaces the existing projection with the same
+     * {@code event_id}; ordinary at-least-once redelivery still treats that collision as a no-op.
+     */
+    public void persist(TelemetryEvent processedEvent, boolean replayed) {
         Assert.notNull(processedEvent, "processedEvent must not be null");
         Assert.notNull(processedEvent.payload(), "processedEvent payload must not be null");
 
         try {
-            repository.save(toEntity(processedEvent));
+            if (replayed) {
+                upsert(toEntity(processedEvent));
+            } else {
+                repository.save(toEntity(processedEvent));
+            }
             log.debug(
-                    "Persisted processed telemetry event eventId={} tenantId={}",
+                    "Persisted processed telemetry event eventId={} tenantId={} replayed={}",
                     processedEvent.eventId(),
-                    processedEvent.tenantId()
+                    processedEvent.tenantId(),
+                    replayed
             );
         } catch (DataAccessException ex) {
             if (ex instanceof DataIntegrityViolationException divEx && isUniqueConstraintViolation(divEx)) {
-                log.debug(
-                        "Skipped persisting duplicate processed telemetry event eventId={}",
-                        processedEvent.eventId()
-                );
+                if (replayed) {
+                    replaceAfterConcurrentInsert(toEntity(processedEvent), divEx);
+                } else {
+                    log.debug(
+                            "Skipped persisting duplicate processed telemetry event eventId={}",
+                            processedEvent.eventId()
+                    );
+                }
             } else {
                 log.warn(
                         "Failed to persist processed telemetry event eventId={} tenantId={}",
@@ -75,6 +92,24 @@ public class ProcessedTelemetryPersistenceService {
             );
             throw ex;
         }
+    }
+
+    private void upsert(ProcessedTelemetryEntity replacement) {
+        repository.findByEventId(replacement.getEventId())
+                .ifPresentOrElse(existing -> {
+                    existing.updateFrom(replacement);
+                    repository.save(existing);
+                }, () -> repository.save(replacement));
+    }
+
+    private void replaceAfterConcurrentInsert(
+            ProcessedTelemetryEntity replacement,
+            DataIntegrityViolationException originalException
+    ) {
+        ProcessedTelemetryEntity existing = repository.findByEventId(replacement.getEventId())
+                .orElseThrow(() -> originalException);
+        existing.updateFrom(replacement);
+        repository.save(existing);
     }
 
     /**

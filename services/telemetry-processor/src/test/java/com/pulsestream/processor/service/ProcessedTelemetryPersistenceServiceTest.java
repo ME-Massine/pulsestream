@@ -8,6 +8,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -76,6 +77,25 @@ class ProcessedTelemetryPersistenceServiceTest {
                 .thenThrow(new DataIntegrityViolationException("duplicate key value violates unique constraint"));
 
         assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("should replace the existing projection when processing a replay")
+    void shouldReplaceExistingProjectionWhenProcessingReplay() {
+        TelemetryEvent processedEvent = processedEvent("evt-001");
+        ProcessedTelemetryEntity existing = new ProcessedTelemetryEntity(
+                "evt-001", "old-tenant", "telemetry.processed", Instant.parse("2026-03-01T00:00:00Z"),
+                "old-source", "old-device", "old-type", "old-metric", BigDecimal.ONE, "old-unit",
+                "old-location", Instant.parse("2026-03-01T00:00:00Z")
+        );
+        when(repository.findByEventId("evt-001")).thenReturn(Optional.of(existing));
+
+        persistenceService.persist(processedEvent, true);
+
+        verify(repository).save(existing);
+        assertThat(existing.getTenantId()).isEqualTo("factory-01");
+        assertThat(existing.getMetric()).isEqualTo("temperature");
+        assertThat(existing.getIngestedAt()).isEqualTo(INGESTED_AT);
     }
 
     @Test

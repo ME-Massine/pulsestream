@@ -81,20 +81,12 @@ Offset/time-range selection for raw-topic replay is not covered by this trigger.
 | `replayedAt` | Timestamp the replay was triggered            |
 | `replaySource` | `dlq` or `raw` — where the event was replayed from |
 
-**How this metadata reaches the processor.** The current `TelemetryEvent` envelope (see
-`services/telemetry-processor/.../model/TelemetryEvent.java` and [event-schema.md](./event-schema.md))
-has no `replay`/`replayedAt`/`replaySource` fields, so these cannot travel today. Carrying them
-requires one of two transport choices, deferred to the replay safeguards follow-up (#126):
-
-- **Kafka record headers** — attach replay metadata as headers on the republished record, leaving the
-  JSON envelope and the `TelemetryEvent` record untouched. Preferred, because it keeps replay metadata
-  out of the persisted business schema and off the processed/anomaly envelopes.
-- **Envelope extension** — add optional replay fields to the shared envelope and the `TelemetryEvent`
-  record. Simpler to consume but changes a schema shared across services.
-
-Until that follow-up lands, replay is **transparent** to the processor: a replayed event is processed
-exactly like any other `telemetry.events.raw` event, and the metadata above is audit/observability
-information only. No processor behavior may depend on it before the transport is defined.
+**How this metadata reaches the processor.** Replay uses Kafka record headers, leaving the JSON
+envelope and `TelemetryEvent` record unchanged. The publisher sets UTF-8 headers
+`pulsestream.replay=true`, `pulsestream.replayed-at`, and `pulsestream.replay-source`. The raw-topic
+consumer reads `pulsestream.replay` only to apply replay safeguards: a failed replay is not published
+to the DLQ again, so it cannot create a DLQ-to-raw feedback loop. The original DLQ record remains the
+operator-controlled retry source.
 
 `eventId` is **not** regenerated for a replay — see below.
 
@@ -126,10 +118,10 @@ distinct DLQ failure classes:
 Because the replay path cannot tell these two apart up front — and the anomaly path
 (`AnomalyProcessingService`) has no persistence at all — replay must **not** assume a plain insert for
 DLQ-sourced events. Instead, **both DLQ-sourced and raw-topic replay use the same persistence
-contract: upsert by `event_id`** (insert-or-replace) rather than today's skip-on-duplicate no-op. This
-guarantees a replay supersedes any prior row if one exists and creates one if it does not, for either
-source. That persistence change is a behavior change from today's skip-on-duplicate logic and is
-**scoped to the replay safeguards follow-up (#126)** — it is not part of this strategy doc.
+contract: upsert by `event_id`** (insert-or-replace) rather than the ordinary redelivery
+skip-on-duplicate no-op. This guarantees a replay supersedes any prior row if one exists and creates
+one if it does not, for either source. Ordinary non-replay redelivery retains its no-op duplicate
+behavior.
 
 This also answers the "replaying the same source twice" case: because the `eventId` is always the
 original one, re-triggering a replay upserts the same row again rather than creating an additional row
@@ -208,25 +200,19 @@ flowchart LR
 ## Alignment with Architecture
 
 - Reuses the existing `telemetry.events.raw` topic and `telemetry-processor` consumer group documented
-  in [topics.md](./topics.md) — no new topic and no new subscription. Processing logic is unchanged for
-  replayed events themselves; the only behavior change is at the persistence layer (see next bullet)
-  plus a metadata-transport addition (headers or envelope fields), both deferred to follow-ups.
+  in [topics.md](./topics.md) — no new topic and no new subscription. Replay metadata travels in Kafka
+  headers and prevents a failed replay from being routed to the DLQ again.
 - Reuses the existing DLQ (`telemetry.events.dlq`) as the primary failure-recovery source rather than introducing a new failure-handling mechanism.
 - Follows the standard event envelope from [event-schema.md](./event-schema.md). Replay metadata rides
-  alongside it rather than in a separate schema; with the preferred Kafka-headers transport the
-  envelope is left **unchanged**, and only the envelope-extension option would add replay-specific
-  fields to it.
-- Depends on a persistence-layer change (upsert-by-`event_id` instead of skip-on-duplicate) to make
-  any replay — DLQ-sourced or raw-topic — supersede a prior result if one exists; tracked as a
-  follow-up implementation issue, not part of this strategy doc.
+  alongside it in Kafka headers, so the envelope remains **unchanged**.
+- Replayed normal events upsert by `event_id`, allowing a replay to supersede a prior persisted result
+  instead of silently creating a second row or being ignored.
 
 ---
 
 ## Out of Scope
 
 - Implementation of the replay process/service (#123, #124).
-- Implementation of the upsert-by-`event_id` persistence change (#126).
-- Implementation of replay-metadata transport (Kafka headers or envelope fields) (#126).
 - The consumer-side deduplication contract for `telemetry.events.processed` / `telemetry.events.anomalies` (#126).
 - Reconciling reclassification across the normal/anomaly boundary — retracting/tombstoning/versioning a stale `processed_telemetry` row when a replay flips an event's classification (#126).
 - Automatic retry policies from the DLQ (and, by extension, changing the current "DLQ on first failure" behavior).

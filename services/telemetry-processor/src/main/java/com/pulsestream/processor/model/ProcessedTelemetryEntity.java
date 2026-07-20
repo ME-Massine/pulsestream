@@ -143,4 +143,25 @@ public class ProcessedTelemetryEntity {
     public Instant getIngestedAt() {
         return ingestedAt;
     }
+
+    /**
+     * Replaces the stored projection with the newest processing result for the same event.
+     */
+    public void updateFrom(ProcessedTelemetryEntity replacement) {
+        if (!eventId.equals(replacement.eventId)) {
+            throw new IllegalArgumentException("replacement must have the same eventId");
+        }
+
+        tenantId = replacement.tenantId;
+        eventType = replacement.eventType;
+        timestamp = replacement.timestamp;
+        source = replacement.source;
+        deviceId = replacement.deviceId;
+        deviceType = replacement.deviceType;
+        metric = replacement.metric;
+        value = replacement.value;
+        unit = replacement.unit;
+        location = replacement.location;
+        ingestedAt = replacement.ingestedAt;
+    }
 }
