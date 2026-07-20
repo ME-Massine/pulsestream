@@ -13,6 +13,7 @@ import com.pulsestream.processor.service.TelemetryProcessingService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
@@ -146,8 +147,8 @@ class TelemetryEventConsumerTest {
     @DisplayName("should listen to configured raw telemetry topic")
     void shouldListenToConfiguredRawTelemetryTopic() throws NoSuchMethodException {
         Method method = TelemetryEventConsumer.class.getMethod(
-                "consumeTelemetryEvent",
-                TelemetryEvent.class
+                "consumeTelemetryRecord",
+                ConsumerRecord.class
         );
 
         KafkaListener kafkaListener = method.getAnnotation(KafkaListener.class);
@@ -156,6 +157,22 @@ class TelemetryEventConsumerTest {
         assertThat(kafkaListener.topics()).containsExactly("${pulsestream.kafka.topics.raw}");
         assertThat(kafkaListener.groupId()).isEqualTo("${pulsestream.kafka.consumer.group-id}");
         assertThat(kafkaListener.containerFactory()).isEqualTo("telemetryKafkaListenerContainerFactory");
+    }
+
+    @Test
+    @DisplayName("should not route a failed replay back to the DLQ")
+    void shouldNotRouteFailedReplayBackToDlq() {
+        TelemetryEvent event = telemetryEvent();
+        ConsumerRecord<String, TelemetryEvent> record = new ConsumerRecord<>(
+                "telemetry.events.raw", 0, 0, event.eventId(), event
+        );
+        record.headers().add("pulsestream.replay", "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        RuntimeException failure = new IllegalStateException("normalization exploded");
+        when(normalizationService.normalize(event)).thenThrow(failure);
+
+        assertThatCode(() -> consumer.consumeTelemetryRecord(record)).doesNotThrowAnyException();
+
+        verifyNoInteractions(deadLetterPublisher);
     }
 
     private TelemetryEvent telemetryEvent() {

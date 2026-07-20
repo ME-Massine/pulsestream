@@ -5,9 +5,11 @@ import com.pulsestream.processor.model.TelemetryAnomalyResult;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.service.AnomalyProcessingService;
 import com.pulsestream.processor.service.DeadLetterPublisher;
+import com.pulsestream.processor.service.ReplayHeaders;
 import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import com.pulsestream.processor.service.TelemetryProcessingService;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -44,12 +46,31 @@ public class TelemetryEventConsumer {
             groupId = "${pulsestream.kafka.consumer.group-id}",
             containerFactory = "telemetryKafkaListenerContainerFactory"
     )
-    public void consumeTelemetryEvent(TelemetryEvent telemetryEvent) {
+    public void consumeTelemetryRecord(ConsumerRecord<String, TelemetryEvent> record) {
+        Assert.notNull(record, "record must not be null");
+        consumeTelemetryEvent(record.value(), ReplayHeaders.isReplay(record.headers()));
+    }
+
+    void consumeTelemetryEvent(TelemetryEvent telemetryEvent) {
+        consumeTelemetryEvent(telemetryEvent, false);
+    }
+
+    private void consumeTelemetryEvent(TelemetryEvent telemetryEvent, boolean replayed) {
         Assert.notNull(telemetryEvent, "telemetryEvent must not be null");
 
         try {
-            processTelemetryEvent(telemetryEvent);
+            processTelemetryEvent(telemetryEvent, replayed);
         } catch (RuntimeException ex) {
+            if (replayed) {
+                log.error(
+                        "Failed to process replayed telemetry event eventId={} tenantId={}; "
+                                + "leaving the original DLQ record as the retry source to prevent a replay loop",
+                        telemetryEvent.eventId(),
+                        telemetryEvent.tenantId(),
+                        ex
+                );
+                return;
+            }
             log.error(
                     "Failed to process telemetry event eventId={} tenantId={}; routing to DLQ",
                     telemetryEvent.eventId(),
@@ -60,7 +81,7 @@ public class TelemetryEventConsumer {
         }
     }
 
-    private void processTelemetryEvent(TelemetryEvent telemetryEvent) {
+    private void processTelemetryEvent(TelemetryEvent telemetryEvent, boolean replayed) {
         NormalizedTelemetryEvent normalizedEvent =
                 normalizationService.normalize(telemetryEvent);
 
@@ -82,7 +103,11 @@ public class TelemetryEventConsumer {
             return;
         }
 
-        processingService.process(telemetryEvent);
+        if (replayed) {
+            processingService.process(telemetryEvent, true);
+        } else {
+            processingService.process(telemetryEvent);
+        }
 
         log.info(
                 "Processed normal telemetry event eventId={} tenantId={} metric={} unit={}",

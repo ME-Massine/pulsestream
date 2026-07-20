@@ -38,6 +38,15 @@ public class TelemetryProcessingService {
     }
 
     public TelemetryEvent process(TelemetryEvent rawEvent) {
+        return process(rawEvent, false);
+    }
+
+    /**
+     * Processes a raw event, replacing an existing persisted result with the same event id when
+     * the record was explicitly replayed. Ordinary redelivery keeps its existing no-op duplicate
+     * behavior.
+     */
+    public TelemetryEvent process(TelemetryEvent rawEvent, boolean replayed) {
         Assert.notNull(rawEvent, "rawEvent must not be null");
         Assert.notNull(rawEvent.payload(), "rawEvent payload must not be null");
 
@@ -51,7 +60,11 @@ public class TelemetryProcessingService {
                 TelemetryEventNormalizer.normalizePayload(rawEvent.payload())
         );
 
-        persistenceService.persist(processedEvent);
+        if (replayed) {
+            persistenceService.persist(processedEvent, true);
+        } else {
+            persistenceService.persist(processedEvent);
+        }
         processedTelemetryPublisher.publish(processedEvent);
         return processedEvent;
     }
