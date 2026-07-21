@@ -78,10 +78,10 @@ jobs:
         run: |
           docker run -d --name tp-ci -p 8082:8082 pulsestream/telemetry-processor:ci
 
-          echo "Waiting for Spring Boot to initialize the web server..."
+          echo "Waiting for Spring Boot to finish starting..."
           started=""
           for i in $(seq 1 60); do
-            if docker logs tp-ci 2>&1 | grep -q "Tomcat initialized with port 8082"; then
+            if docker logs tp-ci 2>&1 | grep -q "Started TelemetryProcessorApplication"; then
               started="yes"
               break
             fi
@@ -93,10 +93,18 @@ jobs:
           done
 
           echo "----- container logs -----"
-          docker logs tp-ci 2>&1 | head -30
+          docker logs tp-ci 2>&1 | head -40
 
           if [ -z "${started}" ]; then
-            echo "::error::Telemetry Processor did not start (Tomcat never bound port 8082)"
+            echo "::error::Telemetry Processor did not start (never logged 'Started TelemetryProcessorApplication')"
+            exit 1
+          fi
+
+          echo "Confirming the container is still running after startup..."
+          sleep 5
+          if [ "$(docker inspect --format '{{.State.Running}}' tp-ci)" != "true" ]; then
+            echo "::error::Container is not running after startup (crashed shortly after 'Started')"
+            docker logs tp-ci 2>&1 | tail -40
             exit 1
           fi
 
