@@ -54,3 +54,68 @@ jobs:
 
       - name: Confirm Java is available
         run: java -version
+
+  telemetry-processor-docker:
+    name: Telemetry Processor Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build telemetry-processor image
+        run: docker build -t pulsestream/telemetry-processor:ci services/telemetry-processor
+
+      - name: Assert image runs as non-root
+        run: |
+          user="$(docker inspect --format '{{.Config.User}}' pulsestream/telemetry-processor:ci)"
+          echo "Configured image user: '${user}'"
+          if [ -z "${user}" ] || [ "${user}" = "root" ] || [ "${user}" = "0" ] || [ "${user}" = "0:0" ]; then
+            echo "::error::Image must not run as root (got '${user}')"
+            exit 1
+          fi
+
+      - name: Start container and verify Spring Boot startup
+        run: |
+          docker run -d --name tp-ci -p 8082:8082 pulsestream/telemetry-processor:ci
+
+          echo "Waiting for Spring Boot to finish starting..."
+          started=""
+          for i in $(seq 1 60); do
+            if docker logs tp-ci 2>&1 | grep -q "Started TelemetryProcessorApplication"; then
+              started="yes"
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' tp-ci)" != "true" ]; then
+              echo "::error::Container exited before startup completed"
+              break
+            fi
+            sleep 2
+          done
+
+          echo "----- container logs -----"
+          docker logs tp-ci 2>&1 | head -40
+
+          if [ -z "${started}" ]; then
+            echo "::error::Telemetry Processor did not start (never logged 'Started TelemetryProcessorApplication')"
+            exit 1
+          fi
+
+          echo "Confirming the container is still running after startup..."
+          sleep 5
+          if [ "$(docker inspect --format '{{.State.Running}}' tp-ci)" != "true" ]; then
+            echo "::error::Container is not running after startup (crashed shortly after 'Started')"
+            docker logs tp-ci 2>&1 | tail -40
+            exit 1
+          fi
+
+          echo "Confirming runtime process user is non-root..."
+          runtime_user="$(docker exec tp-ci whoami)"
+          echo "Runtime user: '${runtime_user}'"
+          if [ "${runtime_user}" = "root" ]; then
+            echo "::error::Container process is running as root"
+            exit 1
+          fi
+
+      - name: Tear down container
+        if: always()
+        run: docker rm -f tp-ci || true
