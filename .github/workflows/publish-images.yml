@@ -1,0 +1,76 @@
+name: Publish images
+
+# Publishes platform service container images to the GitHub Container Registry
+# (GHCR) so Kubernetes can pull them. See
+# docs/architecture/container-image-registry.md for the naming and tagging
+# strategy this workflow implements.
+#
+# Runs only on pushes to main and on version tags (v*) — never on pull requests,
+# so forks cannot publish and unmerged work never reaches the registry.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    name: Build and push ${{ matrix.service }}
+    runs-on: ubuntu-latest
+
+    # GITHUB_TOKEN needs write access to publish packages to GHCR. contents:read
+    # is the least privilege needed to check out the repository.
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      # One service failing to publish must not silently skip the others.
+      fail-fast: false
+      matrix:
+        service:
+          - ingestion-service
+          - telemetry-processor
+          - query-service
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        # GITHUB_TOKEN is scoped to this repository and expires with the run, so
+        # no long-lived registry credentials are stored.
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push image
+        run: |
+          set -euo pipefail
+
+          # GHCR namespaces must be lowercase; the owner login may contain
+          # uppercase characters (e.g. ME-Massine).
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner}/pulsestream/${{ matrix.service }}"
+          short_sha="${GITHUB_SHA::7}"
+
+          # Every image gets an immutable per-commit tag. main also gets the
+          # moving "latest" tag; a v* tag push also gets the release version.
+          tags=("sha-${short_sha}")
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            tags+=("latest")
+          fi
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tags+=("${GITHUB_REF#refs/tags/}")
+          fi
+
+          echo "Publishing ${image} with tags: ${tags[*]}"
+
+          # Build once, then apply every tag to the same image id and push each.
+          docker build -t "${image}:${tags[0]}" "services/${{ matrix.service }}"
+          for tag in "${tags[@]:1}"; do
+            docker tag "${image}:${tags[0]}" "${image}:${tag}"
+          done
+          for tag in "${tags[@]}"; do
+            docker push "${image}:${tag}"
+          done
