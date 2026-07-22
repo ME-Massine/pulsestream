@@ -69,6 +69,12 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
+          # Root filesystem is read-only for hardening. The embedded Tomcat
+          # still needs a writable java.io.tmpdir, so /tmp is backed by an
+          # ephemeral emptyDir instead of the container layer.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           # The Actuator health endpoint is bound to loopback on a separate
           # management port (application.yml) so the state-changing dlqreplay
           # endpoint (#125) stays off the pod network. A TCP probe on the main
@@ -90,7 +96,10 @@ spec:
             failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
+      volumes:
+        - name: tmp
+          emptyDir: {}
