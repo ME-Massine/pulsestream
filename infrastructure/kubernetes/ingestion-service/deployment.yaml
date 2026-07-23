@@ -49,16 +49,12 @@ spec:
           ports:
             - name: http
               containerPort: 8081
-          # Runtime configuration is externalized (#136). Non-sensitive values
-          # come from the ConfigMap (configmap.yaml). Sensitive values would come
-          # from the companion Secret (secret.yaml); its reference is left
-          # commented until the service consumes a sensitive value, so no
-          # placeholder keys reach the container.
-          envFrom:
-            - configMapRef:
-                name: ingestion-service-config
-            # - secretRef:
-            #     name: ingestion-service-secret
+          env:
+            # In-cluster Kafka bootstrap endpoint. Overrides the localhost
+            # default baked into application.yml. Adjust to match the Kafka
+            # Service deployed in the cluster.
+            - name: PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
           resources:
             requests:
               cpu: 250m
