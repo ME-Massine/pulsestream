@@ -50,18 +50,16 @@ spec:
           ports:
             - name: http
               containerPort: 8082
-          env:
-            # In-cluster Kafka bootstrap endpoint. Overrides the localhost
-            # default baked into application.yml. Adjust to match the Kafka
-            # Service deployed in the cluster.
-            - name: PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS
-              value: "kafka:9092"
-            # In-cluster Postgres endpoint. DB health is disabled by default
-            # (PULSESTREAM_DB_HEALTH_ENABLED) and Hibernate metadata access is
-            # off, so the pod starts without the DB; this points writes at the
-            # in-cluster Service. Adjust to match the Postgres Service.
-            - name: PULSESTREAM_POSTGRES_URL
-              value: "jdbc:postgresql://postgres:5432/pulsestream"
+          # Runtime configuration is externalized (#136): non-sensitive values
+          # (Kafka/Postgres endpoints, log levels) come from the ConfigMap
+          # (configmap.yaml); the sensitive datasource username/password come
+          # from the Secret (secret.yaml). Neither is hardcoded in this
+          # Deployment, so the manifest stays reusable across environments.
+          envFrom:
+            - configMapRef:
+                name: telemetry-processor-config
+            - secretRef:
+                name: telemetry-processor-secret
           resources:
             requests:
               cpu: 250m
