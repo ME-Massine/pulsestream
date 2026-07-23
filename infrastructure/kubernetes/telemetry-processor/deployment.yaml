@@ -1,0 +1,90 @@
+# Kubernetes Deployment for the telemetry-processor stream consumer.
+#
+# Image, tag, and registry conventions follow
+# docs/architecture/container-image-registry.md. The image is pinned to an
+# immutable per-commit tag (sha-<short>) rather than `latest`, which the doc
+# marks as mutable and unfit for reproducible deploys. Bump this tag to the
+# sha-<short> of the main commit you want to roll out.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-processor
+  labels:
+    app.kubernetes.io/name: telemetry-processor
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  # Kafka consumer group member: replicas share topic partitions, so two gives
+  # basic availability during node drains and rolling updates. Autoscaling is
+  # intentionally out of scope (#134).
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: telemetry-processor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: telemetry-processor
+        app.kubernetes.io/component: stream-processor
+        app.kubernetes.io/part-of: pulsestream
+    spec:
+      # GHCR packages default to private; a `ghcr-pull` secret with read:packages
+      # is required unless the package is made public. See the registry doc.
+      # A missing secret only warns for a public image, so this stays safe either way.
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        # The image (Dockerfile system user `spring`) runs as uid/gid 999. Kubelet
+        # can only verify runAsNonRoot against a numeric user, so the UID is pinned
+        # explicitly; relying on the named `spring` user fails at container start
+        # with "cannot verify user is non-root".
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: telemetry-processor
+          image: ghcr.io/me-massine/pulsestream/telemetry-processor:sha-5969ed2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8082
+          env:
+            # In-cluster Kafka bootstrap endpoint. Overrides the localhost
+            # default baked into application.yml. Adjust to match the Kafka
+            # Service deployed in the cluster.
+            - name: PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
+            # In-cluster Postgres endpoint. DB health is disabled by default
+            # (PULSESTREAM_DB_HEALTH_ENABLED) and Hibernate metadata access is
+            # off, so the pod starts without the DB; this points writes at the
+            # in-cluster Service. Adjust to match the Postgres Service.
+            - name: PULSESTREAM_POSTGRES_URL
+              value: "jdbc:postgresql://postgres:5432/pulsestream"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Root filesystem is read-only for hardening. The embedded Tomcat
+          # still needs a writable java.io.tmpdir, so /tmp is backed by an
+          # ephemeral emptyDir instead of the container layer.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # Readiness/liveness probes are intentionally left to #137, which adds
+          # probes across all service manifests and aligns them with Spring Boot
+          # Actuator. Without a readinessProbe the pod becomes Ready once the
+          # container starts, which is sufficient for this manifest (#134).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: tmp
+          emptyDir: {}
