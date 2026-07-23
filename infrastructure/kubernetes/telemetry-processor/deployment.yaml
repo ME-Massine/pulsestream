@@ -53,8 +53,10 @@ spec:
           # Runtime configuration is externalized (#136): non-sensitive values
           # (Kafka/Postgres endpoints, log levels) come from the ConfigMap
           # (configmap.yaml); the sensitive datasource username/password come
-          # from the Secret (secret.yaml). Neither is hardcoded in this
-          # Deployment, so the manifest stays reusable across environments.
+          # from the telemetry-processor-secret Secret. That Secret is NOT
+          # committed — it is provisioned out-of-band (see secret.example.yaml
+          # for the required name/keys), so no credential is hardcoded in this
+          # repository and the manifest stays reusable across environments.
           envFrom:
             - configMapRef:
                 name: telemetry-processor-config
