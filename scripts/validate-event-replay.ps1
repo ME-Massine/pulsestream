@@ -96,12 +96,18 @@ function Read-RawRecordForEvent {
     return $null
 }
 
-function Test-DlqRecordForEvent {
+# Counts how many DLQ records currently wrap the given eventId. Kafka retains consumed records, so
+# the seed record published before replay is always present; a boolean "is it there" check can never
+# tell a successful replay from a failed one. Instead this count is captured before replay (baseline)
+# and again after, and the two are compared: an unchanged count means reprocessing did not route the
+# event back to the DLQ, a higher count means it failed again and re-landed.
+function Get-DlqMatchCountForEvent {
     param([Parameter(Mandatory)] [string] $EventId)
 
     $output = docker exec $KafkaContainer `
         sh -c "kafka-console-consumer --bootstrap-server $BootstrapServer --topic $DlqTopic --from-beginning --timeout-ms $ConsumeTimeoutMs 2>/dev/null"
 
+    $count = 0
     foreach ($line in @($output)) {
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
@@ -115,11 +121,11 @@ function Test-DlqRecordForEvent {
 
         $recordEventId = if ($null -ne $record.event) { $record.event.eventId } else { $null }
         if ($recordEventId -eq $EventId) {
-            return $true
+            $count++
         }
     }
 
-    return $false
+    return $count
 }
 
 function Get-ProcessorLogContent {
@@ -192,24 +198,28 @@ $eventId = [Guid]::NewGuid().ToString()
 Publish-DlqRecord -Json (New-ReplayableDlqRecordJson -EventId $eventId)
 Write-Host "[ok] Seeded DLQ record for replay (eventId: $eventId)"
 
+# Baseline the number of DLQ records for this eventId *before* the replay runs (just the seed at
+# this point). Step 7 compares against this so it inspects only records appended after replay,
+# rather than re-matching the seed the script itself published.
+$dlqBaselineCount = Get-DlqMatchCountForEvent -EventId $eventId
+Write-Host "[ok] Captured DLQ baseline for eventId $eventId ($dlqBaselineCount record(s) before replay)"
+
 # 3. Trigger a selective replay for exactly this event id via the dlqreplay actuator endpoint
 #    (#125). This is the operator-triggered replay described in the event replay strategy -- there
 #    is no automatic DLQ retry loop.
-Invoke-DlqReplayTrigger -Action "start" -EventIds @($eventId) | Out-Null
+$startStatus = Invoke-DlqReplayTrigger -Action "start" -EventIds @($eventId)
 Write-Host "[ok] Triggered DLQ replay for eventId $eventId"
 
-# 4. Acceptance criterion: replay actually runs. The listener must report itself running with this
-#    event selected shortly after the trigger.
-Invoke-WithRetry `
-    -TimeoutSeconds $TimeoutSeconds `
-    -FailureMessage "DLQ replay listener did not report running with eventId $eventId selected within $TimeoutSeconds seconds." `
-    -Operation {
-        $status = Get-DlqReplayStatus
-        Confirm-Condition `
-            -Condition ($status.running -and ($status.selectedEventIds -contains $eventId)) `
-            -SuccessMessage "DLQ replay listener is running with eventId $eventId selected" `
-            -FailureMessage "DLQ replay listener status does not yet show eventId $eventId selected and running"
-    }
+# 4. Acceptance criterion: replay actually starts. Assert the start response itself rather than
+#    polling for a transient `running` state: this replay has a single record, so the listener can
+#    reach its trigger-time boundary and stop again before the first status poll, which would make a
+#    "must be running" poll time out after a *successful* replay. The start response confirms the
+#    trigger was accepted with this event selected; the log and raw-topic checks below then prove the
+#    replay actually ran to completion.
+Confirm-Condition -Permanent `
+    -Condition ($startStatus.selectedEventIds -contains $eventId) `
+    -SuccessMessage "DLQ replay was triggered with eventId $eventId selected" `
+    -FailureMessage "DLQ replay start response did not select eventId $eventId (selected: $($startStatus.selectedEventIds -join ', '))"
 
 # 5. Acceptance criterion: logs confirm the replay flow picked up the selected DLQ record. The
 #    pattern is anchored to this run's eventId (a fresh GUID each run), so a match cannot be a
@@ -256,11 +266,14 @@ Invoke-WithRetry `
 
 # 7. Acceptance criterion: the event is successfully reprocessed, i.e. it does not fail again and
 #    land back in the DLQ. The seeded event carries a valid payload, so a second DLQ record for the
-#    same eventId would mean reprocessing failed rather than succeeded.
+#    same eventId would mean reprocessing failed rather than succeeded. Compare against the pre-replay
+#    baseline instead of asserting the DLQ is empty of this eventId -- the seed record the script
+#    published is retained and would otherwise fail this check every time.
+$dlqFinalCount = Get-DlqMatchCountForEvent -EventId $eventId
 Confirm-Condition -Permanent `
-    -Condition (-not (Test-DlqRecordForEvent -EventId $eventId)) `
-    -SuccessMessage "Replayed event was not routed back to the DLQ; reprocessing succeeded" `
-    -FailureMessage "Replayed event landed back in '$DlqTopic'; reprocessing did not succeed"
+    -Condition ($dlqFinalCount -le $dlqBaselineCount) `
+    -SuccessMessage "No new DLQ record appeared for eventId $eventId after replay ($dlqFinalCount vs baseline $dlqBaselineCount); reprocessing succeeded" `
+    -FailureMessage "A new DLQ record appeared for eventId $eventId after replay ($dlqFinalCount vs baseline $dlqBaselineCount); reprocessing did not succeed"
 
 # 8. Acceptance criterion: no system failure. The processor must still be healthy, and the replay
 #    listener must have stopped itself again once it drained the backlog it was started for
