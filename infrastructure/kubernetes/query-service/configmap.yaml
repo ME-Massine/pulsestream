@@ -1,0 +1,26 @@
+# Non-sensitive runtime configuration for the query-service.
+#
+# Externalizing runtime config into a ConfigMap lets operators tune the service
+# without editing or rebuilding the Deployment, and keeps the Deployment
+# manifest reusable across environments (#136).
+#
+# query-service is a read API and currently consumes no sensitive configuration.
+# Only non-sensitive values belong here; anything sensitive (e.g. datasource
+# credentials, once the service reads from PostgreSQL) must live in the
+# companion Secret (secret.yaml), never in this ConfigMap.
+#
+# Keys use the container's environment-variable names. The application reads
+# them through Spring relaxed binding (application.yml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: query-service-config
+  labels:
+    app.kubernetes.io/name: query-service
+    app.kubernetes.io/component: query-api
+    app.kubernetes.io/part-of: pulsestream
+data:
+  # Root and application log levels. Non-sensitive; exposed here so verbosity can
+  # be tuned per environment without an image rebuild.
+  LOGGING_LEVEL_ROOT: "INFO"
+  LOGGING_LEVEL_COM_PULSESTREAM_QUERY: "INFO"

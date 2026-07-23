@@ -49,6 +49,16 @@ spec:
           ports:
             - name: http
               containerPort: 8083
+          # Runtime configuration is externalized (#136). Non-sensitive values
+          # come from the ConfigMap (configmap.yaml). Sensitive values would come
+          # from the companion Secret (secret.yaml); its reference is left
+          # commented until the service consumes a sensitive value, so no
+          # placeholder keys reach the container.
+          envFrom:
+            - configMapRef:
+                name: query-service-config
+            # - secretRef:
+            #     name: query-service-secret
           resources:
             requests:
               cpu: 250m
