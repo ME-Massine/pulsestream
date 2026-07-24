@@ -97,3 +97,9 @@ node_modules/
 #################################
 
 coverage/
+#################################
+# Kubernetes rendered secrets
+#################################
+
+# Never commit real rendered Secrets; only *.example.yaml templates are tracked.
+infrastructure/kubernetes/**/secret.yaml

@@ -1,0 +1,34 @@
+# Non-sensitive runtime configuration for the telemetry-processor.
+#
+# These keys were previously inlined as `env` in deployment.yaml. Externalizing
+# them into a ConfigMap (#136) lets operators change runtime config per
+# environment without editing or rebuilding the Deployment, keeping the
+# Deployment manifest reusable.
+#
+# Only non-sensitive values belong here (cluster-internal endpoints, log
+# levels). The Postgres URL carries no credentials; the datasource username and
+# password are sensitive and live in the companion Secret (secret.yaml), never
+# in this ConfigMap.
+#
+# Keys use the container's environment-variable names; the application binds
+# them through Spring relaxed binding (application.yml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telemetry-processor-config
+  labels:
+    app.kubernetes.io/name: telemetry-processor
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: pulsestream
+data:
+  # In-cluster Kafka bootstrap endpoint. Overrides the localhost default baked
+  # into application.yml. Adjust to match the Kafka Service in the cluster.
+  PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  # In-cluster Postgres endpoint (no credentials in the URL). Adjust to match
+  # the Postgres Service. The username/password are in secret.yaml.
+  PULSESTREAM_POSTGRES_URL: "jdbc:postgresql://postgres:5432/pulsestream"
+  # Root and application log levels. Tunable per environment without an image
+  # rebuild. LOGGING_LEVEL_COM_PULSESTREAM_PROCESSOR maps to
+  # logging.level.com.pulsestream.processor via Spring relaxed binding.
+  LOGGING_LEVEL_ROOT: "INFO"
+  LOGGING_LEVEL_COM_PULSESTREAM_PROCESSOR: "INFO"

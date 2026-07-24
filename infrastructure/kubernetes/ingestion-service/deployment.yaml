@@ -49,12 +49,12 @@ spec:
           ports:
             - name: http
               containerPort: 8081
-          env:
-            # In-cluster Kafka bootstrap endpoint. Overrides the localhost
-            # default baked into application.yml. Adjust to match the Kafka
-            # Service deployed in the cluster.
-            - name: PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS
-              value: "kafka:9092"
+          # Runtime configuration is externalized (#136): non-sensitive values
+          # come from the ConfigMap (configmap.yaml). ingestion-service reads no
+          # credentials today, so there is no companion Secret to reference.
+          envFrom:
+            - configMapRef:
+                name: ingestion-service-config
           resources:
             requests:
               cpu: 250m

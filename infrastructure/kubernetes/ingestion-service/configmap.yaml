@@ -1,0 +1,31 @@
+# Non-sensitive runtime configuration for the ingestion-service.
+#
+# These keys were previously inlined as `env` in deployment.yaml. Externalizing
+# them into a ConfigMap (#136) lets operators change runtime config per
+# environment without editing or rebuilding the Deployment, keeping the
+# Deployment manifest reusable.
+#
+# Only non-sensitive values belong here (cluster-internal endpoints, log
+# levels). ingestion-service reads no credentials today (the local Kafka broker
+# runs without auth), so it has no companion Secret. If a secured broker is
+# introduced, its SASL credentials go in a Secret, never in this ConfigMap.
+#
+# Keys use the container's environment-variable names; the application binds
+# them through Spring relaxed binding (application.yml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingestion-service-config
+  labels:
+    app.kubernetes.io/name: ingestion-service
+    app.kubernetes.io/component: ingest-gateway
+    app.kubernetes.io/part-of: pulsestream
+data:
+  # In-cluster Kafka bootstrap endpoint. Overrides the localhost default baked
+  # into application.yml. Adjust to match the Kafka Service in the cluster.
+  PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  # Root and application log levels. Tunable per environment without an image
+  # rebuild. LOGGING_LEVEL_COM_PULSESTREAM_INGESTION maps to
+  # logging.level.com.pulsestream.ingestion via Spring relaxed binding.
+  LOGGING_LEVEL_ROOT: "INFO"
+  LOGGING_LEVEL_COM_PULSESTREAM_INGESTION: "INFO"

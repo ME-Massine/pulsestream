@@ -49,6 +49,12 @@ spec:
           ports:
             - name: http
               containerPort: 8083
+          # Runtime configuration is externalized (#136): non-sensitive values
+          # come from the ConfigMap (configmap.yaml). query-service reads no
+          # credentials today, so there is no companion Secret to reference.
+          envFrom:
+            - configMapRef:
+                name: query-service-config
           resources:
             requests:
               cpu: 250m
