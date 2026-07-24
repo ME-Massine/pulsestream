@@ -62,10 +62,14 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
-          # Spring Boot Actuator health endpoint (exposed in application.yml).
+          # Spring Boot Actuator Kubernetes probe groups, mirrored to /readyz and
+          # /livez on the main port via management.endpoint.health.probes in
+          # application.yml. Readiness reflects ReadinessState so the pod only
+          # takes traffic once the context is ready; liveness reflects only
+          # LivenessState, so a failing dependency does not trigger restart loops.
           readinessProbe:
             httpGet:
-              path: /actuator/health
+              path: /readyz
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
@@ -73,7 +77,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /actuator/health
+              path: /livez
               port: http
             initialDelaySeconds: 30
             periodSeconds: 15

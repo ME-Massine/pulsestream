@@ -13,6 +13,14 @@ management:
   endpoint:
     health:
       show-details: never
+      # Expose the Kubernetes liveness/readiness health groups and mirror them to
+      # /livez and /readyz on the main server port, so the Deployment probes align
+      # with Spring Boot Actuator instead of hitting the aggregate /actuator/health
+      # (a failing dependency in the aggregate would otherwise fail liveness and
+      # trigger pointless restarts). See infrastructure/kubernetes/*/deployment.yaml.
+      probes:
+        enabled: true
+        add-additional-paths: true
   prometheus:
     metrics:
       export:
