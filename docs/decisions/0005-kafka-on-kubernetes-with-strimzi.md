@@ -7,9 +7,11 @@ Accepted
 
 Phase 6 of the roadmap deploys PulseStream to Kubernetes. Service manifests for
 `ingestion-service`, `telemetry-processor`, and `query-service` already exist under
-`infrastructure/kubernetes/`, and they expect an in-cluster broker at
-`kafka:9092` (see `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` in each ConfigMap).
-Nothing currently provides that broker.
+`infrastructure/kubernetes/`. The two services that talk to Kafka —
+`ingestion-service` and `telemetry-processor` — expect an in-cluster broker at
+`kafka:9092` (see `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` in their ConfigMaps;
+`query-service` is a read API and consumes no broker config). Nothing currently
+provides that broker.
 
 Kafka is stateful, needs stable network identities and persistent volumes, and
 needs safe rolling restarts on every config change. Writing raw StatefulSet
@@ -141,7 +143,8 @@ issues. None of it is performed by this ADR.
    `telemetry.events.raw`, `telemetry.events.processed`,
    `telemetry.events.anomalies`, `telemetry.events.dlq`.
 4. Reconcile the bootstrap Service name with
-   `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` in the three service ConfigMaps.
+   `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` in the two ConfigMaps that define it
+   (`ingestion-service`, `telemetry-processor`).
 5. Broker metrics export and dashboards are handled separately under the
    observability work; they are out of scope for the deployment decision.
 
