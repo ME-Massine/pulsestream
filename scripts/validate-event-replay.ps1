@@ -99,8 +99,13 @@ function Read-RawRecordForEvent {
 # Counts how many DLQ records currently wrap the given eventId. Kafka retains consumed records, so
 # the seed record published before replay is always present; a boolean "is it there" check can never
 # tell a successful replay from a failed one. Instead this count is captured before replay (baseline)
-# and again after, and the two are compared: an unchanged count means reprocessing did not route the
-# event back to the DLQ, a higher count means it failed again and re-landed.
+# and again after, and the two are compared.
+#
+# This comparison is a *replay-loop* guard only, never a success signal: TelemetryEventConsumer
+# deliberately swallows processing failures for replayed records without publishing a second DLQ
+# record, so that the original DLQ record stays the single retry source and replay cannot loop. An
+# unchanged count is therefore also what a failed reprocess looks like. Successful processing is
+# asserted separately, from the processor's "Processed normal telemetry event" log line.
 function Get-DlqMatchCountForEvent {
     param([Parameter(Mandatory)] [string] $EventId)
 
@@ -199,7 +204,7 @@ Publish-DlqRecord -Json (New-ReplayableDlqRecordJson -EventId $eventId)
 Write-Host "[ok] Seeded DLQ record for replay (eventId: $eventId)"
 
 # Baseline the number of DLQ records for this eventId *before* the replay runs (just the seed at
-# this point). Step 7 compares against this so it inspects only records appended after replay,
+# this point). Step 8 compares against this so it inspects only records appended after replay,
 # rather than re-matching the seed the script itself published.
 $dlqBaselineCount = Get-DlqMatchCountForEvent -EventId $eventId
 Write-Host "[ok] Captured DLQ baseline for eventId $eventId ($dlqBaselineCount record(s) before replay)"
@@ -264,18 +269,36 @@ Invoke-WithRetry `
             -FailureMessage "telemetry-processor logs do not yet confirm republishing"
     }
 
-# 7. Acceptance criterion: the event is successfully reprocessed, i.e. it does not fail again and
-#    land back in the DLQ. The seeded event carries a valid payload, so a second DLQ record for the
-#    same eventId would mean reprocessing failed rather than succeeded. Compare against the pre-replay
-#    baseline instead of asserting the DLQ is empty of this eventId -- the seed record the script
-#    published is retained and would otherwise fail this check every time.
+# 7. Acceptance criterion: the event is successfully *reprocessed*, not merely republished. The two
+#    checks above (raw-topic record, "Republished replayed event" log) both happen on the publishing
+#    side, before the raw-topic consumer has even read the record, so neither says anything about the
+#    outcome of downstream processing. TelemetryEventConsumer logs this line only after
+#    processingService.process(...) returns normally, so it is the positive success signal; if
+#    processing throws, the replay path swallows the failure and this line never appears.
+Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
+    -FailureMessage "No 'Processed normal telemetry event' log line for eventId $eventId was found within $TimeoutSeconds seconds; the replayed event was republished but downstream processing did not complete successfully." `
+    -Operation {
+        Confirm-Condition `
+            -Condition (Test-ProcessorLogPattern -Pattern "Processed normal telemetry event.*eventId=$([regex]::Escape($eventId))") `
+            -SuccessMessage "telemetry-processor logs confirm the replayed event was processed successfully (eventId $eventId)" `
+            -FailureMessage "telemetry-processor logs do not yet confirm successful processing of the replayed event"
+    }
+
+# 8. Supplementary check: no replay loop. A second DLQ record for this eventId would mean the replay
+#    path re-published the event to the DLQ, which would let it be replayed again indefinitely.
+#    Compare against the pre-replay baseline rather than asserting the DLQ is empty of this eventId --
+#    the seed record the script published is retained and would otherwise fail this check every time.
+#    Note this is *not* proof of successful reprocessing (step 7 covers that): the replay path
+#    intentionally does not re-publish failures to the DLQ, so a failed reprocess also leaves the
+#    count unchanged.
 $dlqFinalCount = Get-DlqMatchCountForEvent -EventId $eventId
 Confirm-Condition -Permanent `
     -Condition ($dlqFinalCount -le $dlqBaselineCount) `
-    -SuccessMessage "No new DLQ record appeared for eventId $eventId after replay ($dlqFinalCount vs baseline $dlqBaselineCount); reprocessing succeeded" `
-    -FailureMessage "A new DLQ record appeared for eventId $eventId after replay ($dlqFinalCount vs baseline $dlqBaselineCount); reprocessing did not succeed"
+    -SuccessMessage "No new DLQ record appeared for eventId $eventId after replay ($dlqFinalCount vs baseline $dlqBaselineCount); the replay did not feed itself" `
+    -FailureMessage "A new DLQ record appeared for eventId $eventId after replay ($dlqFinalCount vs baseline $dlqBaselineCount); the replay re-queued the event and could loop"
 
-# 8. Acceptance criterion: no system failure. The processor must still be healthy, and the replay
+# 9. Acceptance criterion: no system failure. The processor must still be healthy, and the replay
 #    listener must have stopped itself again once it drained the backlog it was started for
 #    (DlqReplayService stops the listener on idle so it does not keep sweeping the DLQ).
 Invoke-WithRetry `

@@ -164,10 +164,11 @@ The two flows above confirm the DLQ *exists* and is *fed*; this flow confirms an
 The script seeds `telemetry.events.dlq` directly with a record wrapping a *valid* `TelemetryEvent` — standing in for an event that failed once (e.g. a since-fixed downstream issue) and is now safe to reprocess — then triggers a selective replay for that event's id through the `dlqreplay` actuator endpoint (see [event-replay-strategy.md](../../docs/architecture/event-replay-strategy.md)). It checks that:
 
 - `telemetry-processor` reports `UP` before the replay is triggered
-- the replay listener reports itself `running` with the event's id selected shortly after the trigger
+- the trigger response reports the event's id as selected for replay (the response itself is asserted rather than polling for a transient `running` state — a single-record replay can finish before the first status poll)
 - the processor's logs confirm the DLQ record was picked up for replay (`Replaying selected DLQ event ... eventId=<id>`)
 - the event is republished onto `telemetry.events.raw` with its original payload intact, and the logs confirm it (`Republished replayed event to raw topic ... eventId=<id>`)
-- the event does **not** land back in `telemetry.events.dlq` — i.e. it was reprocessed successfully, not just replayed
+- the republished event is then **processed successfully** downstream (`Processed normal telemetry event ... eventId=<id>`) — this is the actual reprocessing assertion, since the two checks above only cover republishing and happen before the raw-topic consumer has processed the record
+- the event does not land back in `telemetry.events.dlq` — a supplementary replay-loop guard only. Because the replay path deliberately does not publish a second DLQ record on failure (the original record stays the single retry source), an unchanged DLQ count does **not** by itself establish that reprocessing succeeded
 - the replay listener stops itself again once it drains the backlog, and `telemetry-processor` is still `UP` — i.e. the replay did not crash the system
 
 > Like `validate-dlq-pipeline.ps1`, this script reads `telemetry-processor`'s log file directly from disk (`-ProcessorLogFile`, defaulting to `services/telemetry-processor/logs/telemetry-processor.log`) and talks to the processor's actuator endpoints on the dedicated management port (`-ProcessorManagementBaseUrl`, defaulting to `http://localhost:9083` — see the `dlqreplay` endpoint in the processor's `application.yml`). Override `-KafkaContainer`, `-BootstrapServer`, or the topic names if you changed the local container name, ports, or topics.
