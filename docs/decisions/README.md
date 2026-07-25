@@ -8,6 +8,7 @@ This directory contains the Architecture Decision Records (ADRs) for PulseStream
 - [ADR 0002: Use Spring Boot for platform services](./0002-use-spring-boot.md)
 - [ADR 0003: Use PostgreSQL as the primary persistence layer for the MVP](./0003-use-postgresql-for-mvp.md)
 - [ADR 0004: Use Docker Compose for local platform delivery before Kubernetes](./0004-docker-compose-before-kubernetes.md)
+- [ADR 0005: Use the Strimzi operator to deploy Kafka on Kubernetes](./0005-kafka-on-kubernetes-with-strimzi.md)
 
 ## Purpose
 
