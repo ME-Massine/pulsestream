@@ -41,6 +41,7 @@ Key architectural choices have been formalized through ADRs to ensure transparen
 *   **ADR 0002**: Adoption of Spring Boot for building platform microservices.
 *   **ADR 0003**: Utilization of PostgreSQL as the primary persistence layer for the MVP.
 *   **ADR 0004**: Implementation of Docker Compose for local development prior to Kubernetes orchestration.
+*   **ADR 0005**: Selection of the Strimzi operator for deploying Kafka on Kubernetes.
 
 Detailed records are maintained in the [Decisions](docs/decisions/) directory.
 
