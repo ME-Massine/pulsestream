@@ -14,6 +14,12 @@
 target/
 build/
 
+# per-service local maven repository, created by
+# mvnw -Dmaven.repo.local=.m2/repository. *.jar below hides most of it, but the
+# poms and metadata still show up as untracked noise and can be committed by a
+# broad `git add`.
+.m2/
+
 # packaged artifacts
 *.jar
 *.war
