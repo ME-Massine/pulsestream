@@ -75,10 +75,31 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-          # Readiness/liveness probes are intentionally left to #137, which adds
-          # probes across all service manifests and aligns them with Spring Boot
-          # Actuator. Without a readinessProbe the pod becomes Ready once the
-          # container starts, which is sufficient for this manifest (#134).
+          # Spring Boot Actuator Kubernetes probe groups (#137). The full actuator
+          # surface (including the state-changing dlqreplay endpoint) stays on the
+          # loopback-bound management port (9083); application.yml mirrors only the
+          # liveness/readiness groups to /livez and /readyz on the main port
+          # (8082, `http`), so kubelet can reach the probes over the pod network
+          # without exposing dlqreplay. Readiness reflects ReadinessState so the
+          # pod only takes traffic once the context is ready; liveness reflects
+          # only LivenessState, so a failing dependency (e.g. Kafka/Postgres) does
+          # not trigger restart loops.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

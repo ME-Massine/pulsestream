@@ -49,6 +49,14 @@ management:
   endpoint:
     health:
       show-details: never
+      # The full actuator surface (including the state-changing dlqreplay endpoint)
+      # stays on the loopback-bound management port above. `add-additional-paths`
+      # mirrors only the liveness/readiness probe groups to /livez and /readyz on
+      # the main server port, so kubelet can reach the probes over the pod network
+      # without exposing dlqreplay. See infrastructure/kubernetes/telemetry-processor/deployment.yaml.
+      probes:
+        enabled: true
+        add-additional-paths: true
   health:
     db:
       enabled: ${PULSESTREAM_DB_HEALTH_ENABLED:false}
