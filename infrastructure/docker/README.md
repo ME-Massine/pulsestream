@@ -27,6 +27,7 @@ The local platform includes:
 - `../../scripts/validate-grafana-datasource.ps1` — validates the `Grafana` `Prometheus` datasource is healthy and returns query data
 - `../../scripts/validate-kafka-dlq-topic.ps1` — validates the `telemetry.events.dlq` topic exists, is partitioned/replicated correctly, and follows the DLQ naming convention
 - `../../scripts/validate-dlq-pipeline.ps1` — publishes a poison event and validates it is rerouted to `telemetry.events.dlq` end to end without crashing the processor
+- `../../scripts/validate-event-replay.ps1` — seeds a DLQ record, triggers replay through the `dlqreplay` actuator endpoint, and validates the event is reprocessed successfully end to end
 - `../../scripts/validate-distributed-tracing.ps1` — generates a request and validates the tracing flow across services through `Jaeger`
 
 ### Usage
@@ -151,6 +152,26 @@ The script publishes a poison event to `telemetry.events.raw` — valid JSON tha
 Override the defaults with `-KafkaContainer`, `-BootstrapServer`, `-ProcessorManagementBaseUrl`, and `-ProcessorLogFile` if you changed the local container name, management port, or log location.
 
 > The poison event exercises the **processor** DLQ path, which is the path that deposits records into the topic in a running system. The `ingestion-service` DLQ path only fires when the raw-topic publish itself fails (e.g. the broker is down); in that state the DLQ publish would fail too, so it cannot be validated end to end against a healthy broker. Invalid events sent to the ingestion API are rejected with `400` by request validation *before* any publish and never reach the DLQ.
+
+#### Event Replay Validation
+
+The two flows above confirm the DLQ *exists* and is *fed*; this flow confirms an event can be recovered from it. After starting the platform and the `telemetry-processor`, run the validation script from the repository root:
+
+```powershell
+.\scripts\validate-event-replay.ps1
+```
+
+The script seeds `telemetry.events.dlq` directly with a record wrapping a *valid* `TelemetryEvent` — standing in for an event that failed once (e.g. a since-fixed downstream issue) and is now safe to reprocess — then triggers a selective replay for that event's id through the `dlqreplay` actuator endpoint (see [event-replay-strategy.md](../../docs/architecture/event-replay-strategy.md)). It checks that:
+
+- `telemetry-processor` reports `UP` before the replay is triggered
+- the trigger response reports the event's id as selected for replay (the response itself is asserted rather than polling for a transient `running` state — a single-record replay can finish before the first status poll)
+- the processor's logs confirm the DLQ record was picked up for replay (`Replaying selected DLQ event ... eventId=<id>`)
+- the event is republished onto `telemetry.events.raw` with its original payload intact, and the logs confirm it (`Republished replayed event to raw topic ... eventId=<id>`)
+- the republished event is then **processed successfully** downstream (`Processed normal telemetry event ... eventId=<id>`) — this is the actual reprocessing assertion, since the two checks above only cover republishing and happen before the raw-topic consumer has processed the record
+- the event does not land back in `telemetry.events.dlq` — a supplementary replay-loop guard only. Because the replay path deliberately does not publish a second DLQ record on failure (the original record stays the single retry source), an unchanged DLQ count does **not** by itself establish that reprocessing succeeded
+- the replay listener stops itself again once it drains the backlog, and `telemetry-processor` is still `UP` — i.e. the replay did not crash the system
+
+> Like `validate-dlq-pipeline.ps1`, this script reads `telemetry-processor`'s log file directly from disk (`-ProcessorLogFile`, defaulting to `services/telemetry-processor/logs/telemetry-processor.log`) and talks to the processor's actuator endpoints on the dedicated management port (`-ProcessorManagementBaseUrl`, defaulting to `http://localhost:9083` — see the `dlqreplay` endpoint in the processor's `application.yml`). Override `-KafkaContainer`, `-BootstrapServer`, or the topic names if you changed the local container name, ports, or topics.
 
 ### Prometheus Metrics Validation
 
