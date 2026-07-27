@@ -298,11 +298,15 @@ Confirm-Condition -Permanent `
     -SuccessMessage "KafkaNodePool '$NodePoolName' runs combined broker+controller nodes (KRaft, no ZooKeeper)" `
     -FailureMessage "KafkaNodePool '$NodePoolName' has roles '$($roleList -join ', ')', expected both 'broker' and 'controller'"
 
-# 4. Scope of #140: brokers use persistent storage. Asserted against the
-#    deployed node pool, not the manifest file, so it fails on a cluster still
-#    running the old `ephemeral` spec rather than passing on the committed YAML
-#    alone. The size is checked with the type because a persistent-claim with
-#    the wrong size is still a valid but unintended configuration.
+# 4. Scope of #140: the node pool is *configured* for persistent storage. This
+#    reads the applied KafkaNodePool's desired spec (.spec.storage), i.e. what
+#    was submitted to the operator -- not the storage the brokers actually run.
+#    The distinction matters: applying this manifest onto an existing ephemeral
+#    #139 cluster leaves .spec showing persistent-claim while Strimzi keeps the
+#    brokers on ephemeral (a type change it does not perform in place). Realized
+#    persistence -- an actual PVC per broker -- is what check 5 asserts, and the
+#    data-survival test (#14) is the end-to-end proof. The size is checked with
+#    the type because a persistent-claim of the wrong size is still valid YAML.
 $volumeType = Get-JsonPath `
     -KubectlArgs @("get", "kafkanodepool", $NodePoolName, "--namespace", $Namespace, "-o", "jsonpath={.spec.storage.volumes[0].type}") `
     -ErrorContext "Could not read the storage type of KafkaNodePool '$NodePoolName'"
@@ -321,11 +325,16 @@ Confirm-Condition -Permanent `
     -SuccessMessage "KafkaNodePool '$NodePoolName' requests $ExpectedStorageSize per broker" `
     -FailureMessage "KafkaNodePool '$NodePoolName' requests '$volumeSize' per broker, expected '$ExpectedStorageSize'"
 
-# 5. The declared storage is only real once the operator has a Bound PVC for
-#    every broker. Each broker's claim is checked by its exact name rather than
-#    by counting Bound PVCs with the cluster label: a stray or leftover Bound
-#    claim would let a count pass while one broker's own claim is missing or
-#    Pending. Strimzi names a JBOD claim `data-<volumeId>-<pod>`, and the pod is
+# 5. Realized persistent storage: unlike check 4, this looks at what the brokers
+#    actually run. The declared storage is only real once the operator has a
+#    Bound PVC for every broker -- an ephemeral cluster has none, so this is the
+#    check that catches a manifest applied onto a still-ephemeral #139 cluster,
+#    where check 4's desired spec would already read persistent-claim.
+#
+#    Each broker's claim is checked by its exact name rather than by counting
+#    Bound PVCs with the cluster label: a stray or leftover Bound claim would let
+#    a count pass while one broker's own claim is missing or Pending. Strimzi
+#    names a JBOD claim `data-<volumeId>-<pod>`, and the pod is
 #    `<cluster>-<pool>-<nodeId>`, so the expected names are derived from the node
 #    pool's own volume id and the node ids the operator assigned it.
 $storageVolumeId = Get-JsonPath `
@@ -554,8 +563,13 @@ if ($IncludePersistenceTest) {
 
     try {
         # 1. Single-replica probe topic: one partition, one copy, one disk.
+        #    min.insync.replicas=1 overrides the cluster default of 2 (set in
+        #    kafka-cluster.yaml): with a single replica the ISR can never reach 2,
+        #    so without this override the acks=all producer default in step 2
+        #    would fail the write with NotEnoughReplicas before anything is
+        #    stored to test.
         $createResult = Invoke-BrokerExec -Pod $adminPod -Command `
-            "$kafkaBinPath/kafka-topics.sh --bootstrap-server localhost:$BootstrapPort --create --topic $probeTopic --partitions 1 --replication-factor 1 2>&1"
+            "$kafkaBinPath/kafka-topics.sh --bootstrap-server localhost:$BootstrapPort --create --topic $probeTopic --partitions 1 --replication-factor 1 --config min.insync.replicas=1 2>&1"
         Confirm-Condition -Permanent `
             -Condition ($createResult.ExitCode -eq 0) `
             -SuccessMessage "Created single-replica probe topic '$probeTopic'" `

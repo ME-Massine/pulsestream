@@ -57,8 +57,20 @@ spec:
       # Persistent, backed by a PersistentVolumeClaim (#140): the operator
       # requests a PVC per node, so a rescheduled or restarted pod re-attaches
       # its own volume and restarts with its log dir intact instead of refilling
-      # from replicas. The volume id must stay `0` — changing it makes Strimzi
-      # treat this as a new, empty disk and abandon the existing PVC.
+      # from replicas.
+      #
+      # Two Strimzi constraints shape how this volume may change later:
+      #   - A volume's `type` cannot be changed in place. Editing this from
+      #     `persistent-claim` back to `ephemeral` (or vice versa) on a live
+      #     cluster is ignored by the operator with a warning; the switch from
+      #     the original ephemeral #139 cluster to this one is a delete/recreate,
+      #     documented under "Migrating a cluster already deployed from #139" in
+      #     README.md.
+      #   - The claim name is keyed on this `id` (data-<id>-...), so renumbering
+      #     this volume points the broker at a new, empty disk and orphans the
+      #     old PVC. Adding capacity is therefore done by adding a *second*
+      #     volume with a new id — the operator's supported add-volume-and-
+      #     reassign path — not by changing this one.
       - id: 0
         type: persistent-claim
         # 20Gi per broker. Sizing follows the broker config in

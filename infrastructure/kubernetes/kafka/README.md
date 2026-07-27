@@ -99,6 +99,20 @@ A cold start typically takes two to three minutes, most of which is pulling the 
 
 The cluster comes up with no topics. `auto.create.topics.enable` is `false`, so nothing is created implicitly by a connecting producer either — provisioning the platform topics is [#141](https://github.com/ME-Massine/pulsestream/issues/141).
 
+### Migrating a cluster already deployed from #139
+
+The `kubectl apply` above assumes the cluster does not exist yet. **Strimzi does not allow a volume's storage `type` to change in place**, so applying this manifest over a cluster still running the earlier `ephemeral` volume from [#139](https://github.com/ME-Massine/pulsestream/issues/139) does *not* convert it to persistent storage — the operator keeps the existing type and logs a warning, and the brokers stay ephemeral.
+
+That cluster holds no platform topics yet ([#141](https://github.com/ME-Massine/pulsestream/issues/141)), so there is no data to preserve and the migration is a delete/recreate:
+
+```bash
+kubectl delete -f infrastructure/kubernetes/kafka/   # tears down the ephemeral #139 cluster
+kubectl apply  -f infrastructure/kubernetes/kafka/   # recreates it with persistent-claim storage
+kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
+```
+
+(Strimzi's supported *in-place* route — add a second JBOD volume with a new id, let the operator reassign data onto it, then remove the old volume — is for when data must be kept. It is unnecessary here, and would in any case not apply to the ephemeral→persistent switch, which changes the existing volume's type rather than adding one.)
+
 ## Validate
 
 Run the validation script from the repository root against the current `kubectl` context:
@@ -132,7 +146,7 @@ The checks above prove the storage is provisioned and Bound. The acceptance crit
 
 The test is deliberately built so replication cannot mask the result:
 
-1. Create a throwaway topic with **replication factor 1**, so its single partition lives on exactly one broker's disk and there is no replica to refill from. This is what distinguishes disk persistence from the replication-driven recovery that would pass even on `ephemeral` storage.
+1. Create a throwaway topic with **replication factor 1**, so its single partition lives on exactly one broker's disk and there is no replica to refill from. This is what distinguishes disk persistence from the replication-driven recovery that would pass even on `ephemeral` storage. The topic also sets `min.insync.replicas=1`, overriding the cluster default of 2 — otherwise an `acks=all` write (the Kafka 4.3 default) to a single-replica topic is rejected with `NotEnoughReplicas`.
 2. Produce a unique marker record and note which broker leads the partition.
 3. **Delete that leader broker's pod** and wait for the operator to reschedule it onto its existing PVC and report it `Ready` again.
 4. Consume the topic from the beginning through the bootstrap Service and assert the marker record is still there.
@@ -143,10 +157,13 @@ The topic is a test probe created and removed by the script, not one of the plat
 To run the same cycle by hand — note the second command deletes the pod and waits on **that specific pod**, not on the already-`Ready` `Kafka` resource, which would return immediately:
 
 ```bash
-BROKER=0
-# produce a marker to an RF=1 topic pinned to one broker's disk
+BROKER=0   # any existing broker id; the topic is pinned to it below
+# Create the probe topic with its single replica ON $BROKER, via an explicit
+# replica assignment ("partition 0 -> [broker $BROKER]"), so the broker restarted
+# below is guaranteed to be the one holding the data. min.insync.replicas=1
+# overrides the cluster default of 2 so the acks=all write is accepted.
 kubectl exec pulsestream-dual-role-$BROKER -- bash -c \
-  "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic persistence-check --partitions 1 --replication-factor 1 && \
+  "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic persistence-check --replica-assignment $BROKER --config min.insync.replicas=1 && \
    echo 'marker-42' | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic persistence-check"
 # restart the broker that holds the data and wait for the same pod to come back
 kubectl delete pod pulsestream-dual-role-$BROKER
