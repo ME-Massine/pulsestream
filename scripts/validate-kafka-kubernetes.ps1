@@ -8,6 +8,9 @@ param(
     [string] $NodePoolName = "dual-role",
     [string] $OperatorDeploymentName = "strimzi-cluster-operator",
     [int] $ExpectedBrokerCount = 3,
+    # Storage size the node pool's persistent-claim volume is expected to
+    # request, matching `spec.storage.volumes[0].size` in kafka-node-pool.yaml.
+    [string] $ExpectedStorageSize = "20Gi",
     [int] $BootstrapPort = 9092,
     # Image used for the throwaway client pod that exercises connectivity from
     # outside the broker pods. Kept on the same Strimzi/Kafka version as the
@@ -264,7 +267,46 @@ Confirm-Condition -Permanent `
     -SuccessMessage "KafkaNodePool '$NodePoolName' runs combined broker+controller nodes (KRaft, no ZooKeeper)" `
     -FailureMessage "KafkaNodePool '$NodePoolName' has roles '$($roleList -join ', ')', expected both 'broker' and 'controller'"
 
-# 4. ADR 0005 conformance, asserted at runtime rather than by reading the
+# 4. Scope of #140: brokers use persistent storage. Asserted against the
+#    deployed node pool, not the manifest file, so it fails on a cluster still
+#    running the old `ephemeral` spec rather than passing on the committed YAML
+#    alone. The size is checked with the type because a persistent-claim with
+#    the wrong size is still a valid but unintended configuration.
+$volumeType = Get-JsonPath `
+    -KubectlArgs @("get", "kafkanodepool", $NodePoolName, "--namespace", $Namespace, "-o", "jsonpath={.spec.storage.volumes[0].type}") `
+    -ErrorContext "Could not read the storage type of KafkaNodePool '$NodePoolName'"
+
+Confirm-Condition -Permanent `
+    -Condition ($volumeType -eq "persistent-claim") `
+    -SuccessMessage "KafkaNodePool '$NodePoolName' uses persistent-claim storage" `
+    -FailureMessage "KafkaNodePool '$NodePoolName' storage volume is '$volumeType', expected 'persistent-claim'. Broker data would not survive a pod restart"
+
+$volumeSize = Get-JsonPath `
+    -KubectlArgs @("get", "kafkanodepool", $NodePoolName, "--namespace", $Namespace, "-o", "jsonpath={.spec.storage.volumes[0].size}") `
+    -ErrorContext "Could not read the storage size of KafkaNodePool '$NodePoolName'"
+
+Confirm-Condition -Permanent `
+    -Condition ($volumeSize -eq $ExpectedStorageSize) `
+    -SuccessMessage "KafkaNodePool '$NodePoolName' requests $ExpectedStorageSize per broker" `
+    -FailureMessage "KafkaNodePool '$NodePoolName' requests '$volumeSize' per broker, expected '$ExpectedStorageSize'"
+
+# 5. The declared storage is only real once the operator has a Bound PVC for
+#    every broker: an unbound claim (no default StorageClass, exhausted quota)
+#    leaves the pod Pending, and a cluster that never became Ready would already
+#    have failed check 2 -- but a claim can also be lost or Pending on a broker
+#    added later, so the PVCs are asserted directly. One Bound PVC per broker is
+#    what makes a restart re-attach the same data instead of starting empty.
+$pvcPhases = Get-JsonPath `
+    -KubectlArgs @("get", "pvc", "--namespace", $Namespace, "-l", "strimzi.io/cluster=$KafkaClusterName", "-o", "jsonpath={.items[*].status.phase}") `
+    -ErrorContext "Could not read the broker PersistentVolumeClaims"
+
+$boundPvcCount = @($pvcPhases -split "\s+" | Where-Object { $_ -eq "Bound" }).Count
+Confirm-Condition -Permanent `
+    -Condition ($boundPvcCount -eq $ExpectedBrokerCount) `
+    -SuccessMessage "All $ExpectedBrokerCount brokers have a Bound PersistentVolumeClaim" `
+    -FailureMessage "$boundPvcCount of $ExpectedBrokerCount broker PersistentVolumeClaims are Bound; check 'kubectl get pvc -l strimzi.io/cluster=$KafkaClusterName'"
+
+# 6. ADR 0005 conformance, asserted at runtime rather than by reading the
 #    manifests: the pods must be owned by the operator's StrimziPodSet. A
 #    hand-written StatefulSet -- the approach the ADR rejected -- would produce
 #    healthy pods that pass every other check in this script.
@@ -278,7 +320,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Broker pods are operator-managed (owned by a StrimziPodSet)" `
     -FailureMessage "Broker pods are owned by '$($ownerKinds -join ', ')', expected StrimziPodSet. The cluster is not operator-managed as ADR 0005 requires"
 
-# 5. Acceptance criterion: broker pods are healthy. Counted from the pods'
+# 7. Acceptance criterion: broker pods are healthy. Counted from the pods'
 #    Ready conditions, which the operator gates on a real Kafka readiness check,
 #    so this is stronger than "the pods exist". The Kafka resource being Ready
 #    already implies this, but a broker that failed after reconciliation would
@@ -293,7 +335,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "All $ExpectedBrokerCount broker pods are Ready" `
     -FailureMessage "Only $readyPodCount of $ExpectedBrokerCount broker pods are Ready"
 
-# 6. A broker that crash-loops can still report Ready between restarts, so
+# 8. A broker that crash-loops can still report Ready between restarts, so
 #    assert the pods came up cleanly rather than settling after repeated
 #    failures. A non-zero restart count is a real signal here because the
 #    cluster is validated from a fresh rollout.
@@ -309,7 +351,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Broker pods started cleanly with no container restarts" `
     -FailureMessage "Broker pods restarted $totalRestarts time(s); check 'kubectl logs -l $brokerPodSelector --previous'"
 
-# 7. Scope: expose internal broker connectivity. The bootstrap Service is
+# 9. Scope: expose internal broker connectivity. The bootstrap Service is
 #    generated by the operator from the Kafka resource name, so it is not
 #    declared anywhere in this repository -- confirm it exists as a ClusterIP
 #    carrying the client port. Internal-only exposure is deliberate: external
@@ -334,7 +376,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Bootstrap Service '$bootstrapServiceName' exposes the client port $BootstrapPort" `
     -FailureMessage "Bootstrap Service '$bootstrapServiceName' does not expose port $BootstrapPort"
 
-# 8. The reconciliation this deployment performs: Strimzi names the bootstrap
+# 10. The reconciliation this deployment performs: Strimzi names the bootstrap
 #    Service after the Kafka resource, so the services' committed
 #    PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS must name that Service. Asserted
 #    against the manifests in the repository, because a drifted value would only
@@ -354,7 +396,7 @@ foreach ($configMapPath in $serviceConfigMaps) {
         -FailureMessage "$configMapPath sets PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS to '$configuredBootstrap', but the operator generated '$expectedBootstrapAddress'"
 }
 
-# 9. Acceptance criterion: internal connectivity works. Everything above reads
+# 11. Acceptance criterion: internal connectivity works. Everything above reads
 #    Kubernetes objects; this is the first check that speaks the Kafka protocol
 #    from a separate pod, exactly as a platform service would: resolve the
 #    bootstrap Service, connect, and read cluster metadata.
@@ -384,7 +426,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Cluster metadata advertises all $ExpectedBrokerCount brokers as one cluster (ids: $($discoveredBrokerIds -join ', '))" `
     -FailureMessage "Cluster metadata advertises $(@($discoveredBrokerIds).Count) broker(s) (ids: $($discoveredBrokerIds -join ', ')), expected $ExpectedBrokerCount"
 
-# 10. Each advertised address must be the broker's own stable per-broker DNS
+# 12. Each advertised address must be the broker's own stable per-broker DNS
 #     name, published through the generated headless Service. If a broker
 #     advertised the bootstrap address or a raw pod IP instead, clients would be
 #     load-balanced to the wrong broker or would break on reschedule -- and
@@ -398,7 +440,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Each broker advertises its own stable '$brokersServiceName' DNS name" `
     -FailureMessage "Expected $ExpectedBrokerCount brokers to advertise distinct '$brokersServiceName' names, found $(@($advertisedHosts).Count). $($metadataResult.Output)"
 
-# 11. Metadata can be served by a broker that cannot actually replicate. Ask the
+# 13. Metadata can be served by a broker that cannot actually replicate. Ask the
 #     quorum itself: a healthy KRaft cluster reports one leader and every voter
 #     following it. Topic provisioning is out of scope (#141), so this is
 #     validated through the controller rather than by creating a probe topic.

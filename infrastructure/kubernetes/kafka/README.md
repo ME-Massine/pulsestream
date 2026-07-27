@@ -54,6 +54,16 @@ Three brokers, set as `spec.replicas` in `kafka-node-pool.yaml`. That is the sma
 
 Changing the count is a single-value edit. The operator derives the node identities and the quorum voter list from it — unlike the raw-manifest approach, there is no second copy of the count to keep in sync.
 
+## Storage
+
+Broker data is **persistent**. The node pool declares a single `persistent-claim` JBOD volume (`spec.storage` in `kafka-node-pool.yaml`), so the operator provisions one `PersistentVolumeClaim` per broker and mounts it at the broker's log dir. A pod that is restarted or rescheduled re-attaches its own PVC and comes back with its data intact, instead of starting empty and refilling from its replicas — the behaviour the previous `ephemeral` volume had.
+
+- **Size** — `20Gi` per broker. `log.retention.bytes` caps each partition replica at 1Gi, and with replication factor 3 across 3 brokers every broker holds a replica of every partition; the four platform topics (ADR 0001) are 10 partitions, ~10Gi of topic data, and the rest is headroom for segment rollover, the KRaft metadata log, and Kafka's internal topics.
+- **StorageClass** — unset, so the cluster's **default** `StorageClass` is used. This keeps the manifest portable across Docker Desktop, kind, minikube, and managed clusters. Set `storageClassName` on the volume if a specific class is required.
+- **PVC lifecycle** — `deleteClaim: false`: deleting the node pool or the `Kafka` resource leaves the PVCs in place, so `kubectl delete` is not a data-loss event. The PVCs must then be removed by hand (`kubectl delete pvc -l strimzi.io/cluster=pulsestream`) to reclaim the storage.
+
+The persistence claim is verifiable: the validation script asserts each broker has a Bound PVC, and a broker pod can be restarted to confirm it re-attaches the same volume rather than starting empty. See **Validate** below.
+
 ## Internal connectivity
 
 The operator creates the `Services`; this repository does not declare them.
@@ -102,6 +112,7 @@ It checks that:
 - the Strimzi CRDs and cluster operator are installed in the namespace — the prerequisite this deployment depends on
 - the `Kafka` resource reports `Ready`, i.e. the operator itself considers the cluster reconciled, at the expected Kafka and metadata versions
 - the node pool is configured for the expected node count, in combined `broker,controller` mode
+- the node pool uses `persistent-claim` storage at the expected size, and every broker has a **Bound** `PersistentVolumeClaim` — the persistence this issue adds, so a restart re-attaches the same data instead of starting empty
 - the broker pods are owned by a `StrimziPodSet` — the cluster is operator-managed rather than driven by a hand-written `StatefulSet`, as ADR 0005 requires
 - every broker pod is `Ready` and started cleanly, with no container restarts
 - the generated bootstrap `Service` is a `ClusterIP` on `9092` **and its name matches `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` in the two service `ConfigMaps`** — the reconciliation this PR performs, asserted rather than assumed
@@ -109,13 +120,32 @@ It checks that:
 - each broker advertises its own stable per-broker DNS name rather than the bootstrap address or a raw pod IP
 - the KRaft quorum has elected a controller leader and every broker is a voter — asked of the controller rather than by creating a probe topic, since topic provisioning is out of scope
 
-Override `-Namespace`, `-KafkaClusterName`, `-NodePoolName`, `-ExpectedBrokerCount`, or `-ClientImage` if you changed the defaults.
+Override `-Namespace`, `-KafkaClusterName`, `-NodePoolName`, `-ExpectedBrokerCount`, `-ExpectedStorageSize`, or `-ClientImage` if you changed the defaults.
+
+### Persistence across a restart
+
+The script asserts the storage is provisioned; the data-survival property is confirmed by a rolling restart. The operator does the rollout one broker at a time, keeping the cluster available, and each pod re-attaches its own PVC:
+
+```bash
+kubectl rollout restart strimzipodset/pulsestream-dual-role
+kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
+```
+
+To exercise reschedule specifically, delete a single broker pod and confirm the replacement re-attaches the **same** PVC (the claim name is unchanged) and the cluster returns to Ready:
+
+```bash
+kubectl get pvc -l strimzi.io/cluster=pulsestream        # note the claim for broker 0
+kubectl delete pod pulsestream-dual-role-0
+kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
+kubectl get pvc -l strimzi.io/cluster=pulsestream        # same claim, still Bound
+```
+
+Both leave the PVCs — and their log dirs — in place, which is the behaviour the previous `ephemeral` volume did not have. With `ephemeral` storage the rescheduled pod started empty and refilled from its replicas. Once the platform topics exist ([#141](https://github.com/ME-Massine/pulsestream/issues/141)), the same restart can be verified at the data level by producing before the restart and consuming after.
 
 ## Not covered here
 
 Each has its own issue:
 
-- **Persistent storage ([#140](https://github.com/ME-Massine/pulsestream/issues/140))** — the node pool uses `ephemeral` JBOD storage, so a rescheduled pod starts empty and refills from its replicas. This is the main reason the current manifests are not production-ready; the fix is a `persistent-claim` volume in `kafka-node-pool.yaml`.
 - **Topic provisioning ([#141](https://github.com/ME-Massine/pulsestream/issues/141))** — no `KafkaTopic` resources and no Topic Operator. ADR 0005 puts the platform topics under the operator as `KafkaTopic` resources; that lands with its own issue, on top of this cluster.
 - **Topic-level access control** — no `KafkaUser` resources and no `userOperator`, because the listener is plaintext with no authentication. Securing the listener is not covered by any of the issues in this phase.
 - **Observability integration ([#154](https://github.com/ME-Massine/pulsestream/issues/154) onwards)** — no `metricsConfig`, exporter, or scrape configuration.
