@@ -1,0 +1,79 @@
+# Node pool for the PulseStream Kafka cluster.
+#
+# Strimzi splits a cluster into node pools: the Kafka resource
+# (kafka-cluster.yaml) declares what the cluster is, a KafkaNodePool declares
+# how many nodes provide it, which roles they take, and what storage they use.
+# The operator turns this into the underlying pods; nothing here describes a
+# StatefulSet, because the pods are managed by the operator through a
+# StrimziPodSet rather than by a workload controller in this repository (ADR
+# 0005).
+#
+# The `strimzi.io/cluster` label is the binding to the Kafka resource. It is not
+# decorative: a pool with the wrong value is silently ignored by the operator.
+#
+# Deliberately NOT here (each has its own issue):
+#   - persistent storage (#140) — the storage below is ephemeral, so broker
+#     data does not survive pod rescheduling. See the storage section.
+#   - topic provisioning (#141)
+#   - metrics/observability integration (#154+)
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual-role
+  labels:
+    strimzi.io/cluster: pulsestream
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  # Three nodes: the smallest count that supports a replication factor of 3 with
+  # min.insync.replicas=2, i.e. the cluster keeps accepting writes while exactly
+  # one node is down (rolling restart, node drain, single failure). It is also
+  # the smallest odd number that gives the KRaft controller quorum a real
+  # majority, so it tolerates losing one voter without losing metadata
+  # availability.
+  #
+  # Unlike the raw-manifest approach, this number is the only place the count is
+  # written: the operator derives the quorum voter list and the per-node
+  # identities from it, so there is no second value to keep in sync.
+  replicas: 3
+  # Combined mode: every node is both a broker and a KRaft controller, so these
+  # three pods are a complete cluster with no ZooKeeper and no separate
+  # controller pool. A split broker/controller topology is the alternative once
+  # the cluster is large enough for the controllers to warrant their own nodes;
+  # at three nodes it would only add pods.
+  roles:
+    - controller
+    - broker
+  storage:
+    # JBOD with a single volume rather than a bare `ephemeral` type: it is the
+    # shape Strimzi expects for KRaft metadata (`kraftMetadata` is a per-volume
+    # setting) and adding a second disk later does not require rewriting the
+    # storage type, which would be a cluster-wide change.
+    type: jbod
+    volumes:
+      # Ephemeral for now, matching the emptyDir this cluster previously used.
+      # Persistent storage is a separate issue (#140), which will change this
+      # volume to `persistent-claim` with a size and storage class; until then a
+      # rescheduled node starts with an empty log dir and refills from its
+      # replicas.
+      - id: 0
+        type: ephemeral
+        # Keeps the KRaft metadata log on this volume. With a single volume it
+        # is where it would land anyway, but stating it means adding a second
+        # volume later does not silently move the metadata log.
+        kraftMetadata: shared
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 1536Mi
+  # Heap is set explicitly rather than left to the container default, so the JVM
+  # cannot grow into the memory limit above and get the pod OOM-killed. The
+  # remainder of the limit is deliberate headroom for non-heap memory: page
+  # cache, direct buffers, and the JVM itself.
+  jvmOptions:
+    -Xms: 512m
+    -Xmx: 768m
