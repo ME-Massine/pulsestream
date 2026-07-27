@@ -1,0 +1,114 @@
+# The PulseStream Kafka cluster, declared as a Strimzi custom resource in KRaft
+# mode (no ZooKeeper), per ADR 0005.
+#
+# This resource is a description of the wanted cluster, not a workload: the
+# Strimzi cluster operator reconciles it into the pods, per-node configuration,
+# listener certificates, and Services. Nothing in this repository owns broker
+# ordering, quorum voter lists, advertised listeners, or rolling-restart safety
+# any more — that is the operator's job, and the reason the hand-written
+# StatefulSet was rejected in ADR 0005.
+#
+# PREREQUISITE: the Strimzi cluster operator and its CRDs must already be
+# installed in this namespace, or applying this file fails with
+# "no matches for kind Kafka". See README.md in this directory.
+#
+# The node count, roles, and storage live in the companion KafkaNodePool
+# (kafka-node-pool.yaml).
+#
+# Deliberately NOT here (each has its own issue):
+#   - persistent storage (#140)
+#   - topic provisioning (#141) — no entityOperator/topicOperator and no
+#     KafkaTopic resources; this file declares brokers only
+#   - metrics/observability integration (#154+) — no metricsConfig
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  # The cluster name is a prefix for everything the operator generates,
+  # including the bootstrap Service the platform services connect to
+  # (pulsestream-kafka-bootstrap). Renaming this resource renames that Service,
+  # so it must stay in step with PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS in the
+  # ingestion-service and telemetry-processor ConfigMaps.
+  name: pulsestream
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  kafka:
+    # Pinned, not floating: the operator upgrades the brokers when this value
+    # changes, so an unpinned version would make an operator upgrade silently
+    # roll the cluster. 4.3.0 is the default version of Strimzi 1.1.0.
+    version: 4.3.0
+    # The metadata (inter-broker protocol) version the cluster runs at. Kept one
+    # explicit value so a Kafka upgrade is a deliberate two-step change — bump
+    # `version`, let the rollout finish, then bump this — rather than an
+    # irreversible jump taken by accident.
+    metadataVersion: 4.3-IV0
+    listeners:
+      # One internal, plaintext listener on 9092. `type: internal` is what makes
+      # the operator create the cluster-internal bootstrap Service
+      # (pulsestream-kafka-bootstrap:9092) plus the per-broker addressing the
+      # clients are redirected to after bootstrapping.
+      #
+      # Plaintext and internal-only, matching the previous deployment and the
+      # local Compose broker: exposure outside the cluster, TLS, and
+      # authentication are not part of this issue.
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    # Cluster-wide broker settings. Values mirror the local Compose broker
+    # (infrastructure/docker/docker-compose.yml) so behaviour is consistent
+    # between local development and the cluster, except for the replication
+    # factors, which are raised from 1 to 3 now that there is more than one
+    # broker.
+    #
+    # Per-node settings (node id, advertised listeners, quorum voters, log dirs)
+    # are absent on purpose: the operator generates them, and Strimzi rejects
+    # them here.
+    config:
+      # Replication defaults for Kafka's internal topics. Raised to 3 (from the
+      # local Compose value of 1) so the consumer-offset and transaction logs
+      # survive the loss of a single broker; min ISR of 2 keeps writes available
+      # while one replica is down, e.g. during an operator-driven rolling
+      # restart.
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      # Topics are provisioned explicitly (#141), never implicitly by a
+      # producer. Set now rather than with the topic work, because the default
+      # of `true` would let the first producer to connect create a topic with
+      # the wrong partition count before #141 ever lands.
+      auto.create.topics.enable: false
+      num.partitions: 3
+      # Message sizing and retention, matching the local broker defaults.
+      message.max.bytes: 10485760
+      replica.fetch.max.bytes: 10485760
+      log.retention.hours: 168
+      log.retention.bytes: 1073741824
+      log.segment.bytes: 1073741824
+      group.initial.rebalance.delay.ms: 0
+    template:
+      pod:
+        affinity:
+          podAntiAffinity:
+            # Preferred, not required: spreading brokers across nodes is what
+            # you want in a real cluster, but a hard rule would leave pods
+            # Pending on a single-node cluster (local Docker Desktop / kind).
+            # Strimzi applies no anti-affinity of its own, so without this all
+            # three brokers may be scheduled onto the same node.
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      strimzi.io/cluster: pulsestream
+                  topologyKey: kubernetes.io/hostname
+  # No `entityOperator` block. The Topic Operator is what turns KafkaTopic
+  # resources into real topics, and topic provisioning is #141 — enabling it
+  # here would deploy an idle pod with nothing to reconcile. The User Operator
+  # stays off for longer still: it manages KafkaUser resources for
+  # authenticated clients, and this listener is plaintext with no
+  # authentication.
