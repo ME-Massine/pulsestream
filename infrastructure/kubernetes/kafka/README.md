@@ -122,25 +122,43 @@ It checks that:
 
 Override `-Namespace`, `-KafkaClusterName`, `-NodePoolName`, `-ExpectedBrokerCount`, `-ExpectedStorageSize`, or `-ClientImage` if you changed the defaults.
 
-### Persistence across a restart
+### Persistence across a restart (data-level)
 
-The script asserts the storage is provisioned; the data-survival property is confirmed by a rolling restart. The operator does the rollout one broker at a time, keeping the cluster available, and each pod re-attaches its own PVC:
+The checks above prove the storage is provisioned and Bound. The acceptance criterion is stronger — **data written before a restart is still readable afterwards** — so it is verified by an actual write/restart/read cycle. Pass `-IncludePersistenceTest` to run it as part of the validation script:
 
-```bash
-kubectl rollout restart strimzipodset/pulsestream-dual-role
-kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
+```powershell
+.\scripts\validate-kafka-kubernetes.ps1 -IncludePersistenceTest
 ```
 
-To exercise reschedule specifically, delete a single broker pod and confirm the replacement re-attaches the **same** PVC (the claim name is unchanged) and the cluster returns to Ready:
+The test is deliberately built so replication cannot mask the result:
+
+1. Create a throwaway topic with **replication factor 1**, so its single partition lives on exactly one broker's disk and there is no replica to refill from. This is what distinguishes disk persistence from the replication-driven recovery that would pass even on `ephemeral` storage.
+2. Produce a unique marker record and note which broker leads the partition.
+3. **Delete that leader broker's pod** and wait for the operator to reschedule it onto its existing PVC and report it `Ready` again.
+4. Consume the topic from the beginning through the bootstrap Service and assert the marker record is still there.
+5. Delete the throwaway topic.
+
+The topic is a test probe created and removed by the script, not one of the platform topics ([#141](https://github.com/ME-Massine/pulsestream/issues/141) still owns those; `auto.create.topics.enable` stays `false`).
+
+To run the same cycle by hand — note the second command deletes the pod and waits on **that specific pod**, not on the already-`Ready` `Kafka` resource, which would return immediately:
 
 ```bash
-kubectl get pvc -l strimzi.io/cluster=pulsestream        # note the claim for broker 0
-kubectl delete pod pulsestream-dual-role-0
-kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
-kubectl get pvc -l strimzi.io/cluster=pulsestream        # same claim, still Bound
+BROKER=0
+# produce a marker to an RF=1 topic pinned to one broker's disk
+kubectl exec pulsestream-dual-role-$BROKER -- bash -c \
+  "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic persistence-check --partitions 1 --replication-factor 1 && \
+   echo 'marker-42' | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic persistence-check"
+# restart the broker that holds the data and wait for the same pod to come back
+kubectl delete pod pulsestream-dual-role-$BROKER
+kubectl wait pod/pulsestream-dual-role-$BROKER --for=condition=Ready --timeout=300s
+# the marker must still be readable after the restart
+kubectl exec pulsestream-dual-role-$BROKER -- bash -c \
+  "/opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic persistence-check --from-beginning --timeout-ms 15000"
+kubectl exec pulsestream-dual-role-$BROKER -- bash -c \
+  "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic persistence-check"
 ```
 
-Both leave the PVCs — and their log dirs — in place, which is the behaviour the previous `ephemeral` volume did not have. With `ephemeral` storage the rescheduled pod started empty and refilled from its replicas. Once the platform topics exist ([#141](https://github.com/ME-Massine/pulsestream/issues/141)), the same restart can be verified at the data level by producing before the restart and consuming after.
+With the previous `ephemeral` volume the deleted pod came back with an empty log dir, so an RF=1 topic's data was lost. With `persistent-claim` storage the pod re-attaches the same PVC and the marker survives.
 
 ## Not covered here
 
