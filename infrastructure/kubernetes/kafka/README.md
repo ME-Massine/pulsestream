@@ -128,7 +128,7 @@ It checks that:
 - the node pool is configured for the expected node count, in combined `broker,controller` mode
 - the node pool uses `persistent-claim` storage at the expected size, and every broker has a **Bound** `PersistentVolumeClaim` — the persistence this issue adds, so a restart re-attaches the same data instead of starting empty
 - the broker pods are owned by a `StrimziPodSet` — the cluster is operator-managed rather than driven by a hand-written `StatefulSet`, as ADR 0005 requires
-- every broker pod is `Ready` and started cleanly, with no container restarts
+- every broker pod is `Ready`, and no broker restarts or is replaced *during* the run — a pre-existing restart count (a past node reboot, say) is reported as a warning, not a failure, since `restartCount` persists for the pod's lifetime and would otherwise fail every long-running cluster
 - the generated bootstrap `Service` is a `ClusterIP` on `9092` **and its name matches `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` in the two service `ConfigMaps`** — the reconciliation this PR performs, asserted rather than assumed
 - **a separate client pod can reach the cluster through the bootstrap Service** and receives metadata advertising all brokers as *one* cluster — the client runs outside the broker pods on purpose, since a check run inside one would pass even with the Services broken
 - each broker advertises its own stable per-broker DNS name rather than the bootstrap address or a raw pod IP
