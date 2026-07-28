@@ -692,12 +692,15 @@ if ($IncludePersistenceTest) {
             }
     } finally {
         # Best-effort cleanup: remove the probe topic regardless of the outcome
-        # above, and never let a cleanup error mask the real result.
-        try {
-            Invoke-BrokerExec -Pod $adminPod -Command `
-                "$kafkaBinPath/kafka-topics.sh --bootstrap-server localhost:$BootstrapPort --delete --topic $probeTopic 2>&1" | Out-Null
-        } catch {
-            Write-Host "[warn] Could not delete probe topic '$probeTopic'; remove it manually."
+        # above, and never let a cleanup failure mask the real result.
+        # Invoke-BrokerExec reports failure through its exit code rather than by
+        # throwing, so the delete is checked explicitly -- a try/catch here would
+        # never fire and the failure would pass silently.
+        $cleanupResult = Invoke-BrokerExec -Pod $adminPod -Command `
+            "$kafkaBinPath/kafka-topics.sh --bootstrap-server localhost:$BootstrapPort --delete --topic $probeTopic 2>&1"
+
+        if ($cleanupResult.ExitCode -ne 0) {
+            Write-Warning "Could not delete probe topic '$probeTopic'; remove it manually. $($cleanupResult.Output)"
         }
     }
 }
