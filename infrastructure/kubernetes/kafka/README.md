@@ -46,6 +46,7 @@ Version pairing matters on upgrade: the operator version determines which Kafka 
 | :--- | :------ |
 | `kafka-cluster.yaml` | The `Kafka` resource — cluster-wide broker config, the internal listener, and the pinned Kafka version |
 | `kafka-node-pool.yaml` | The `KafkaNodePool` resource — how many nodes, which roles, storage, and resources |
+| `topics.yaml` | The four platform topics as `KafkaTopic` resources, reconciled by the Topic Operator |
 | `../../../scripts/validate-kafka-kubernetes.ps1` | Validates the operator-managed cluster: reconciliation, health, and internal connectivity |
 
 ## Broker count
@@ -80,6 +81,29 @@ Because Strimzi always suffixes the generated name, no cluster name produces a p
 
 The listener is internal and plaintext, on the pod network only. No external listener is defined, and TLS and authentication are not configured — exposure and security hardening are outside this issue.
 
+## Topics
+
+The four platform topics (ADR 0001) are declared in `topics.yaml` as `KafkaTopic` resources and reconciled onto the cluster by the **Topic Operator** (`spec.entityOperator.topicOperator` in `kafka-cluster.yaml`). They are not created by a script against a ready broker; the operator drives the cluster to the declared state, so re-applying is idempotent and topic creation is reproducible.
+
+Names, partitions, and retention match [docs/architecture/topics.md](../../../docs/architecture/topics.md) and the local Compose provisioning (`infrastructure/docker/kafka/init-topics.sh`).
+
+| Topic | Partitions | Replicas | Retention |
+| :--- | :--- | :--- | :--- |
+| `telemetry.events.raw` | 3 | 3 | 24h |
+| `telemetry.events.processed` | 3 | 3 | 7d |
+| `telemetry.events.anomalies` | 3 | 3 | 7d |
+| `telemetry.events.dlq` | 1 | 3 | 7d |
+
+Replication is **3**, not the Compose value of 1. This cluster's default `min.insync.replicas` is 2 (`kafka-cluster.yaml`), so a single-replica topic would reject `acks=all` writes with `NotEnoughReplicas`; RF 3 across the three brokers is also what the node-pool storage is sized for. The 10 partitions here are the same 10 the storage sizing assumes.
+
+Applied with the cluster (`kubectl apply -f infrastructure/kubernetes/kafka/`). The Topic Operator provisions them once it is `Ready`:
+
+```bash
+kubectl get kafkatopics -l strimzi.io/cluster=pulsestream
+```
+
+Each should report `Ready`; the topic names carry dots, which are valid in both Kafka topic names and Kubernetes resource names.
+
 ## Deploy
 
 Order matters; the operator must be running first (see the prerequisite above).
@@ -97,7 +121,7 @@ kubectl get pods -l strimzi.io/cluster=pulsestream
 
 A cold start typically takes two to three minutes, most of which is pulling the Kafka image.
 
-The cluster comes up with no topics. `auto.create.topics.enable` is `false`, so nothing is created implicitly by a connecting producer either — provisioning the platform topics is [#141](https://github.com/ME-Massine/pulsestream/issues/141).
+`kubectl apply -f infrastructure/kubernetes/kafka/` applies `topics.yaml` alongside the cluster, so the Topic Operator provisions the four platform topics once it is running. `auto.create.topics.enable` is `false`, so topics are created only from those `KafkaTopic` resources, never implicitly by a connecting producer. See **Topics** above.
 
 ### Migrating a cluster already deployed from #139
 
@@ -181,7 +205,6 @@ With the previous `ephemeral` volume the deleted pod came back with an empty log
 
 Each has its own issue:
 
-- **Topic provisioning ([#141](https://github.com/ME-Massine/pulsestream/issues/141))** — no `KafkaTopic` resources and no Topic Operator. ADR 0005 puts the platform topics under the operator as `KafkaTopic` resources; that lands with its own issue, on top of this cluster.
 - **Topic-level access control** — no `KafkaUser` resources and no `userOperator`, because the listener is plaintext with no authentication. Securing the listener is not covered by any of the issues in this phase.
 - **Observability integration ([#154](https://github.com/ME-Massine/pulsestream/issues/154) onwards)** — no `metricsConfig`, exporter, or scrape configuration.
 - **Disaster recovery** — no backup, restore, or multi-zone topology.

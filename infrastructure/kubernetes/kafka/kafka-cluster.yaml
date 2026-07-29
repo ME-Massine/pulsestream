@@ -17,9 +17,10 @@
 #
 # Storage is persistent-claim, but that lives in the node pool (#140), not here.
 #
+# Topic provisioning (#141) enables the Topic Operator (spec.entityOperator
+# below); the KafkaTopic resources themselves live in topics.yaml.
+#
 # Deliberately NOT here (each has its own issue):
-#   - topic provisioning (#141) — no entityOperator/topicOperator and no
-#     KafkaTopic resources; this file declares brokers only
 #   - metrics/observability integration (#154+) — no metricsConfig
 apiVersion: kafka.strimzi.io/v1
 kind: Kafka
@@ -107,9 +108,14 @@ spec:
                     matchLabels:
                       strimzi.io/cluster: pulsestream
                   topologyKey: kubernetes.io/hostname
-  # No `entityOperator` block. The Topic Operator is what turns KafkaTopic
-  # resources into real topics, and topic provisioning is #141 — enabling it
-  # here would deploy an idle pod with nothing to reconcile. The User Operator
-  # stays off for longer still: it manages KafkaUser resources for
-  # authenticated clients, and this listener is plaintext with no
-  # authentication.
+  # The Topic Operator is what turns the KafkaTopic resources in topics.yaml
+  # into real topics on this cluster; without it those resources sit unreconciled
+  # and no topic is created. It is enabled here as part of topic provisioning
+  # (#141) rather than earlier, so it ships with the topics it has something to
+  # reconcile.
+  #
+  # Only the Topic Operator is enabled. The User Operator stays off: it manages
+  # KafkaUser resources for authenticated clients, and this listener is plaintext
+  # with no authentication.
+  entityOperator:
+    topicOperator: {}

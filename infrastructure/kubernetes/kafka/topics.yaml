@@ -1,0 +1,70 @@
+# PulseStream platform topics, declared as Strimzi KafkaTopic resources and
+# reconciled onto the cluster by the Topic Operator enabled in
+# kafka-cluster.yaml. These are the four topics from ADR 0001, defined in
+# docs/architecture/topics.md.
+#
+# The strimzi.io/cluster label binds each topic to the Kafka resource named
+# "pulsestream"; a wrong value is silently ignored by the operator.
+#
+# Names and partition counts match docs/architecture/topics.md and the local
+# Compose provisioning (infrastructure/docker/kafka/init-topics.sh). Replication
+# is 3, not the Compose value of 1: this is a three-broker cluster whose default
+# min.insync.replicas is 2 (see kafka-cluster.yaml), so a single-replica topic
+# would reject acks=all writes, and the node-pool storage is sized for RF 3.
+# retention.ms and cleanup.policy match the retention documented per topic.
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: telemetry.events.raw
+  labels:
+    strimzi.io/cluster: pulsestream
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    # 24h
+    retention.ms: "86400000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: telemetry.events.processed
+  labels:
+    strimzi.io/cluster: pulsestream
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    # 7d
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: telemetry.events.anomalies
+  labels:
+    strimzi.io/cluster: pulsestream
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    # 7d
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: telemetry.events.dlq
+  labels:
+    strimzi.io/cluster: pulsestream
+spec:
+  partitions: 1
+  replicas: 3
+  config:
+    # 7d
+    retention.ms: "604800000"
+    cleanup.policy: delete
