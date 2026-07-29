@@ -70,6 +70,15 @@ function Invoke-KafkaClientCommand {
         [int] $TimeoutSeconds = 300
     )
 
+    # The command is handed to the pod base64-encoded rather than as literal
+    # shell text. Windows PowerShell 5.1 does not escape embedded double quotes
+    # when it builds the command line for a native executable, so a snippet
+    # containing `cluster_id="$(...)"` reaches kubectl with broken argument
+    # boundaries: bash then receives the fragments as separate words and fails
+    # with `unexpected EOF while looking for matching ')'`. Base64 output is
+    # alphanumerics, `+`, `/` and `=` only, so nothing in it can be re-split.
+    $encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Command))
+
     # Deliberately not `kubectl run --rm --attach`: attaching races the
     # container start, so the command's first lines are sometimes lost and the
     # check fails intermittently on output it never received. Creating the pod,
@@ -80,7 +89,7 @@ function Invoke-KafkaClientCommand {
         "--restart=Never",
         "--image", $Image,
         "--command", "--",
-        "bash", "-c", $Command
+        "bash", "-c", "echo $encodedCommand | base64 -d | bash"
     )
 
     if ($created.ExitCode -ne 0) {

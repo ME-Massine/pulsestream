@@ -74,7 +74,11 @@ function New-ShellCommand {
         $command = $command.Replace("{{$key}}", [string] $Values[$key])
     }
 
-    return $command
+    # Line endings are normalized because these scripts are edited on Windows and
+    # .gitattributes pins eol=lf for *.sh only, so a *.ps1 here-string is checked
+    # out with CRLF. bash keeps the CR as part of the last token on each line and
+    # rejects the command with "syntax error near unexpected token $'do\r'".
+    return $command -replace "`r`n", "`n" -replace "`r", "`n"
 }
 
 function Invoke-KafkaCli {
@@ -430,35 +434,69 @@ foreach ($serviceName in $ServiceNames) {
         -SuccessMessage "Deployment '$serviceName' is Available" `
         -FailureMessage "Deployment '$serviceName' is not Available (condition: '$deploymentAvailable')"
 
-    # Read from the ConfigMap in the cluster, not from the manifest in the
-    # repository: this is the value the running pods were actually given, which
-    # is what their Kafka clients connect to. validate-kafka-kubernetes.ps1
-    # asserts the committed manifests separately.
-    $configuredBootstrap = Get-KubectlJsonPath `
-        -KubectlArgs @("get", "configmap", "$serviceName-config", "--namespace", $Namespace, "-o", "jsonpath={.data.PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS}") `
-        -ErrorContext "ConfigMap '$serviceName-config' was not found in namespace '$Namespace'. Deploy infrastructure/kubernetes/$serviceName/ first"
+    # Names and readiness are read as two parallel lists rather than as one
+    # `{range}` template: a jsonpath template needs embedded double quotes, and
+    # Windows PowerShell 5.1 strips them on the way to kubectl, which then
+    # rejects the expression ("unrecognized character in action: U+003D '='").
+    # The single-quoted filter below survives that, and both queries iterate the
+    # same `.items`, so the lists stay index-aligned.
+    $servicePodNames = @((Get-KubectlJsonPath `
+        -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$serviceName", "-o", "jsonpath={.items[*].metadata.name}") `
+        -ErrorContext "Could not list the pods of '$serviceName'") -split "\s+" | Where-Object { $_ })
 
+    $servicePodReadyStates = @((Get-KubectlJsonPath `
+        -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$serviceName", "-o", "jsonpath={.items[*].status.conditions[?(@.type=='Ready')].status}") `
+        -ErrorContext "Could not read the pod readiness of '$serviceName'") -split "\s+" | Where-Object { $_ })
+
+    # Alignment is asserted rather than assumed: a pod that has not been
+    # scheduled yet carries no Ready condition, which would shift the readiness
+    # list and could pick the wrong pod name.
     Confirm-Condition -Permanent `
-        -Condition ($configuredBootstrap -eq $bootstrapAddress) `
-        -SuccessMessage "'$serviceName' is configured with the generated bootstrap Service ($configuredBootstrap)" `
-        -FailureMessage "ConfigMap '$serviceName-config' sets PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS to '$configuredBootstrap', but the operator generated '$bootstrapAddress'"
+        -Condition (@($servicePodNames).Count -eq @($servicePodReadyStates).Count) `
+        -SuccessMessage "'$serviceName' has $(@($servicePodNames).Count) pod(s) reporting a Ready condition" `
+        -FailureMessage "'$serviceName' has $(@($servicePodNames).Count) pod(s) but $(@($servicePodReadyStates).Count) Ready condition(s); at least one pod is not scheduled yet"
 
-    $servicePodRows = @((Invoke-KubectlChecked `
-        -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$serviceName", "-o", 'jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}') `
-        -ErrorContext "Could not list the pods of '$serviceName'") -split "\r?\n" | Where-Object { $_ })
-
-    $readyServicePod = $servicePodRows |
-        Where-Object { $_ -like "*=True" } |
-        ForEach-Object { ($_ -split "=")[0] } |
-        Select-Object -First 1
+    $readyServicePodIndex = [array]::IndexOf($servicePodReadyStates, "True")
+    $readyServicePod = if ($readyServicePodIndex -ge 0) { $servicePodNames[$readyServicePodIndex] } else { $null }
 
     Confirm-Condition -Permanent `
         -Condition (-not [string]::IsNullOrWhiteSpace($readyServicePod)) `
         -SuccessMessage "'$serviceName' has a Ready pod ($readyServicePod)" `
-        -FailureMessage "'$serviceName' has no Ready pod (pods: $($servicePodRows -join ', '))"
+        -FailureMessage "'$serviceName' has no Ready pod (pods: $($servicePodNames -join ', '); readiness: $($servicePodReadyStates -join ', '))"
 
-    # The connectivity check runs inside the service pod, using the address the
-    # service itself is configured with. That is what distinguishes it from the
+    # Read the variable out of the running container, not out of the ConfigMap.
+    # The pods take it through envFrom, which is resolved once at pod creation:
+    # a ConfigMap edited after the last rollout is already correct in the API
+    # server while every running pod still holds the previous value, so the
+    # ConfigMap proves nothing about the process that is actually connecting.
+    # This reads what the JVM was handed. validate-kafka-kubernetes.ps1 asserts
+    # the committed manifests separately.
+    # printenv rather than a shell snippet: Windows PowerShell 5.1 mangles the
+    # double quotes a `bash -c` one-liner would need (see the base64 note in
+    # PulseStreamKubernetes.psm1). printenv also exits non-zero precisely when
+    # the variable is unset, which is the distinction this check is about.
+    $envProbe = Invoke-Kubectl -KubectlArgs @(
+        "exec", $readyServicePod, "--namespace", $Namespace, "--",
+        "printenv", "PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS"
+    )
+
+    $podBootstrap = $envProbe.Output.Trim()
+
+    # An unset variable is called out separately from a wrong one: it means the
+    # Deployment lost its envFrom reference, which reads very differently from a
+    # pod that is merely running with a stale value.
+    Confirm-Condition -Permanent `
+        -Condition ($envProbe.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($podBootstrap)) `
+        -SuccessMessage "Read PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS from pod '$readyServicePod'" `
+        -FailureMessage "PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS is unset in pod '$readyServicePod', so '$serviceName' was never given a broker address. $($envProbe.Output)"
+
+    Confirm-Condition -Permanent `
+        -Condition ($podBootstrap -eq $bootstrapAddress) `
+        -SuccessMessage "Pod '$readyServicePod' runs with the generated bootstrap Service ($podBootstrap)" `
+        -FailureMessage "Pod '$readyServicePod' of '$serviceName' runs with PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS='$podBootstrap', but the operator generated '$bootstrapAddress'. If ConfigMap '$serviceName-config' already carries the right value, the pod predates it: roll the Deployment out (kubectl rollout restart deployment/$serviceName --namespace $Namespace)"
+
+    # The connectivity check runs inside the service pod, against the value that
+    # pod is actually running with. That is what distinguishes it from the
     # client-pod checks above: it exercises the service's own DNS resolution and
     # network path to the brokers, so a NetworkPolicy or a namespace mismatch
     # that only affects this service is caught here.
@@ -466,8 +504,8 @@ foreach ($serviceName in $ServiceNames) {
     # A TCP connect is the assertion rather than a Kafka client call because the
     # service images carry a JRE and a shell, not the Kafka CLI. bash is present
     # in the eclipse-temurin:17-jre-jammy base image both services build on.
-    $bootstrapHost = ($configuredBootstrap -split ",")[0].Split(":")[0]
-    $bootstrapHostPort = ($configuredBootstrap -split ",")[0].Split(":")[1]
+    $bootstrapHost = ($podBootstrap -split ",")[0].Split(":")[0]
+    $bootstrapHostPort = ($podBootstrap -split ",")[0].Split(":")[1]
 
     $tcpProbe = Invoke-Kubectl -KubectlArgs @(
         "exec", $readyServicePod, "--namespace", $Namespace, "--",
@@ -476,39 +514,128 @@ foreach ($serviceName in $ServiceNames) {
 
     Confirm-Condition -Permanent `
         -Condition ($tcpProbe.ExitCode -eq 0 -and $tcpProbe.Output -match "BOOTSTRAP-REACHABLE") `
-        -SuccessMessage "'$serviceName' reaches '$configuredBootstrap' from its own pod" `
-        -FailureMessage "'$serviceName' cannot reach '$configuredBootstrap' from pod '$readyServicePod'. $($tcpProbe.Output)"
+        -SuccessMessage "'$serviceName' reaches '$podBootstrap' from its own pod" `
+        -FailureMessage "'$serviceName' cannot reach '$podBootstrap' from pod '$readyServicePod'. $($tcpProbe.Output)"
 }
 
 # 5. One platform service is checked at the Kafka protocol level rather than at
 #    the network level: telemetry-processor starts its listener at boot, so a
-#    running pod has already joined its consumer group and the cluster knows the
-#    group. That is proof of a real client session by a service, not just of an
-#    open port.
+#    running pod holds a live session with the group coordinator. That is proof
+#    of a real client session by a service, not just of an open port.
 #
 #    ingestion-service gets no equivalent assertion on purpose. Its producer is
 #    created on the first publish (DefaultKafkaProducerFactory is lazy), so a
 #    healthy, idle pod holds no broker connection to observe, and driving it
 #    with a real request would need the platform topics that #141 provisions.
+#
+#    Membership is asserted, not existence. A consumer group outlives the
+#    consumers that created it: it stays listed in Empty state with zero members
+#    for offsets.retention.minutes (7 days by default) after the last member
+#    left. A `--list` containing the group would therefore still pass against a
+#    processor that crashed on boot, or against nothing but the residue of an
+#    earlier run. `--state` and `--members` are what distinguish a group record
+#    from a live client session.
 if ($ServiceNames -contains $ProcessorServiceName) {
-    $groupListResult = Invoke-KafkaCli -Purpose "grouplist" -Command (New-ShellCommand -Values @{
-        BIN       = $kafkaBinPath
-        BOOTSTRAP = $bootstrapAddress
-    } -Template @'
-{{BIN}}/kafka-consumer-groups.sh --bootstrap-server {{BOOTSTRAP}} --list 2>&1
+    # Retried: a pod that is Ready has passed its health probes, but the Kafka
+    # listener joins the group on its own schedule, and a group that is mid
+    # rebalance reports a transient state for a few seconds. Each attempt runs
+    # in its own client pod, so the attempt number is part of the pod name --
+    # pods are deleted with --wait=false and the name would otherwise still be
+    # taken on the next try.
+    # Script-scoped: the retry body runs as a scriptblock invoked from the
+    # validation module, so a plain assignment would write a fresh local copy on
+    # every attempt and every client pod would be named "...-1".
+    $script:membershipAttempt = 0
+
+    Invoke-WithRetry `
+        -TimeoutSeconds $TimeoutSeconds `
+        -FailureMessage "Consumer group '$ProcessorConsumerGroup' had no active member within $TimeoutSeconds seconds, so '$ProcessorServiceName' has not joined Kafka." `
+        -Operation {
+            $script:membershipAttempt++
+
+            $groupResult = Invoke-KafkaCli -Purpose "members-$($script:membershipAttempt)" -Command (New-ShellCommand -Values @{
+                BIN       = $kafkaBinPath
+                BOOTSTRAP = $bootstrapAddress
+                GROUP     = $ProcessorConsumerGroup
+            } -Template @'
+echo "===STATE==="
+{{BIN}}/kafka-consumer-groups.sh --bootstrap-server {{BOOTSTRAP}} --describe --group {{GROUP}} --state 2>&1
+echo "===MEMBERS==="
+{{BIN}}/kafka-consumer-groups.sh --bootstrap-server {{BOOTSTRAP}} --describe --group {{GROUP}} --members 2>&1
 '@)
 
-    Confirm-Condition -Permanent `
-        -Condition ($groupListResult.ExitCode -eq 0) `
-        -SuccessMessage "Listed the consumer groups known to the cluster" `
-        -FailureMessage "Could not list consumer groups through '$bootstrapAddress'. $($groupListResult.Output)"
+            Confirm-Condition `
+                -Condition ($groupResult.ExitCode -eq 0) `
+                -SuccessMessage "Described consumer group '$ProcessorConsumerGroup'" `
+                -FailureMessage "Could not describe consumer group '$ProcessorConsumerGroup' through '$bootstrapAddress'. $($groupResult.Output)"
 
-    $knownGroups = @($groupListResult.Output -split "\r?\n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            $stateSection = [regex]::Match($groupResult.Output, "(?s)===STATE===(.*?)===MEMBERS===").Groups[1].Value
+            $membersSection = [regex]::Match($groupResult.Output, "(?s)===MEMBERS===(.*)$").Groups[1].Value
 
-    Confirm-Condition -Permanent `
-        -Condition ($knownGroups -contains $ProcessorConsumerGroup) `
-        -SuccessMessage "'$ProcessorServiceName' has joined its consumer group '$ProcessorConsumerGroup' on the cluster" `
-        -FailureMessage "Consumer group '$ProcessorConsumerGroup' is unknown to the cluster, so '$ProcessorServiceName' has not connected to Kafka. Known groups: $($knownGroups -join ', ')"
+            # An unknown group is reported by the CLI as a message rather than a
+            # non-zero exit, so it is matched explicitly instead of being left to
+            # fall through as an unparsable state row.
+            Confirm-Condition `
+                -Condition ($groupResult.Output -notmatch "does not exist") `
+                -SuccessMessage "The cluster knows consumer group '$ProcessorConsumerGroup'" `
+                -FailureMessage "Consumer group '$ProcessorConsumerGroup' does not exist on the cluster, so '$ProcessorServiceName' has never connected to Kafka. $($groupResult.Output)"
+
+            # Columns are GROUP COORDINATOR (ID) ASSIGNMENT-STRATEGY STATE #MEMBERS.
+            # Parsed from the right because COORDINATOR itself contains a space
+            # and ASSIGNMENT-STRATEGY is blank while a group has no members.
+            $stateRow = @($stateSection -split "\r?\n" |
+                Where-Object { $_ -match "^\s*$([regex]::Escape($ProcessorConsumerGroup))\s" } |
+                Select-Object -First 1)
+
+            Confirm-Condition `
+                -Condition (@($stateRow).Count -eq 1) `
+                -SuccessMessage "Read the state of consumer group '$ProcessorConsumerGroup'" `
+                -FailureMessage "Could not read a state row for consumer group '$ProcessorConsumerGroup'. $($groupResult.Output)"
+
+            $stateFields = @($stateRow[0] -split "\s+" | Where-Object { $_ })
+            $groupState = $stateFields[-2]
+            $reportedMemberCount = $stateFields[-1]
+
+            # Stable is the only state in which the assignment is settled and the
+            # processor is consuming. PreparingRebalance and CompletingRebalance
+            # are transient and Empty means every member has left, so all three
+            # are retried rather than failed permanently.
+            Confirm-Condition `
+                -Condition ($groupState -eq "Stable") `
+                -SuccessMessage "Consumer group '$ProcessorConsumerGroup' is Stable" `
+                -FailureMessage "Consumer group '$ProcessorConsumerGroup' is in state '$groupState' with $reportedMemberCount member(s), not Stable"
+
+            Confirm-Condition `
+                -Condition ($reportedMemberCount -match "^\d+$" -and [int] $reportedMemberCount -ge 1) `
+                -SuccessMessage "Consumer group '$ProcessorConsumerGroup' reports $reportedMemberCount active member(s)" `
+                -FailureMessage "Consumer group '$ProcessorConsumerGroup' reports '$reportedMemberCount' members, so no client is currently joined"
+
+            # The member rows are checked as well as the count: they are what
+            # ties the membership to a live consumer, carrying the client id and
+            # the pod IP of the process currently holding the session.
+            # Columns are GROUP CONSUMER-ID HOST CLIENT-ID #PARTITIONS.
+            $memberRows = @($membersSection -split "\r?\n" |
+                Where-Object { $_ -match "^\s*$([regex]::Escape($ProcessorConsumerGroup))\s" } |
+                ForEach-Object { , (($_ -split "\s+") | Where-Object { $_ }) })
+
+            Confirm-Condition `
+                -Condition (@($memberRows).Count -ge 1) `
+                -SuccessMessage "Consumer group '$ProcessorConsumerGroup' has $(@($memberRows).Count) member row(s)" `
+                -FailureMessage "Consumer group '$ProcessorConsumerGroup' listed no members. $($groupResult.Output)"
+
+            # Reported, not asserted: a member that subscribed to a topic which
+            # does not exist yet is Stable with zero partitions, and the platform
+            # topics are provisioned by #141. Asserting an assignment here would
+            # make this script fail for a reason that is not broker health.
+            $assignedPartitionTotal = ($memberRows |
+                ForEach-Object { if ($_[-1] -match "^\d+$") { [int] $_[-1] } else { 0 } } |
+                Measure-Object -Sum).Sum
+            if ($null -eq $assignedPartitionTotal) { $assignedPartitionTotal = 0 }
+
+            $memberClients = @($memberRows | ForEach-Object { $_[3] })
+            $memberHosts = @($memberRows | ForEach-Object { $_[2] })
+            Write-Host "[ok] '$ProcessorServiceName' is an active member of consumer group '$ProcessorConsumerGroup' (client ids: $($memberClients -join ', '); hosts: $($memberHosts -join ', '); partitions assigned: $assignedPartitionTotal)"
+        }
 }
 
 Write-Host "[ok] Kafka broker health and connectivity validation completed."

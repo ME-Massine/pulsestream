@@ -186,7 +186,7 @@ The script above validates the *deployment* — that the operator reconciled the
 .\scripts\validate-kafka-broker-health.ps1
 ```
 
-Prerequisites: the cluster above is deployed, and `ingestion-service` and `telemetry-processor` are deployed from `infrastructure/kubernetes/<service>/` — the connectivity section reads their `ConfigMaps` and runs a check inside their pods, so it fails with a message naming the missing Deployment if they are not.
+Prerequisites: the cluster above is deployed, and `ingestion-service` and `telemetry-processor` are deployed from `infrastructure/kubernetes/<service>/` — the connectivity section runs its checks inside their pods, so it fails with a message naming the missing Deployment if they are not.
 
 **Broker health**
 
@@ -206,10 +206,10 @@ A throwaway probe topic (`pulsestream.validation.<run id>`) is created for the r
 
 **Service connectivity**
 
-- each service's `ConfigMap` **in the cluster** points `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` at the generated bootstrap Service — this is the value the running pods were given, where `validate-kafka-kubernetes.ps1` asserts the committed manifests
 - each service Deployment is `Available` with a `Ready` pod
-- **the bootstrap address is reached from inside the service's own pod**, so DNS resolution and the network path are exercised from where the service's Kafka client sits — a `NetworkPolicy` or namespace mismatch affecting only that service is caught, which a check from a separate client pod would miss
-- `telemetry-processor` **has joined its consumer group** (`telemetry-processor`) on the cluster: its listener starts at boot, so a running pod has already opened a real Kafka session, and the cluster knowing the group proves it
+- `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` is read **out of that running pod**, not out of the `ConfigMap`, and must equal the generated bootstrap Service — the pods take the variable through `envFrom`, which is resolved once at pod creation, so an edited `ConfigMap` is already correct in the API server while every pod started before it still runs with the old value. A mismatch is reported with the `kubectl rollout restart` that fixes it. `validate-kafka-kubernetes.ps1` asserts the committed manifests.
+- **the pod's own bootstrap value is reached from inside that pod**, so DNS resolution and the network path are exercised from where the service's Kafka client sits — a `NetworkPolicy` or namespace mismatch affecting only that service is caught, which a check from a separate client pod would miss
+- `telemetry-processor` is an **active member** of its consumer group (`telemetry-processor`): the group is `Stable` and reports at least one member, with the member's client id and pod IP printed. Existence is deliberately not the assertion — a group outlives its consumers and stays listed in `Empty` state with zero members for `offsets.retention.minutes` (7 days by default), so a `--list` check would pass against a processor that crashed on boot. Retried, because a `Ready` pod joins the group on its own schedule and a group mid-rebalance reports a transient state.
 
 `ingestion-service` deliberately gets no equivalent session-level assertion. Its producer is created on the first publish (`DefaultKafkaProducerFactory` is lazy), so a healthy but idle pod holds no broker connection to observe, and driving it with a real request needs the platform topics from #141. Its network path to the brokers is asserted instead.
 
