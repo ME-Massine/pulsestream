@@ -8,11 +8,20 @@ param(
     [string] $NodePoolName = "dual-role",
     [string] $OperatorDeploymentName = "strimzi-cluster-operator",
     [int] $ExpectedBrokerCount = 3,
+    # Storage size the node pool's persistent-claim volume is expected to
+    # request, matching `spec.storage.volumes[0].size` in kafka-node-pool.yaml.
+    [string] $ExpectedStorageSize = "20Gi",
     [int] $BootstrapPort = 9092,
     # Image used for the throwaway client pod that exercises connectivity from
     # outside the broker pods. Kept on the same Strimzi/Kafka version as the
     # cluster so the Kafka CLI always matches the brokers.
     [string] $ClientImage = "quay.io/strimzi/kafka:1.1.0-kafka-4.3.0",
+    # Opt-in: run the data-level persistence test (#140 acceptance criterion).
+    # It writes a record to a single-replica probe topic, restarts the broker
+    # that holds it, and asserts the record is still readable. Off by default
+    # because it deletes and reschedules a broker pod, which the read-only checks
+    # above never do.
+    [switch] $IncludePersistenceTest,
     [int] $TimeoutSeconds = 300
 )
 
@@ -171,6 +180,56 @@ function Invoke-KafkaClientCommand {
     }
 }
 
+# Blocks until a named pod reports its Ready condition True. `kubectl wait` is
+# not used here on purpose: after a broker pod is deleted the replacement is
+# recreated by the StrimziPodSet, and `kubectl wait pod/<name>` can race the
+# recreation and error with "not found" before the new pod exists. Polling by
+# name tolerates the pod briefly not existing.
+function Wait-PodReady {
+    param(
+        [Parameter(Mandatory)] [string] $PodName,
+        [int] $TimeoutSeconds = 300
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $ready = Invoke-Kubectl -KubectlArgs @(
+            "get", "pod", $PodName, "--namespace", $Namespace,
+            "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+        )
+        if ($ready.ExitCode -eq 0 -and $ready.Output.Trim() -eq "True") {
+            return $true
+        }
+        Start-Sleep -Seconds 3
+    }
+    return $false
+}
+
+# Captures each broker pod's identity (UID) and container restart count, keyed
+# by pod name. The UID is regenerated when a pod is replaced (deleted and
+# recreated by the StrimziPodSet); the restart count rises when the running
+# container crashes and is restarted in place. Comparing a later snapshot to a
+# baseline separates an active crash loop or reschedule *during* this run from
+# restarts that predate it -- a node reboot, for instance, leaves every broker
+# at restartCount 1 for the pod's whole lifetime. Read from -o json rather than
+# parallel jsonpath lists so the three fields stay correlated per pod.
+function Get-BrokerPodSnapshot {
+    $podsJson = Invoke-KubectlChecked `
+        -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", $brokerPodSelector, "-o", "json") `
+        -ErrorContext "Could not read broker pod identities and restart counts"
+
+    $snapshot = [ordered] @{}
+    foreach ($pod in ($podsJson | ConvertFrom-Json).items) {
+        $containerStatus = $pod.status.containerStatuses | Select-Object -First 1
+        $restartCount = if ($containerStatus) { [int] $containerStatus.restartCount } else { 0 }
+        $snapshot[$pod.metadata.name] = [pscustomobject]@{
+            Uid          = $pod.metadata.uid
+            RestartCount = $restartCount
+        }
+    }
+    return $snapshot
+}
+
 Write-Host "Validating the Strimzi-managed Kafka cluster in Kubernetes..."
 
 # 0. Fail fast with a clear message if there is no reachable cluster, rather
@@ -264,7 +323,77 @@ Confirm-Condition -Permanent `
     -SuccessMessage "KafkaNodePool '$NodePoolName' runs combined broker+controller nodes (KRaft, no ZooKeeper)" `
     -FailureMessage "KafkaNodePool '$NodePoolName' has roles '$($roleList -join ', ')', expected both 'broker' and 'controller'"
 
-# 4. ADR 0005 conformance, asserted at runtime rather than by reading the
+# 4. Scope of #140: the node pool is *configured* for persistent storage. This
+#    reads the applied KafkaNodePool's desired spec (.spec.storage), i.e. what
+#    was submitted to the operator -- not the storage the brokers actually run.
+#    The distinction matters: applying this manifest onto an existing ephemeral
+#    #139 cluster leaves .spec showing persistent-claim while Strimzi keeps the
+#    brokers on ephemeral (a type change it does not perform in place). Realized
+#    persistence -- an actual PVC per broker -- is what check 5 asserts, and the
+#    data-survival test (#14) is the end-to-end proof. The size is checked with
+#    the type because a persistent-claim of the wrong size is still valid YAML.
+$volumeType = Get-JsonPath `
+    -KubectlArgs @("get", "kafkanodepool", $NodePoolName, "--namespace", $Namespace, "-o", "jsonpath={.spec.storage.volumes[0].type}") `
+    -ErrorContext "Could not read the storage type of KafkaNodePool '$NodePoolName'"
+
+Confirm-Condition -Permanent `
+    -Condition ($volumeType -eq "persistent-claim") `
+    -SuccessMessage "KafkaNodePool '$NodePoolName' uses persistent-claim storage" `
+    -FailureMessage "KafkaNodePool '$NodePoolName' storage volume is '$volumeType', expected 'persistent-claim'. Broker data would not survive a pod restart"
+
+$volumeSize = Get-JsonPath `
+    -KubectlArgs @("get", "kafkanodepool", $NodePoolName, "--namespace", $Namespace, "-o", "jsonpath={.spec.storage.volumes[0].size}") `
+    -ErrorContext "Could not read the storage size of KafkaNodePool '$NodePoolName'"
+
+Confirm-Condition -Permanent `
+    -Condition ($volumeSize -eq $ExpectedStorageSize) `
+    -SuccessMessage "KafkaNodePool '$NodePoolName' requests $ExpectedStorageSize per broker" `
+    -FailureMessage "KafkaNodePool '$NodePoolName' requests '$volumeSize' per broker, expected '$ExpectedStorageSize'"
+
+# 5. Realized persistent storage: unlike check 4, this looks at what the brokers
+#    actually run. The declared storage is only real once the operator has a
+#    Bound PVC for every broker -- an ephemeral cluster has none, so this is the
+#    check that catches a manifest applied onto a still-ephemeral #139 cluster,
+#    where check 4's desired spec would already read persistent-claim.
+#
+#    Each broker's claim is checked by its exact name rather than by counting
+#    Bound PVCs with the cluster label: a stray or leftover Bound claim would let
+#    a count pass while one broker's own claim is missing or Pending. Strimzi
+#    names a JBOD claim `data-<volumeId>-<pod>`, and the pod is
+#    `<cluster>-<pool>-<nodeId>`, so the expected names are derived from the node
+#    pool's own volume id and the node ids the operator assigned it.
+$storageVolumeId = Get-JsonPath `
+    -KubectlArgs @("get", "kafkanodepool", $NodePoolName, "--namespace", $Namespace, "-o", "jsonpath={.spec.storage.volumes[0].id}") `
+    -ErrorContext "Could not read the storage volume id of KafkaNodePool '$NodePoolName'"
+
+# .status.nodeIds is the authoritative list of the ids the operator gave this
+# pool (they are not assumed to be 0..N-1), formatted as a JSON array e.g.
+# "[0,1,2]".
+$nodeIdsRaw = Get-JsonPath `
+    -KubectlArgs @("get", "kafkanodepool", $NodePoolName, "--namespace", $Namespace, "-o", "jsonpath={.status.nodeIds}") `
+    -ErrorContext "Could not read the node ids of KafkaNodePool '$NodePoolName'"
+
+$nodeIds = @([regex]::Matches($nodeIdsRaw, "\d+") | ForEach-Object { $_.Value })
+
+Confirm-Condition -Permanent `
+    -Condition (@($nodeIds).Count -eq $ExpectedBrokerCount) `
+    -SuccessMessage "KafkaNodePool '$NodePoolName' has $ExpectedBrokerCount assigned node ids ($($nodeIds -join ', '))" `
+    -FailureMessage "KafkaNodePool '$NodePoolName' reports $(@($nodeIds).Count) node id(s) ($($nodeIds -join ', ')), expected $ExpectedBrokerCount"
+
+foreach ($nodeId in $nodeIds) {
+    $expectedPvcName = "data-$storageVolumeId-$KafkaClusterName-$NodePoolName-$nodeId"
+
+    $pvcPhase = Get-JsonPath `
+        -KubectlArgs @("get", "pvc", $expectedPvcName, "--namespace", $Namespace, "-o", "jsonpath={.status.phase}") `
+        -ErrorContext "Broker $nodeId has no PersistentVolumeClaim '$expectedPvcName'; storage is not provisioned for it"
+
+    Confirm-Condition -Permanent `
+        -Condition ($pvcPhase -eq "Bound") `
+        -SuccessMessage "Broker $nodeId claim '$expectedPvcName' is Bound" `
+        -FailureMessage "Broker $nodeId claim '$expectedPvcName' is '$pvcPhase', expected Bound"
+}
+
+# 6. ADR 0005 conformance, asserted at runtime rather than by reading the
 #    manifests: the pods must be owned by the operator's StrimziPodSet. A
 #    hand-written StatefulSet -- the approach the ADR rejected -- would produce
 #    healthy pods that pass every other check in this script.
@@ -278,7 +407,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Broker pods are operator-managed (owned by a StrimziPodSet)" `
     -FailureMessage "Broker pods are owned by '$($ownerKinds -join ', ')', expected StrimziPodSet. The cluster is not operator-managed as ADR 0005 requires"
 
-# 5. Acceptance criterion: broker pods are healthy. Counted from the pods'
+# 7. Acceptance criterion: broker pods are healthy. Counted from the pods'
 #    Ready conditions, which the operator gates on a real Kafka readiness check,
 #    so this is stronger than "the pods exist". The Kafka resource being Ready
 #    already implies this, but a broker that failed after reconciliation would
@@ -293,23 +422,32 @@ Confirm-Condition -Permanent `
     -SuccessMessage "All $ExpectedBrokerCount broker pods are Ready" `
     -FailureMessage "Only $readyPodCount of $ExpectedBrokerCount broker pods are Ready"
 
-# 6. A broker that crash-loops can still report Ready between restarts, so
-#    assert the pods came up cleanly rather than settling after repeated
-#    failures. A non-zero restart count is a real signal here because the
-#    cluster is validated from a fresh rollout.
-$restartCounts = Get-JsonPath `
-    -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", $brokerPodSelector, "-o", "jsonpath={.items[*].status.containerStatuses[0].restartCount}") `
-    -ErrorContext "Could not read broker pod restart counts"
-
-$totalRestarts = ($restartCounts -split "\s+" | Where-Object { $_ } | ForEach-Object { [int] $_ } | Measure-Object -Sum).Sum
-if ($null -eq $totalRestarts) { $totalRestarts = 0 }
+# 8. Capture each broker pod's identity and restart count as a baseline. A
+#    non-zero restart count here is history, not a live fault: restartCount
+#    persists for the pod's whole lifetime, so a one-off node reboot (Docker
+#    Desktop restarting its VM, say) leaves every broker at 1 long after the
+#    cluster is healthy again. Requiring zero would then fail validation of any
+#    long-running cluster. The crash-loop signal that actually matters -- a
+#    restart or a pod replacement that happens *during* this run -- is asserted
+#    after the connectivity and quorum checks below, by comparing a fresh
+#    snapshot against this baseline (check 14).
+$brokerBaseline = Get-BrokerPodSnapshot
 
 Confirm-Condition -Permanent `
-    -Condition ($totalRestarts -eq 0) `
-    -SuccessMessage "Broker pods started cleanly with no container restarts" `
-    -FailureMessage "Broker pods restarted $totalRestarts time(s); check 'kubectl logs -l $brokerPodSelector --previous'"
+    -Condition ($brokerBaseline.Count -eq $ExpectedBrokerCount) `
+    -SuccessMessage "Captured a restart baseline for all $ExpectedBrokerCount broker pods" `
+    -FailureMessage "Captured a restart baseline for $($brokerBaseline.Count) broker pod(s), expected $ExpectedBrokerCount"
 
-# 7. Scope: expose internal broker connectivity. The bootstrap Service is
+$preexistingRestarts = @($brokerBaseline.GetEnumerator() | Where-Object { $_.Value.RestartCount -gt 0 })
+if ($preexistingRestarts.Count -gt 0) {
+    foreach ($entry in $preexistingRestarts) {
+        Write-Host "[warn] Broker pod '$($entry.Key)' has $($entry.Value.RestartCount) pre-existing restart(s) from before this run; validation will confirm it does not restart again."
+    }
+} else {
+    Write-Host "[ok] Broker pods have no pre-existing container restarts"
+}
+
+# 9. Scope: expose internal broker connectivity. The bootstrap Service is
 #    generated by the operator from the Kafka resource name, so it is not
 #    declared anywhere in this repository -- confirm it exists as a ClusterIP
 #    carrying the client port. Internal-only exposure is deliberate: external
@@ -334,7 +472,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Bootstrap Service '$bootstrapServiceName' exposes the client port $BootstrapPort" `
     -FailureMessage "Bootstrap Service '$bootstrapServiceName' does not expose port $BootstrapPort"
 
-# 8. The reconciliation this deployment performs: Strimzi names the bootstrap
+# 10. The reconciliation this deployment performs: Strimzi names the bootstrap
 #    Service after the Kafka resource, so the services' committed
 #    PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS must name that Service. Asserted
 #    against the manifests in the repository, because a drifted value would only
@@ -354,7 +492,7 @@ foreach ($configMapPath in $serviceConfigMaps) {
         -FailureMessage "$configMapPath sets PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS to '$configuredBootstrap', but the operator generated '$expectedBootstrapAddress'"
 }
 
-# 9. Acceptance criterion: internal connectivity works. Everything above reads
+# 11. Acceptance criterion: internal connectivity works. Everything above reads
 #    Kubernetes objects; this is the first check that speaks the Kafka protocol
 #    from a separate pod, exactly as a platform service would: resolve the
 #    bootstrap Service, connect, and read cluster metadata.
@@ -384,7 +522,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Cluster metadata advertises all $ExpectedBrokerCount brokers as one cluster (ids: $($discoveredBrokerIds -join ', '))" `
     -FailureMessage "Cluster metadata advertises $(@($discoveredBrokerIds).Count) broker(s) (ids: $($discoveredBrokerIds -join ', ')), expected $ExpectedBrokerCount"
 
-# 10. Each advertised address must be the broker's own stable per-broker DNS
+# 12. Each advertised address must be the broker's own stable per-broker DNS
 #     name, published through the generated headless Service. If a broker
 #     advertised the bootstrap address or a raw pod IP instead, clients would be
 #     load-balanced to the wrong broker or would break on reschedule -- and
@@ -398,7 +536,7 @@ Confirm-Condition -Permanent `
     -SuccessMessage "Each broker advertises its own stable '$brokersServiceName' DNS name" `
     -FailureMessage "Expected $ExpectedBrokerCount brokers to advertise distinct '$brokersServiceName' names, found $(@($advertisedHosts).Count). $($metadataResult.Output)"
 
-# 11. Metadata can be served by a broker that cannot actually replicate. Ask the
+# 13. Metadata can be served by a broker that cannot actually replicate. Ask the
 #     quorum itself: a healthy KRaft cluster reports one leader and every voter
 #     following it. Topic provisioning is out of scope (#141), so this is
 #     validated through the controller rather than by creating a probe topic.
@@ -434,5 +572,137 @@ Confirm-Condition -Permanent `
     -Condition (@($voterIds).Count -eq $ExpectedBrokerCount) `
     -SuccessMessage "All $ExpectedBrokerCount brokers are voters in the metadata quorum (ids: $($voterIds -join ', '))" `
     -FailureMessage "The metadata quorum has $(@($voterIds).Count) voter(s) (ids: $($voterIds -join ', ')), expected $ExpectedBrokerCount. $($quorumResult.Output)"
+
+# 14. Live-stability gate: no broker restarted or was replaced *during* this
+#     run. A fresh snapshot is compared against the baseline from check 8, which
+#     separates an active crash loop -- a container that restarted in place, or a
+#     pod the scheduler replaced (new UID), while these checks ran -- from
+#     restarts that predate the run and are only history. It is asserted here,
+#     after the connectivity and quorum checks have exercised the cluster, but
+#     deliberately before the persistence test below, whose entire job is to
+#     delete and reschedule a broker on purpose: running that first would make an
+#     intentional UID change look like an instability.
+$brokerCurrent = Get-BrokerPodSnapshot
+
+foreach ($podName in $brokerBaseline.Keys) {
+    $baseline = $brokerBaseline[$podName]
+    $current = $brokerCurrent[$podName]
+
+    # -Permanent stops on the first failure, so the UID and restart-count checks
+    # below only run once this one has confirmed the pod is still present.
+    Confirm-Condition -Permanent `
+        -Condition ($null -ne $current) `
+        -SuccessMessage "Broker pod '$podName' is still present" `
+        -FailureMessage "Broker pod '$podName' disappeared during validation; a healthy cluster does not remove brokers on its own"
+
+    Confirm-Condition -Permanent `
+        -Condition ($current.Uid -eq $baseline.Uid) `
+        -SuccessMessage "Broker pod '$podName' was not replaced during validation" `
+        -FailureMessage "Broker pod '$podName' was replaced during validation (UID changed from $($baseline.Uid) to $($current.Uid)); the cluster rescheduled a broker while the checks ran"
+
+    Confirm-Condition -Permanent `
+        -Condition ($current.RestartCount -le $baseline.RestartCount) `
+        -SuccessMessage "Broker pod '$podName' did not restart during validation (restart count steady at $($current.RestartCount))" `
+        -FailureMessage "Broker pod '$podName' restarted during validation (restart count rose from $($baseline.RestartCount) to $($current.RestartCount)); check 'kubectl logs $podName --namespace $Namespace --previous'"
+}
+
+# 15. Acceptance criterion (#140): data written before a restart is still
+#     readable after it. Opt-in, because unlike every check above it deletes and
+#     reschedules a broker pod. The probe topic uses replication factor 1 on a
+#     single partition, so its only copy lives on one broker's disk with no
+#     replica to refill from -- that is what makes this a test of the PVC rather
+#     than of replication, which would recover the data even on ephemeral
+#     storage. The topic is created and deleted here; it is not one of the
+#     platform topics (#141), and auto.create.topics.enable stays false.
+if ($IncludePersistenceTest) {
+    Write-Host "Running the data-level persistence test (restarts one broker)..."
+
+    $adminPod = $firstBrokerPodName
+    $probeTopic = "pulsestream-persistence-check-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+    $marker = "persistence-marker-$([Guid]::NewGuid().ToString('N'))"
+
+    function Invoke-BrokerExec {
+        param([Parameter(Mandatory)] [string] $Pod, [Parameter(Mandatory)] [string] $Command)
+        return Invoke-Kubectl -KubectlArgs @(
+            "exec", $Pod, "--namespace", $Namespace, "--", "bash", "-c", $Command
+        )
+    }
+
+    try {
+        # 1. Single-replica probe topic: one partition, one copy, one disk.
+        #    min.insync.replicas=1 overrides the cluster default of 2 (set in
+        #    kafka-cluster.yaml): with a single replica the ISR can never reach 2,
+        #    so without this override the acks=all producer default in step 2
+        #    would fail the write with NotEnoughReplicas before anything is
+        #    stored to test.
+        $createResult = Invoke-BrokerExec -Pod $adminPod -Command `
+            "$kafkaBinPath/kafka-topics.sh --bootstrap-server localhost:$BootstrapPort --create --topic $probeTopic --partitions 1 --replication-factor 1 --config min.insync.replicas=1 2>&1"
+        Confirm-Condition -Permanent `
+            -Condition ($createResult.ExitCode -eq 0) `
+            -SuccessMessage "Created single-replica probe topic '$probeTopic'" `
+            -FailureMessage "Could not create probe topic '$probeTopic'. $($createResult.Output)"
+
+        # 2. Write the marker and find which broker holds the partition.
+        $produceResult = Invoke-BrokerExec -Pod $adminPod -Command `
+            "echo '$marker' | $kafkaBinPath/kafka-console-producer.sh --bootstrap-server localhost:$BootstrapPort --topic $probeTopic 2>&1"
+        Confirm-Condition -Permanent `
+            -Condition ($produceResult.ExitCode -eq 0) `
+            -SuccessMessage "Produced a marker record to '$probeTopic'" `
+            -FailureMessage "Could not produce to probe topic '$probeTopic'. $($produceResult.Output)"
+
+        $describeResult = Invoke-BrokerExec -Pod $adminPod -Command `
+            "$kafkaBinPath/kafka-topics.sh --bootstrap-server localhost:$BootstrapPort --describe --topic $probeTopic 2>&1"
+        $leaderMatch = [regex]::Match($describeResult.Output, "Leader:\s*(\d+)")
+        Confirm-Condition -Permanent `
+            -Condition ($leaderMatch.Success) `
+            -SuccessMessage "Probe partition is led by broker $($leaderMatch.Groups[1].Value)" `
+            -FailureMessage "Could not determine the leader broker for '$probeTopic'. $($describeResult.Output)"
+
+        # 3. Restart the broker that physically holds the data. Its pod name is
+        #    the cluster/pool prefix plus the broker (= node) id.
+        $leaderId = $leaderMatch.Groups[1].Value
+        $leaderPod = "$KafkaClusterName-$NodePoolName-$leaderId"
+
+        Invoke-KubectlChecked `
+            -KubectlArgs @("delete", "pod", $leaderPod, "--namespace", $Namespace, "--timeout=${TimeoutSeconds}s") `
+            -ErrorContext "Could not delete broker pod '$leaderPod' for the restart test" | Out-Null
+
+        Confirm-Condition -Permanent `
+            -Condition (Wait-PodReady -PodName $leaderPod -TimeoutSeconds $TimeoutSeconds) `
+            -SuccessMessage "Broker pod '$leaderPod' was rescheduled and is Ready again" `
+            -FailureMessage "Broker pod '$leaderPod' did not become Ready within $TimeoutSeconds seconds after deletion"
+
+        # 4. The record must survive the restart. Retried: right after the broker
+        #    returns the partition leader can be momentarily unavailable, which is
+        #    a transient not a persistence failure.
+        Invoke-WithRetry `
+            -TimeoutSeconds $TimeoutSeconds `
+            -FailureMessage "Marker record was not readable from '$probeTopic' after restarting broker $leaderId -- data did not survive the restart." `
+            -Operation {
+                $consumeResult = Invoke-BrokerExec -Pod $adminPod -Command `
+                    "$kafkaBinPath/kafka-console-consumer.sh --bootstrap-server localhost:$BootstrapPort --topic $probeTopic --from-beginning --timeout-ms 15000 2>/dev/null"
+
+                # kafka-console-consumer exits non-zero when --timeout-ms fires,
+                # even after printing records, so the marker is matched in the
+                # output rather than trusting the exit code.
+                Confirm-Condition `
+                    -Condition ($consumeResult.Output -match [regex]::Escape($marker)) `
+                    -SuccessMessage "Marker record survived the restart and is readable from '$probeTopic'" `
+                    -FailureMessage "Marker not yet readable from '$probeTopic'"
+            }
+    } finally {
+        # Best-effort cleanup: remove the probe topic regardless of the outcome
+        # above, and never let a cleanup failure mask the real result.
+        # Invoke-BrokerExec reports failure through its exit code rather than by
+        # throwing, so the delete is checked explicitly -- a try/catch here would
+        # never fire and the failure would pass silently.
+        $cleanupResult = Invoke-BrokerExec -Pod $adminPod -Command `
+            "$kafkaBinPath/kafka-topics.sh --bootstrap-server localhost:$BootstrapPort --delete --topic $probeTopic 2>&1"
+
+        if ($cleanupResult.ExitCode -ne 0) {
+            Write-Warning "Could not delete probe topic '$probeTopic'; remove it manually. $($cleanupResult.Output)"
+        }
+    }
+}
 
 Write-Host "[ok] Kafka cluster validation completed."

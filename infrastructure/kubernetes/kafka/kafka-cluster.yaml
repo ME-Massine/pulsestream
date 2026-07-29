@@ -15,8 +15,9 @@
 # The node count, roles, and storage live in the companion KafkaNodePool
 # (kafka-node-pool.yaml).
 #
+# Storage is persistent-claim, but that lives in the node pool (#140), not here.
+#
 # Deliberately NOT here (each has its own issue):
-#   - persistent storage (#140)
 #   - topic provisioning (#141) — no entityOperator/topicOperator and no
 #     KafkaTopic resources; this file declares brokers only
 #   - metrics/observability integration (#154+) — no metricsConfig

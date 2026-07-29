@@ -11,9 +11,11 @@
 # The `strimzi.io/cluster` label is the binding to the Kafka resource. It is not
 # decorative: a pool with the wrong value is silently ignored by the operator.
 #
+# The storage is persistent (#140): each node is backed by a PersistentVolume
+# through a per-node PVC, so broker data survives pod restarts and rescheduling.
+# See the storage section.
+#
 # Deliberately NOT here (each has its own issue):
-#   - persistent storage (#140) — the storage below is ephemeral, so broker
-#     data does not survive pod rescheduling. See the storage section.
 #   - topic provisioning (#141)
 #   - metrics/observability integration (#154+)
 apiVersion: kafka.strimzi.io/v1
@@ -52,13 +54,46 @@ spec:
     # storage type, which would be a cluster-wide change.
     type: jbod
     volumes:
-      # Ephemeral for now, matching the emptyDir this cluster previously used.
-      # Persistent storage is a separate issue (#140), which will change this
-      # volume to `persistent-claim` with a size and storage class; until then a
-      # rescheduled node starts with an empty log dir and refills from its
-      # replicas.
+      # Persistent, backed by a PersistentVolumeClaim (#140): the operator
+      # requests a PVC per node, so a rescheduled or restarted pod re-attaches
+      # its own volume and restarts with its log dir intact instead of refilling
+      # from replicas.
+      #
+      # Two Strimzi constraints shape how this volume may change later:
+      #   - A volume's `type` cannot be changed in place. Editing this from
+      #     `persistent-claim` back to `ephemeral` (or vice versa) on a live
+      #     cluster is ignored by the operator with a warning; the switch from
+      #     the original ephemeral #139 cluster to this one is a delete/recreate,
+      #     documented under "Migrating a cluster already deployed from #139" in
+      #     README.md.
+      #   - The claim name is keyed on this `id` (data-<id>-...), so renumbering
+      #     this volume points the broker at a new, empty disk and orphans the
+      #     old PVC. Adding capacity is therefore done by adding a *second*
+      #     volume with a new id — the operator's supported add-volume-and-
+      #     reassign path — not by changing this one.
       - id: 0
-        type: ephemeral
+        type: persistent-claim
+        # 20Gi per broker. Sizing follows the broker config in
+        # kafka-cluster.yaml: log.retention.bytes caps each partition replica at
+        # 1Gi, and with replication factor 3 across 3 brokers every broker holds
+        # a replica of every partition — the four platform topics (ADR 0001) are
+        # 10 partitions, so ~10Gi of topic data at steady state. The remainder is
+        # headroom for segment rollover (a partition can exceed its retention cap
+        # until the open 1Gi segment closes), the KRaft metadata log, and Kafka's
+        # internal topics.
+        size: 20Gi
+        # No storageClassName, so the operator uses the cluster's default
+        # StorageClass. That is the portable choice: it provisions on Docker
+        # Desktop, kind, and minikube (hostpath / local-path) and on a managed
+        # cluster (EBS, PD, ...) without pinning this manifest to one
+        # environment's class name. Set it here if a specific class is required.
+        #
+        # deleteClaim: false keeps the PVC — and the broker's data — when the
+        # node pool or cluster is deleted, so `kubectl delete` is not a data-loss
+        # event. The trade-off is that the PVCs must be removed by hand to
+        # reclaim the storage. It is also the operator default; stated
+        # explicitly so the intent is visible in the manifest.
+        deleteClaim: false
         # Keeps the KRaft metadata log on this volume. With a single volume it
         # is where it would land anyway, but stating it means adding a second
         # volume later does not silently move the metadata log.
