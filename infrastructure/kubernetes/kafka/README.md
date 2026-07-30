@@ -127,13 +127,38 @@ A cold start typically takes two to three minutes, most of which is pulling the 
 
 The `kubectl apply` above assumes the cluster does not exist yet. **Strimzi does not allow a volume's storage `type` to change in place**, so applying this manifest over a cluster still running the earlier `ephemeral` volume from [#139](https://github.com/ME-Massine/pulsestream/issues/139) does *not* convert it to persistent storage — the operator keeps the existing type and logs a warning, and the brokers stay ephemeral.
 
-That cluster holds no platform topics yet ([#141](https://github.com/ME-Massine/pulsestream/issues/141)), so there is no data to preserve and the migration is a delete/recreate:
+Converting that cluster is a delete/recreate, which is **destructive**: on `ephemeral` volumes the broker data lives inside the pod, so `kubectl delete` erases every topic's contents. Since [#141](https://github.com/ME-Massine/pulsestream/issues/141) the same `kubectl apply` also provisions the four platform topics via the Topic Operator, so a cluster applied since then *does* hold platform topics and may hold data a producer wrote to them. "No platform data" is a precondition to **verify**, not assume:
 
-```bash
-kubectl delete -f infrastructure/kubernetes/kafka/   # tears down the ephemeral #139 cluster
-kubectl apply  -f infrastructure/kubernetes/kafka/   # recreates it with persistent-claim storage
-kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
-```
+1. Stop the producers so nothing writes during the migration:
+
+   ```bash
+   kubectl scale deployment/ingestion-service deployment/telemetry-processor --replicas=0
+   ```
+
+2. Check whether the platform topics already hold data:
+
+   ```bash
+   for t in telemetry.events.raw telemetry.events.processed telemetry.events.anomalies telemetry.events.dlq; do
+     kubectl exec pulsestream-dual-role-0 -- /opt/kafka/bin/kafka-get-offsets.sh \
+       --bootstrap-server localhost:9092 --topic "$t"
+   done
+   ```
+
+   Every offset `0` (or the topics absent) means there is nothing to preserve — proceed. **If any offset is non-zero, do not delete** — the delete would lose that data. Preserve it first (drain the topics to another sink, or use the in-place JBOD route below), or accept the loss explicitly before continuing.
+
+3. With the precondition verified, delete and recreate:
+
+   ```bash
+   kubectl delete -f infrastructure/kubernetes/kafka/   # tears down the ephemeral #139 cluster
+   kubectl apply  -f infrastructure/kubernetes/kafka/   # recreates it with persistent-claim storage
+   kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
+   ```
+
+4. Scale the producers back up:
+
+   ```bash
+   kubectl scale deployment/ingestion-service deployment/telemetry-processor --replicas=1
+   ```
 
 (Strimzi's supported *in-place* route — add a second JBOD volume with a new id, let the operator reassign data onto it, then remove the old volume — is for when data must be kept. It is unnecessary here, and would in any case not apply to the ephemeral→persistent switch, which changes the existing volume's type rather than adding one.)
 
@@ -156,7 +181,7 @@ It checks that:
 - the generated bootstrap `Service` is a `ClusterIP` on `9092` **and its name matches `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` in the two service `ConfigMaps`** — the reconciliation this PR performs, asserted rather than assumed
 - **a separate client pod can reach the cluster through the bootstrap Service** and receives metadata advertising all brokers as *one* cluster — the client runs outside the broker pods on purpose, since a check run inside one would pass even with the Services broken
 - each broker advertises its own stable per-broker DNS name rather than the bootstrap address or a raw pod IP
-- the KRaft quorum has elected a controller leader and every broker is a voter — asked of the controller rather than by creating a probe topic, since topic provisioning is out of scope
+- the KRaft quorum has elected a controller leader and every broker is a voter — asked of the controller directly rather than inferred from creating a probe topic
 
 Override `-Namespace`, `-KafkaClusterName`, `-NodePoolName`, `-ExpectedBrokerCount`, `-ExpectedStorageSize`, or `-ClientImage` if you changed the defaults.
 
@@ -176,7 +201,7 @@ The test is deliberately built so replication cannot mask the result:
 4. Consume the topic from the beginning through the bootstrap Service and assert the marker record is still there.
 5. Delete the throwaway topic.
 
-The topic is a test probe created and removed by the script, not one of the platform topics ([#141](https://github.com/ME-Massine/pulsestream/issues/141) still owns those; `auto.create.topics.enable` stays `false`).
+The topic is a test probe created and removed by the script, not one of the platform topics (those are provisioned by the Topic Operator from `topics.yaml`; `auto.create.topics.enable` stays `false`).
 
 To run the same cycle by hand — note the second command deletes the pod and waits on **that specific pod**, not on the already-`Ready` `Kafka` resource, which would return immediately:
 
