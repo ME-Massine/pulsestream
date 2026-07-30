@@ -535,6 +535,12 @@ foreach ($serviceName in $ServiceNames) {
 #    processor that crashed on boot, or against nothing but the residue of an
 #    earlier run. `--state` and `--members` are what distinguish a group record
 #    from a live client session.
+#
+#    Membership alone is still not evidence about *this* service: a group id is
+#    a plain string, so any consumer that happens to use it -- a developer's
+#    local client, another deployment, a leftover probe -- would satisfy the
+#    checks below. The member rows carry the host the session comes from, so the
+#    session is tied back to a currently Ready telemetry-processor pod by IP.
 if ($ServiceNames -contains $ProcessorServiceName) {
     # Retried: a pod that is Ready has passed its health probes, but the Kafka
     # listener joins the group on its own schedule, and a group that is mid
@@ -623,18 +629,58 @@ echo "===MEMBERS==="
                 -SuccessMessage "Consumer group '$ProcessorConsumerGroup' has $(@($memberRows).Count) member row(s)" `
                 -FailureMessage "Consumer group '$ProcessorConsumerGroup' listed no members. $($groupResult.Output)"
 
+            # The Ready pods are re-read on every attempt rather than captured
+            # once: a processor pod replaced while this retries comes back with
+            # a different IP, and a stale list would then reject the very
+            # membership it is meant to confirm.
+            #
+            # Read with -o json rather than as parallel jsonpath lists because
+            # readiness and podIP have to stay correlated per pod, and a pod
+            # that is not scheduled yet carries neither, which would shift
+            # index-aligned lists.
+            $processorPodsJson = Invoke-KubectlChecked `
+                -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$ProcessorServiceName", "-o", "json") `
+                -ErrorContext "Could not read the pods of '$ProcessorServiceName'"
+
+            $readyProcessorIps = @(($processorPodsJson | ConvertFrom-Json).items |
+                Where-Object {
+                    ($_.status.conditions | Where-Object { $_.type -eq "Ready" -and $_.status -eq "True" }) -and
+                    -not [string]::IsNullOrWhiteSpace($_.status.podIP)
+                } |
+                ForEach-Object { $_.status.podIP })
+
+            Confirm-Condition `
+                -Condition (@($readyProcessorIps).Count -ge 1) `
+                -SuccessMessage "'$ProcessorServiceName' has $(@($readyProcessorIps).Count) Ready pod(s) with an assigned IP ($($readyProcessorIps -join ', '))" `
+                -FailureMessage "'$ProcessorServiceName' has no Ready pod with an assigned IP, so no member of '$ProcessorConsumerGroup' can be attributed to it"
+
+            # Kafka reports the member host as "/<ip>", so the leading slash is
+            # stripped before the comparison.
+            $memberHosts = @($memberRows | ForEach-Object { $_[2] })
+            $processorMemberRows = @($memberRows | Where-Object { $readyProcessorIps -contains $_[2].TrimStart("/") })
+
+            # The assertion the group state and member count cannot make on
+            # their own: at least one live session in this group is held by a
+            # pod of this service. Retried rather than permanent, because a
+            # processor pod that was just replaced is briefly absent from the
+            # member rows while its successor rejoins.
+            Confirm-Condition `
+                -Condition (@($processorMemberRows).Count -ge 1) `
+                -SuccessMessage "$(@($processorMemberRows).Count) member(s) of '$ProcessorConsumerGroup' are Ready '$ProcessorServiceName' pods" `
+                -FailureMessage "No member of consumer group '$ProcessorConsumerGroup' comes from a Ready '$ProcessorServiceName' pod (member hosts: $($memberHosts -join ', '); Ready pod IPs: $($readyProcessorIps -join ', ')). The group is held by some other consumer using the same group id"
+
             # Reported, not asserted: a member that subscribed to a topic which
             # does not exist yet is Stable with zero partitions, and the platform
             # topics are provisioned by #141. Asserting an assignment here would
             # make this script fail for a reason that is not broker health.
-            $assignedPartitionTotal = ($memberRows |
+            $assignedPartitionTotal = ($processorMemberRows |
                 ForEach-Object { if ($_[-1] -match "^\d+$") { [int] $_[-1] } else { 0 } } |
                 Measure-Object -Sum).Sum
             if ($null -eq $assignedPartitionTotal) { $assignedPartitionTotal = 0 }
 
-            $memberClients = @($memberRows | ForEach-Object { $_[3] })
-            $memberHosts = @($memberRows | ForEach-Object { $_[2] })
-            Write-Host "[ok] '$ProcessorServiceName' is an active member of consumer group '$ProcessorConsumerGroup' (client ids: $($memberClients -join ', '); hosts: $($memberHosts -join ', '); partitions assigned: $assignedPartitionTotal)"
+            $memberClients = @($processorMemberRows | ForEach-Object { $_[3] })
+            $processorMemberHosts = @($processorMemberRows | ForEach-Object { $_[2] })
+            Write-Host "[ok] '$ProcessorServiceName' is an active member of consumer group '$ProcessorConsumerGroup' (client ids: $($memberClients -join ', '); pod IPs: $($processorMemberHosts -join ', '); partitions assigned: $assignedPartitionTotal)"
         }
 }
 
