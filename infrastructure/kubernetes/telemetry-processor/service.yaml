@@ -1,0 +1,22 @@
+# Cluster-internal endpoint for the telemetry-processor.
+#
+# The Service name matches the Deployment and app label so callers get the
+# stable in-cluster DNS name `telemetry-processor`. Only the main application
+# port is selected; the loopback-bound management port remains unexposed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-processor
+  labels:
+    app.kubernetes.io/name: telemetry-processor
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: telemetry-processor
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8082
+      targetPort: http
