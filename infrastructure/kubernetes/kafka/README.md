@@ -48,6 +48,7 @@ Version pairing matters on upgrade: the operator version determines which Kafka 
 | `kafka-node-pool.yaml` | The `KafkaNodePool` resource — how many nodes, which roles, storage, and resources |
 | `topics.yaml` | The four platform topics as `KafkaTopic` resources, reconciled by the Topic Operator |
 | `../../../scripts/validate-kafka-kubernetes.ps1` | Validates the operator-managed cluster: reconciliation, health, and internal connectivity |
+| `../../../scripts/validate-kafka-broker-health.ps1` | Validates the running cluster: per-broker health, a producer/consumer round trip, and platform service connectivity |
 
 ## Broker count
 
@@ -63,7 +64,7 @@ Broker data is **persistent**. The node pool declares a single `persistent-claim
 - **StorageClass** — unset, so the cluster's **default** `StorageClass` is used. This keeps the manifest portable across Docker Desktop, kind, minikube, and managed clusters. Set `storageClassName` on the volume if a specific class is required.
 - **PVC lifecycle** — `deleteClaim: false`: deleting the node pool or the `Kafka` resource leaves the PVCs in place, so `kubectl delete` is not a data-loss event. The PVCs must then be removed by hand (`kubectl delete pvc -l strimzi.io/cluster=pulsestream`) to reclaim the storage.
 
-The persistence claim is verifiable: the validation script asserts each broker has a Bound PVC, and a broker pod can be restarted to confirm it re-attaches the same volume rather than starting empty. See **Validate** below.
+The persistence claim is verifiable: the validation script asserts each broker has a Bound PVC, and a broker pod can be restarted to confirm it re-attaches the same volume rather than starting empty. See **Validate the deployment** below.
 
 ## Internal connectivity
 
@@ -162,7 +163,7 @@ Converting that cluster is a delete/recreate, which is **destructive**: on `ephe
 
 (Strimzi's supported *in-place* route — add a second JBOD volume with a new id, let the operator reassign data onto it, then remove the old volume — is for when data must be kept. It is unnecessary here, and would in any case not apply to the ephemeral→persistent switch, which changes the existing volume's type rather than adding one.)
 
-## Validate
+## Validate the deployment
 
 Run the validation script from the repository root against the current `kubectl` context:
 
@@ -225,6 +226,45 @@ kubectl exec pulsestream-dual-role-$BROKER -- bash -c \
 ```
 
 With the previous `ephemeral` volume the deleted pod came back with an empty log dir, so an RF=1 topic's data was lost. With `persistent-claim` storage the pod re-attaches the same PVC and the marker survives.
+
+## Validate broker health and connectivity
+
+The script above validates the *deployment* — that the operator reconciled the cluster the manifests describe. This one validates the *running cluster*: that the brokers are healthy, that messages actually flow through them, and that the platform services can connect.
+
+```powershell
+.\scripts\validate-kafka-broker-health.ps1
+```
+
+Prerequisites: the cluster above is deployed, and `ingestion-service` and `telemetry-processor` are deployed from `infrastructure/kubernetes/<service>/` — the connectivity section runs its checks inside their pods, so it fails with a message naming the missing Deployment if they are not.
+
+**Broker health**
+
+- the `Kafka` resource reports `Ready` and every broker pod reports `Ready`
+- **every broker is queried individually** over its own `pulsestream-kafka-brokers` DNS name, rather than once through the bootstrap Service — a single bootstrap query is answered by whichever broker the client reached, so a broker that accepts no client connections stays invisible to it
+- all brokers report the **same cluster id** — three brokers that formed three separate single-node clusters would each answer happily, and only the differing ids expose it
+- no under-replicated and no unavailable partitions anywhere in the cluster, including the internal topics
+
+**Message flow**
+
+A throwaway probe topic (`pulsestream.validation.<run id>`) is created for the round trip and deleted again afterwards, including when the run fails. It is not one of the platform topics: provisioning those is [#141](https://github.com/ME-Massine/pulsestream/issues/141), and this script must not leave a topic behind that the topic work then finds already created. It has to be created explicitly because `auto.create.topics.enable` is `false`.
+
+- the probe topic is created with a replication factor equal to the broker count (3) and `min.insync.replicas=2`, and every partition has **all its replicas in sync** before anything is produced
+- messages are produced with **`acks=all`**, so a successful publish means the records reached a second broker — evidence of working replication, not just of a reachable leader
+- a consumer **in a group** reads the topic back and every produced payload arrives unchanged; using a group exercises the coordinator and the replicated `__consumer_offsets` topic, so a cluster that serves produce and fetch but cannot coordinate groups is caught here rather than by every platform consumer later
+- the group's committed offsets add up to the number of messages produced, with no lag left
+
+**Service connectivity**
+
+- each service Deployment is `Available` with a `Ready` pod
+- `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` is read **out of that running pod**, not out of the `ConfigMap`, and must equal the generated bootstrap Service — the pods take the variable through `envFrom`, which is resolved once at pod creation, so an edited `ConfigMap` is already correct in the API server while every pod started before it still runs with the old value. A mismatch is reported with the `kubectl rollout restart` that fixes it. `validate-kafka-kubernetes.ps1` asserts the committed manifests.
+- **the pod's own bootstrap value is reached from inside that pod**, so DNS resolution and the network path are exercised from where the service's Kafka client sits — a `NetworkPolicy` or namespace mismatch affecting only that service is caught, which a check from a separate client pod would miss
+- `telemetry-processor` is an **active member** of its consumer group (`telemetry-processor`): the group is `Stable`, reports at least one member, and **at least one member's host is the pod IP of a currently `Ready` `telemetry-processor` pod**. Existence is deliberately not the assertion — a group outlives its consumers and stays listed in `Empty` state with zero members for `offsets.retention.minutes` (7 days by default), so a `--list` check would pass against a processor that crashed on boot. Nor is membership alone: a group id is a plain string, so an unrelated consumer using the same one would otherwise satisfy the check, which is why the session is tied back to a pod by IP. Retried, because a `Ready` pod joins the group on its own schedule and a group mid-rebalance reports a transient state.
+
+`ingestion-service` deliberately gets no equivalent session-level assertion. Its producer is created on the first publish (`DefaultKafkaProducerFactory` is lazy), so a healthy but idle pod holds no broker connection to observe, and driving it with a real request needs the platform topics from #141. Its network path to the brokers is asserted instead.
+
+The round trip is a functional check, not a benchmark: `-ProbeMessageCount` sizes it for correctness, and throughput, latency, and behaviour under load are not measured or asserted anywhere here.
+
+Override `-Namespace`, `-KafkaClusterName`, `-ExpectedBrokerCount`, `-ClientImage`, `-ServiceNames`, `-ProcessorConsumerGroup`, or `-ProbeMessageCount` if you changed the defaults.
 
 ## Not covered here
 
