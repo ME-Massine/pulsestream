@@ -1,0 +1,22 @@
+# Cluster-internal endpoint for the query-service read API.
+#
+# The Service name matches the Deployment and app label so callers get the
+# stable in-cluster DNS name `query-service`. External exposure is intentionally
+# not configured for this internal API.
+apiVersion: v1
+kind: Service
+metadata:
+  name: query-service
+  labels:
+    app.kubernetes.io/name: query-service
+    app.kubernetes.io/component: query-api
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: query-service
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8083
+      targetPort: http
