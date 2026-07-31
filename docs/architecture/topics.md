@@ -14,6 +14,8 @@ Topics follow: `<domain>.<entity>.<stage>`
 
 Dead-letter topics use the `dlq` stage suffix on the domain/entity they guard, e.g. `telemetry.events.dlq` holds failed/malformed messages from the `telemetry.events.*` pipeline. This keeps DLQ topics discoverable next to the topics they protect rather than in a separate namespace.
 
+The replication factors below are the Kubernetes deployment values (three brokers, replication factor 3 with `min.insync.replicas=2`), provisioned as `KafkaTopic` resources under `infrastructure/kubernetes/kafka/topics.yaml`. The local Docker Compose stack runs a single broker and provisions the same topics at replication factor 1 (`infrastructure/docker/kafka/init-topics.sh`).
+
 ---
 
 ## telemetry.events.raw
@@ -30,7 +32,7 @@ Raw telemetry data ingested from devices.
 
 **Configuration**
 - partitions: 3
-- replication-factor: 1
+- replication-factor: 3
 - retention: 24h
 
 ---
@@ -49,7 +51,7 @@ Processed telemetry data after enrichment and anomaly detection.
 
 **Configuration**
 - partitions: 3
-- replication-factor: 1
+- replication-factor: 3
 - retention: 7 days
 
 ---
@@ -68,7 +70,7 @@ Detected anomalies from telemetry data.
 
 **Configuration**
 - partitions: 3
-- replication-factor: 1
+- replication-factor: 3
 - retention: 7 days
 
 ---
@@ -86,5 +88,5 @@ Dead-letter queue for failed events.
 
 **Configuration**
 - partitions: 1
-- replication-factor: 1
+- replication-factor: 3
 - retention: 7 days

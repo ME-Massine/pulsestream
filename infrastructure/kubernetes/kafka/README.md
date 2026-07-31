@@ -46,6 +46,7 @@ Version pairing matters on upgrade: the operator version determines which Kafka 
 | :--- | :------ |
 | `kafka-cluster.yaml` | The `Kafka` resource — cluster-wide broker config, the internal listener, and the pinned Kafka version |
 | `kafka-node-pool.yaml` | The `KafkaNodePool` resource — how many nodes, which roles, storage, and resources |
+| `topics.yaml` | The four platform topics as `KafkaTopic` resources, reconciled by the Topic Operator |
 | `../../../scripts/validate-kafka-kubernetes.ps1` | Validates the operator-managed cluster: reconciliation, health, and internal connectivity |
 
 ## Broker count
@@ -80,6 +81,29 @@ Because Strimzi always suffixes the generated name, no cluster name produces a p
 
 The listener is internal and plaintext, on the pod network only. No external listener is defined, and TLS and authentication are not configured — exposure and security hardening are outside this issue.
 
+## Topics
+
+The four platform topics (ADR 0001) are declared in `topics.yaml` as `KafkaTopic` resources and reconciled onto the cluster by the **Topic Operator** (`spec.entityOperator.topicOperator` in `kafka-cluster.yaml`). They are not created by a script against a ready broker; the operator drives the cluster to the declared state, so re-applying is idempotent and topic creation is reproducible.
+
+Names, partitions, and retention match [docs/architecture/topics.md](../../../docs/architecture/topics.md) and the local Compose provisioning (`infrastructure/docker/kafka/init-topics.sh`).
+
+| Topic | Partitions | Replicas | Retention |
+| :--- | :--- | :--- | :--- |
+| `telemetry.events.raw` | 3 | 3 | 24h |
+| `telemetry.events.processed` | 3 | 3 | 7d |
+| `telemetry.events.anomalies` | 3 | 3 | 7d |
+| `telemetry.events.dlq` | 1 | 3 | 7d |
+
+Replication is **3**, not the Compose value of 1. This cluster's default `min.insync.replicas` is 2 (`kafka-cluster.yaml`), so a single-replica topic would reject `acks=all` writes with `NotEnoughReplicas`; RF 3 across the three brokers is also what the node-pool storage is sized for. The 10 partitions here are the same 10 the storage sizing assumes.
+
+Applied with the cluster (`kubectl apply -f infrastructure/kubernetes/kafka/`). The Topic Operator provisions them once it is `Ready`:
+
+```bash
+kubectl get kafkatopics -l strimzi.io/cluster=pulsestream
+```
+
+Each should report `Ready`; the topic names carry dots, which are valid in both Kafka topic names and Kubernetes resource names.
+
 ## Deploy
 
 Order matters; the operator must be running first (see the prerequisite above).
@@ -97,19 +121,44 @@ kubectl get pods -l strimzi.io/cluster=pulsestream
 
 A cold start typically takes two to three minutes, most of which is pulling the Kafka image.
 
-The cluster comes up with no topics. `auto.create.topics.enable` is `false`, so nothing is created implicitly by a connecting producer either — provisioning the platform topics is [#141](https://github.com/ME-Massine/pulsestream/issues/141).
+`kubectl apply -f infrastructure/kubernetes/kafka/` applies `topics.yaml` alongside the cluster, so the Topic Operator provisions the four platform topics once it is running. `auto.create.topics.enable` is `false`, so topics are created only from those `KafkaTopic` resources, never implicitly by a connecting producer. See **Topics** above.
 
 ### Migrating a cluster already deployed from #139
 
 The `kubectl apply` above assumes the cluster does not exist yet. **Strimzi does not allow a volume's storage `type` to change in place**, so applying this manifest over a cluster still running the earlier `ephemeral` volume from [#139](https://github.com/ME-Massine/pulsestream/issues/139) does *not* convert it to persistent storage — the operator keeps the existing type and logs a warning, and the brokers stay ephemeral.
 
-That cluster holds no platform topics yet ([#141](https://github.com/ME-Massine/pulsestream/issues/141)), so there is no data to preserve and the migration is a delete/recreate:
+Converting that cluster is a delete/recreate, which is **destructive**: on `ephemeral` volumes the broker data lives inside the pod, so `kubectl delete` erases every topic's contents. Since [#141](https://github.com/ME-Massine/pulsestream/issues/141) the same `kubectl apply` also provisions the four platform topics via the Topic Operator, so a cluster applied since then *does* hold platform topics and may hold data a producer wrote to them. "No platform data" is a precondition to **verify**, not assume:
 
-```bash
-kubectl delete -f infrastructure/kubernetes/kafka/   # tears down the ephemeral #139 cluster
-kubectl apply  -f infrastructure/kubernetes/kafka/   # recreates it with persistent-claim storage
-kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
-```
+1. Stop the producers so nothing writes during the migration:
+
+   ```bash
+   kubectl scale deployment/ingestion-service deployment/telemetry-processor --replicas=0
+   ```
+
+2. Check whether the platform topics already hold data:
+
+   ```bash
+   for t in telemetry.events.raw telemetry.events.processed telemetry.events.anomalies telemetry.events.dlq; do
+     kubectl exec pulsestream-dual-role-0 -- /opt/kafka/bin/kafka-get-offsets.sh \
+       --bootstrap-server localhost:9092 --topic "$t"
+   done
+   ```
+
+   Every offset `0` (or the topics absent) means there is nothing to preserve — proceed. **If any offset is non-zero, do not delete** — the delete would lose that data. Preserve it first (drain the topics to another sink, or use the in-place JBOD route below), or accept the loss explicitly before continuing.
+
+3. With the precondition verified, delete and recreate:
+
+   ```bash
+   kubectl delete -f infrastructure/kubernetes/kafka/   # tears down the ephemeral #139 cluster
+   kubectl apply  -f infrastructure/kubernetes/kafka/   # recreates it with persistent-claim storage
+   kubectl wait kafka/pulsestream --for=condition=Ready --timeout=600s
+   ```
+
+4. Scale the producers back up:
+
+   ```bash
+   kubectl scale deployment/ingestion-service deployment/telemetry-processor --replicas=1
+   ```
 
 (Strimzi's supported *in-place* route — add a second JBOD volume with a new id, let the operator reassign data onto it, then remove the old volume — is for when data must be kept. It is unnecessary here, and would in any case not apply to the ephemeral→persistent switch, which changes the existing volume's type rather than adding one.)
 
@@ -132,7 +181,7 @@ It checks that:
 - the generated bootstrap `Service` is a `ClusterIP` on `9092` **and its name matches `PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS` in the two service `ConfigMaps`** — the reconciliation this PR performs, asserted rather than assumed
 - **a separate client pod can reach the cluster through the bootstrap Service** and receives metadata advertising all brokers as *one* cluster — the client runs outside the broker pods on purpose, since a check run inside one would pass even with the Services broken
 - each broker advertises its own stable per-broker DNS name rather than the bootstrap address or a raw pod IP
-- the KRaft quorum has elected a controller leader and every broker is a voter — asked of the controller rather than by creating a probe topic, since topic provisioning is out of scope
+- the KRaft quorum has elected a controller leader and every broker is a voter — asked of the controller directly rather than inferred from creating a probe topic
 
 Override `-Namespace`, `-KafkaClusterName`, `-NodePoolName`, `-ExpectedBrokerCount`, `-ExpectedStorageSize`, or `-ClientImage` if you changed the defaults.
 
@@ -152,7 +201,7 @@ The test is deliberately built so replication cannot mask the result:
 4. Consume the topic from the beginning through the bootstrap Service and assert the marker record is still there.
 5. Delete the throwaway topic.
 
-The topic is a test probe created and removed by the script, not one of the platform topics ([#141](https://github.com/ME-Massine/pulsestream/issues/141) still owns those; `auto.create.topics.enable` stays `false`).
+The topic is a test probe created and removed by the script, not one of the platform topics (those are provisioned by the Topic Operator from `topics.yaml`; `auto.create.topics.enable` stays `false`).
 
 To run the same cycle by hand — note the second command deletes the pod and waits on **that specific pod**, not on the already-`Ready` `Kafka` resource, which would return immediately:
 
@@ -181,7 +230,6 @@ With the previous `ephemeral` volume the deleted pod came back with an empty log
 
 Each has its own issue:
 
-- **Topic provisioning ([#141](https://github.com/ME-Massine/pulsestream/issues/141))** — no `KafkaTopic` resources and no Topic Operator. ADR 0005 puts the platform topics under the operator as `KafkaTopic` resources; that lands with its own issue, on top of this cluster.
 - **Topic-level access control** — no `KafkaUser` resources and no `userOperator`, because the listener is plaintext with no authentication. Securing the listener is not covered by any of the issues in this phase.
 - **Observability integration ([#154](https://github.com/ME-Massine/pulsestream/issues/154) onwards)** — no `metricsConfig`, exporter, or scrape configuration.
 - **Disaster recovery** — no backup, restore, or multi-zone topology.
