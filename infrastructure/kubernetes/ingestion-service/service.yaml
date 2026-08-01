@@ -1,8 +1,10 @@
 # Cluster-internal endpoint for the ingestion-service REST ingest gateway.
 #
 # The Service name matches the Deployment and app label so callers get the
-# stable in-cluster DNS name `ingestion-service`. External exposure belongs to
-# issue #145 and is intentionally not configured here.
+# stable in-cluster DNS name `ingestion-service`. This Service stays ClusterIP:
+# external exposure is a separate NodePort Service (service-nodeport.yaml, #145)
+# so the in-cluster name above keeps the same meaning whether or not the
+# external entry point is deployed.
 apiVersion: v1
 kind: Service
 metadata:

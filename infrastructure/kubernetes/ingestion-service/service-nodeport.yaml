@@ -1,0 +1,51 @@
+# External entry point for the ingestion-service REST ingest gateway (#145).
+#
+# This is a second Service for the same pods, deliberately kept separate from
+# the ClusterIP Service in service.yaml (#143):
+#
+# - service.yaml owns the in-cluster contract. Other platform services resolve
+#   `ingestion-service` by DNS and must keep doing so whether or not external
+#   exposure is deployed.
+# - This file owns the external contract. It can be deleted, or replaced by an
+#   Ingress later, without touching the name that in-cluster callers depend on.
+#
+# NodePort is chosen over Ingress because it needs nothing installed in the
+# cluster: an Ingress resource is inert until an ingress controller is deployed,
+# and no controller is part of this repository. See README.md in this directory
+# for the reachable address and the trade-off.
+#
+# Out of scope for #145 and intentionally absent: authentication, TLS
+# termination, and rate limiting. The port below serves plain HTTP to anything
+# that can reach a node, so it is a development and evaluation entry point.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestion-service-external
+  labels:
+    app.kubernetes.io/name: ingestion-service
+    app.kubernetes.io/component: ingest-gateway
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  type: NodePort
+  # Same selector as the ClusterIP Service: both front the identical pods, so
+  # external and internal callers reach the same replicas.
+  selector:
+    app.kubernetes.io/name: ingestion-service
+  ports:
+    - name: http
+      protocol: TCP
+      # Service port, kept equal to the container port so the in-cluster address
+      # is the same on both Services.
+      port: 8081
+      # Named port from deployment.yaml rather than the number, so a container
+      # port change does not silently break routing here.
+      targetPort: http
+      # Pinned rather than allocated from the 30000-32767 range at apply time,
+      # because the documented address and the validation script both reference
+      # it. 30081 mirrors the service port 8081.
+      nodePort: 30081
+  # externalTrafficPolicy is left at the default `Cluster`: kube-proxy forwards
+  # to a ready pod on any node, so the port answers on every node regardless of
+  # where the two replicas landed. `Local` would preserve the client source IP
+  # but return connection refused on nodes running no replica, which is the
+  # wrong trade-off for an entry point that is expected to answer everywhere.
