@@ -172,21 +172,16 @@ $baseUrl = Invoke-WithRetry -TimeoutSeconds $TimeoutSeconds -FailureMessage "No 
 # ingest path is routed too: an empty body reaches TelemetryController and is
 # rejected by bean validation with 400. A 404 here would mean the port reaches
 # some other application, and a 405 that the route exists for another method.
-$rejectedStatus = $null
-try {
-    $rejectedStatus = [int] (Invoke-WebRequest `
-        -Uri "$baseUrl$ingestPath" `
-        -Method Post `
-        -Body "{}" `
-        -ContentType "application/json" `
-        -UseBasicParsing `
-        -TimeoutSec 10).StatusCode
-} catch [System.Net.WebException] {
-    if ($null -eq $_.Exception.Response) {
-        throw "POST $baseUrl$ingestPath failed before a response was received. $($_.Exception.Message)"
-    }
-    $rejectedStatus = [int] $_.Exception.Response.StatusCode
-}
+#
+# The 400 is an expected result here, not an error, but Invoke-WebRequest raises
+# it as a terminating error whose type differs between Windows PowerShell and
+# PowerShell 7. Invoke-HttpStatus normalizes that difference; see its comment in
+# lib\PulseStreamValidation.psm1.
+$rejectedStatus = Invoke-HttpStatus `
+    -Uri "$baseUrl$ingestPath" `
+    -Method Post `
+    -Body "{}" `
+    -ContentType "application/json"
 
 Confirm-Condition `
     -Condition ($rejectedStatus -eq 400) `
@@ -214,13 +209,14 @@ if ($IncludeIngestTest) {
         }
     } | ConvertTo-Json -Depth 5
 
-    $acceptedStatus = [int] (Invoke-WebRequest `
+    # Read through the same helper as the check above, so a rejected event
+    # reports the status it actually returned instead of aborting on the
+    # exception Invoke-WebRequest raises for a non-2xx response.
+    $acceptedStatus = Invoke-HttpStatus `
         -Uri "$baseUrl$ingestPath" `
         -Method Post `
         -Body $event `
-        -ContentType "application/json" `
-        -UseBasicParsing `
-        -TimeoutSec 10).StatusCode
+        -ContentType "application/json"
 
     Confirm-Condition `
         -Condition ($acceptedStatus -eq 202) `
