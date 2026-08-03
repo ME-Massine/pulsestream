@@ -57,15 +57,25 @@ straight from the API server.
 
 ```bash
 # 1. DNS resolves for each Service, from an explicit in-cluster debug Pod.
-#    --rm cleans the Pod up on exit; run one nslookup per Service name.
-kubectl run disco-check --rm -it --restart=Never --image=curlimages/curl -- \
-  sh -c 'for s in ingestion-service query-service telemetry-processor; do nslookup "$s"; done'
+#    --rm cleans the Pod up on exit. Query the fully-qualified name with a
+#    trailing dot (absolute) so the BusyBox resolver does not walk the search
+#    list, emit NXDOMAIN for each suffix candidate, and exit nonzero.
+#    Replace <namespace> with the namespace the workloads run in.
+kubectl run disco-check --rm -it --restart=Never --image=curlimages/curl -- sh -c '
+  ns=<namespace>
+  for s in ingestion-service query-service telemetry-processor; do
+    nslookup "$s.$ns.svc.cluster.local."
+  done'
 
 # 2. Each Service has ready backing endpoints. EndpointSlice replaces the
-#    deprecated Endpoints resource; empty/NotReady = selector or probe problem.
-kubectl get endpointslices -l kubernetes.io/service-name=ingestion-service
-kubectl get endpointslices -l kubernetes.io/service-name=query-service
-kubectl get endpointslices -l kubernetes.io/service-name=telemetry-processor
+#    deprecated Endpoints resource. The default table hides readiness and the
+#    backing pod, so assert .conditions.ready and .targetRef explicitly;
+#    no output or ready=false = selector or probe problem.
+for s in ingestion-service query-service telemetry-processor; do
+  echo "== $s =="
+  kubectl get endpointslices -l kubernetes.io/service-name="$s" \
+    -o jsonpath='{range .items[*].endpoints[*]}{.targetRef.kind}/{.targetRef.name}{"  ready="}{.conditions.ready}{"\n"}{end}'
+done
 
 # 3. Readiness is reachable through each ClusterIP by DNS name.
 kubectl run disco-check --rm -it --restart=Never --image=curlimages/curl -- sh -c '
