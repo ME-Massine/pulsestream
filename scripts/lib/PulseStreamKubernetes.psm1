@@ -67,6 +67,12 @@ function Invoke-KafkaClientCommand {
         [Parameter(Mandatory)] [string] $PodName,
         [Parameter(Mandatory)] [string] $Image,
         [Parameter(Mandatory)] [string] $Command,
+        # Interpreter inside the pod. bash is the default because the Strimzi
+        # Kafka image the connectivity checks use carries it, but a minimal debug
+        # image (e.g. curlimages/curl, which is Alpine and ships only sh) has no
+        # bash, so validate-service-connectivity.ps1 runs its probes with sh.
+        # base64 is a busybox applet there, so the decode below still works.
+        [string] $Shell = "bash",
         [int] $TimeoutSeconds = 300
     )
 
@@ -89,7 +95,7 @@ function Invoke-KafkaClientCommand {
         "--restart=Never",
         "--image", $Image,
         "--command", "--",
-        "bash", "-c", "echo $encodedCommand | base64 -d | bash"
+        $Shell, "-c", "echo $encodedCommand | base64 -d | $Shell"
     )
 
     if ($created.ExitCode -ne 0) {

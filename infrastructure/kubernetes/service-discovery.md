@@ -50,10 +50,19 @@ wired into the service ConfigMaps:
 
 ## Verifying resolution
 
-Run these from the operator shell (`kubectl`), against the namespace the
-workloads run in. A temporary debug Pod gives an unambiguous in-cluster vantage
-point for DNS and HTTP checks; the EndpointSlice and readiness checks are read
-straight from the API server.
+`scripts/validate-service-connectivity.ps1` (#146) automates the checks below —
+Service shape, Ready EndpointSlices, and a `/readyz` probe of each ClusterIP by
+DNS name from a throwaway debug Pod — plus the configured Postgres endpoint:
+
+```powershell
+pwsh scripts/validate-service-connectivity.ps1 -Namespace <namespace>
+```
+
+The manual commands remain here as the underlying reference. Run these from the
+operator shell (`kubectl`), against the namespace the workloads run in. A
+temporary debug Pod gives an unambiguous in-cluster vantage point for DNS and
+HTTP checks; the EndpointSlice and readiness checks are read straight from the
+API server.
 
 ```bash
 # 1. DNS resolves for each Service, from an explicit in-cluster debug Pod.
