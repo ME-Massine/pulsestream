@@ -52,10 +52,16 @@ wired into the service ConfigMaps:
 
 `scripts/validate-service-connectivity.ps1` (#146) automates the checks below —
 Service shape, Ready EndpointSlices, and a `/readyz` probe of each ClusterIP by
-DNS name from a throwaway debug Pod — plus the configured Postgres endpoint:
+DNS name from a throwaway debug Pod — plus the configured Postgres endpoint. It
+then delegates the remaining two legs of the connectivity scope to their own
+validators, so a single run covers internal reach, the datastore, external
+ingress (`validate-ingestion-external-access.ps1`, #145), and Kafka
+(`validate-kafka-broker-health.ps1`, #142):
 
 ```powershell
 pwsh scripts/validate-service-connectivity.ps1 -Namespace <namespace>
+# Skip a delegated leg when validating it on its own:
+pwsh scripts/validate-service-connectivity.ps1 -Namespace <namespace> -SkipKafka
 ```
 
 The manual commands remain here as the underlying reference. Run these from the

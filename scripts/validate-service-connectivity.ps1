@@ -8,7 +8,9 @@
 #     DNS resolution, and the exposed ports all work together.
 #   - The database endpoint the services are configured with.
 #
-# It deliberately does NOT re-test what already has a dedicated validator:
+# The remaining two legs of the issue's scope each already have a dedicated
+# validator, so this script orchestrates them rather than duplicating their
+# probes (pass -SkipIngress / -SkipKafka to run either on its own instead):
 #   - External ingress to ingestion-service  -> validate-ingestion-external-access.ps1 (#145)
 #   - Kafka connectivity from the services    -> validate-kafka-broker-health.ps1 (#142)
 #
@@ -41,6 +43,10 @@ param(
     # failed: the live DB probe is skipped and the configured endpoint is still
     # asserted so a regression that drops the URL is caught.
     [string] $PostgresServiceName = "postgres",
+    # The ingress and Kafka legs are delegated to their own validators (below).
+    # Skip either when it is being run on its own, to avoid a redundant pass.
+    [switch] $SkipIngress,
+    [switch] $SkipKafka,
     [int] $TimeoutSeconds = 180
 )
 
@@ -275,4 +281,40 @@ if ($postgresService.ExitCode -ne 0) {
     }
 }
 
-Write-Host "[ok] Internal service connectivity validation completed. External ingress is validated by validate-ingestion-external-access.ps1 (#145); Kafka connectivity by validate-kafka-broker-health.ps1 (#142)."
+# 4. The other two legs of the issue's scope (external ingress, Kafka) each have
+#    a dedicated validator. Orchestrate them here so one run covers all of #146
+#    without re-implementing their probes. A leg that fails throws a terminating
+#    error which, under $ErrorActionPreference = "Stop", aborts this run too — so
+#    the overall exit code reflects every leg, not just the internal checks.
+$delegatedLegs = @(
+    [pscustomobject]@{
+        Name   = "External ingress to ingestion-service (#145)"
+        Script = "validate-ingestion-external-access.ps1"
+        Skip   = [bool] $SkipIngress
+    }
+    [pscustomobject]@{
+        Name   = "Kafka connectivity from services (#142)"
+        Script = "validate-kafka-broker-health.ps1"
+        Skip   = [bool] $SkipKafka
+    }
+)
+
+# Only the legs that actually ran are named in the closing summary, so a run
+# with -SkipIngress/-SkipKafka does not claim to have covered a skipped leg.
+$covered = [System.Collections.Generic.List[string]]::new()
+$covered.Add("internal ClusterIP reach")
+$covered.Add("datastore endpoint")
+
+foreach ($leg in $delegatedLegs) {
+    if ($leg.Skip) {
+        Write-Warning "Skipping '$($leg.Name)'; run scripts/$($leg.Script) on its own to validate it."
+        continue
+    }
+
+    Write-Host "--- Delegating '$($leg.Name)' to $($leg.Script) ---"
+    & (Join-Path $PSScriptRoot $leg.Script) -Namespace $Namespace -TimeoutSeconds $TimeoutSeconds
+    Write-Host "[ok] '$($leg.Name)' validated by $($leg.Script)"
+    $covered.Add($leg.Name)
+}
+
+Write-Host "[ok] Platform service connectivity validation completed: $($covered -join '; ')."
