@@ -1,11 +1,48 @@
-## Description
-  Describe the engineering task.
+name: Engineering Task
+description: Create and track a scoped engineering task
+title: "[Task]: "
+labels: ["task"]
+assignees: []
 
-## Deliverables
--
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the engineering task and the problem it addresses.
+      placeholder: Explain what needs to be implemented or changed.
+    validations:
+      required: true
 
-## Acceptance Criteria
--
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: Deliverables
+      description: List the concrete outputs expected from this task.
+      placeholder: |
+        - Deliverable 1
+        - Deliverable 2
+    validations:
+      required: true
 
-## Dependencies
--
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: List the conditions that must be satisfied for this task to be considered complete.
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: List related issues, pull requests, services, or external dependencies.
+      placeholder: |
+        - Depends on #
+        - Blocked by #
+    validations:
+      required: false

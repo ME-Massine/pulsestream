@@ -1,16 +1,89 @@
-## Description
-  Describe the bug.
-  
-  ## Steps to Reproduce
-  1.
-  2.
-  3.
+name: Bug Report
+description: Report a reproducible problem or unexpected behavior
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
 
-## Expected Behavior
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Clearly describe the bug and its impact.
+      placeholder: Explain what went wrong and where the problem occurred.
+    validations:
+      required: true
 
-## Actual Behavior
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Provide the exact steps needed to reproduce the problem.
+      placeholder: |
+        1. Start the service...
+        2. Send a request to...
+        3. Observe...
+    validations:
+      required: true
 
-## Environment
-- Branch:
-- Service:
-- Version:
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: Describe what you expected to happen.
+      placeholder: The application should...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: Actual Behavior
+      description: Describe what actually happened.
+      placeholder: Instead, the application...
+    validations:
+      required: true
+
+  - type: input
+    id: branch
+    attributes:
+      label: Branch
+      description: Enter the Git branch where the bug was observed.
+      placeholder: main
+    validations:
+      required: true
+
+  - type: input
+    id: service
+    attributes:
+      label: Service
+      description: Enter the affected PulseStream service or component.
+      placeholder: ingestion-service
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Enter the affected application version, image tag, or commit SHA.
+      placeholder: v1.0.0 or abc1234
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Add relevant logs, stack traces, or error messages. Remove sensitive information.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Add screenshots, related issues, configuration details, or other useful information.
+    validations:
+      required: false
