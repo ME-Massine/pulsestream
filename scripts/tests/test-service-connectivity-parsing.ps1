@@ -58,7 +58,7 @@ function Assert-Match {
     $script:Failures++
 }
 
-function Assert-Throws {
+function Assert-Throw {
     param(
         [Parameter(Mandatory)] [string] $What,
         [Parameter(Mandatory)] [scriptblock] $Operation
@@ -82,12 +82,12 @@ Assert-Equal -What "first target name" -Expected "ingestion-service" -Actual $ta
 Assert-Equal -What "second target port is an int" -Expected 8083 -Actual $targets[1].Port
 Assert-Equal -What "port type" -Expected "System.Int32" -Actual $targets[1].Port.GetType().FullName
 
-Assert-Throws -What "entry without a port" -Operation { ConvertTo-ServiceTarget -Specification @("ingestion-service") }
-Assert-Throws -What "entry with a non-numeric port" -Operation { ConvertTo-ServiceTarget -Specification @("ingestion-service:http") }
-Assert-Throws -What "entry with an empty name" -Operation { ConvertTo-ServiceTarget -Specification @(":8081") }
-Assert-Throws -What "entry with two colons" -Operation { ConvertTo-ServiceTarget -Specification @("a:b:8081") }
-Assert-Throws -What "port 0" -Operation { ConvertTo-ServiceTarget -Specification @("ingestion-service:0") }
-Assert-Throws -What "port above 65535" -Operation { ConvertTo-ServiceTarget -Specification @("ingestion-service:70000") }
+Assert-Throw -What "entry without a port" -Operation { ConvertTo-ServiceTarget -Specification @("ingestion-service") }
+Assert-Throw -What "entry with a non-numeric port" -Operation { ConvertTo-ServiceTarget -Specification @("ingestion-service:http") }
+Assert-Throw -What "entry with an empty name" -Operation { ConvertTo-ServiceTarget -Specification @(":8081") }
+Assert-Throw -What "entry with two colons" -Operation { ConvertTo-ServiceTarget -Specification @("a:b:8081") }
+Assert-Throw -What "port 0" -Operation { ConvertTo-ServiceTarget -Specification @("ingestion-service:0") }
+Assert-Throw -What "port above 65535" -Operation { ConvertTo-ServiceTarget -Specification @("ingestion-service:70000") }
 
 # --- The JDBC URL the processor pod runs with --------------------------------
 # The canonical value from telemetry-processor/configmap.yaml.

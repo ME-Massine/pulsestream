@@ -283,7 +283,7 @@ if ($SkipDatabase) {
     Confirm-Condition -Permanent `
         -Condition ($postgresService.ExitCode -eq 0) `
         -SuccessMessage "Postgres Service '$PostgresServiceName' is deployed in namespace '$Namespace'" `
-        -FailureMessage "Postgres Service '$PostgresServiceName' is not deployed in namespace '$Namespace', so database connectivity from '$ProcessorServiceName' (wired to '$postgresHost`:$postgresPort') cannot be proved. Deploy Postgres, or re-run with -SkipDatabase to validate the other legs only — a skipped run is not acceptance evidence for #146. $($postgresService.Output)"
+        -FailureMessage "Postgres Service '$PostgresServiceName' is not deployed in namespace '$Namespace', so database connectivity from '$ProcessorServiceName' (wired to '$postgresHost`:$postgresPort') cannot be proved. Deploy Postgres, or re-run with -SkipDatabase to validate the other legs only - a skipped run is not acceptance evidence for #146. $($postgresService.Output)"
 
     # TCP connect from inside the processor pod, against the endpoint that pod
     # actually runs with. This exercises the service's own DNS resolution and
@@ -306,7 +306,7 @@ if ($SkipDatabase) {
 # 4. The other two legs of the issue's scope (external ingress, Kafka) each have
 #    a dedicated validator. Orchestrate them here so one run covers all of #146
 #    without re-implementing their probes. A leg that fails throws a terminating
-#    error which, under $ErrorActionPreference = "Stop", aborts this run too — so
+#    error which, under $ErrorActionPreference = "Stop", aborts this run too - so
 #    the overall exit code reflects every leg, not just the internal checks.
 $delegatedLegs = @(
     [pscustomobject]@{
