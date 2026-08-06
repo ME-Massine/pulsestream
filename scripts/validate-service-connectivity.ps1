@@ -61,20 +61,17 @@ $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamConnectivity.psm1") -Force
 
 # Every debug pod this run creates carries the same suffix so an interrupted run
 # leaves an identifiable pod behind that never collides with a concurrent run.
 $runId = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 
 # Parsed once into name/port pairs. A malformed entry is a caller error, so it
-# fails loudly here rather than producing a confusing DNS name later.
-$serviceTargets = @($Services | ForEach-Object {
-    $parts = $_ -split ":"
-    if (@($parts).Count -ne 2 -or [string]::IsNullOrWhiteSpace($parts[0]) -or $parts[1] -notmatch "^\d+$") {
-        throw "Invalid -Services entry '$_'; expected '<name>:<port>'."
-    }
-    [pscustomobject]@{ Name = $parts[0]; Port = [int] $parts[1] }
-})
+# fails loudly here rather than producing a confusing DNS name later. The parse
+# itself lives in PulseStreamConnectivity.psm1, where it is covered by
+# scripts\tests\test-service-connectivity-parsing.ps1 without needing a cluster.
+$serviceTargets = ConvertTo-ServiceTarget -Specification $Services
 
 Write-Host "Validating internal connectivity between platform services in namespace '$Namespace'..."
 
@@ -195,26 +192,29 @@ Invoke-WithRetry -TimeoutSeconds $TimeoutSeconds -FailureMessage "Not every Serv
         -SuccessMessage "A debug pod probed every Service from outside the services" `
         -FailureMessage "The debug pod did not complete. $($probe.Output)"
 
-    $failures = @([regex]::Matches($probe.Output, "(?m)^SVC-FAIL\s+(.*)$") | ForEach-Object { $_.Groups[1].Value })
+    # Each SVC-FAIL carries curl's exit code, which is translated into the
+    # reason it stands for (6 = DNS, 7 = refused, ...) so a failed run says
+    # whether the DNS name or the port is the problem.
+    $probeResult = Get-ServiceProbeResult -Output $probe.Output
+
     Confirm-Condition `
-        -Condition (@($failures).Count -eq 0) `
+        -Condition (@($probeResult.Failures).Count -eq 0) `
         -SuccessMessage "Every Service answered $ReadinessPath through its ClusterIP DNS name" `
-        -FailureMessage "$(@($failures).Count) Service(s) were unreachable by DNS name (curl rc 6 = DNS, 7 = refused, 22 = HTTP error): $($failures -join ' | ')"
+        -FailureMessage "$(@($probeResult.Failures).Count) Service(s) were unreachable by DNS name: $(($probeResult.Failures | ForEach-Object { $_.Description }) -join ' | ')"
 
     # curl -f already made a non-2xx a failure, so any SVC-OK reached readiness;
     # the body is still checked so a 200 from something that is not the service
     # (an unexpected UP-less body) does not pass as reachable.
-    $okLines = @([regex]::Matches($probe.Output, "(?m)^SVC-OK\s+(\S+)\s+(\S+)\s+(.*)$"))
-    $notUp = @($okLines | Where-Object { $_.Groups[3].Value -notmatch '"status"\s*:\s*"UP"' } | ForEach-Object { $_.Groups[1].Value })
+    $notUp = @($probeResult.NotUp | ForEach-Object { $_.Name })
     Confirm-Condition -Permanent `
         -Condition (@($notUp).Count -eq 0) `
         -SuccessMessage "Every reachable Service reported readiness status UP" `
         -FailureMessage "$(@($notUp).Count) Service(s) answered on their port but not with a readiness state of UP ($($notUp -join ', ')); something other than the expected service may be serving the port"
 
     Confirm-Condition `
-        -Condition (@($okLines).Count -eq @($serviceTargets).Count) `
+        -Condition (@($probeResult.Reached).Count -eq @($serviceTargets).Count) `
         -SuccessMessage "All $(@($serviceTargets).Count) Services were reached ($(@($serviceTargets | ForEach-Object { $_.Name }) -join ', '))" `
-        -FailureMessage "Only $(@($okLines).Count) of $(@($serviceTargets).Count) Services were reached. $($probe.Output)"
+        -FailureMessage "Only $(@($probeResult.Reached).Count) of $(@($serviceTargets).Count) Services were reached. $($probe.Output)"
 }
 
 # Legs that were deliberately not run. Kept out of the closing summary and
@@ -262,17 +262,16 @@ if ($SkipDatabase) {
         -SuccessMessage "Read $PostgresEnvVar from pod '$readyProcessorPod' ($postgresUrl)" `
         -FailureMessage "$PostgresEnvVar is unset in pod '$readyProcessorPod', so '$ProcessorServiceName' was never given a datastore endpoint. $($envProbe.Output)"
 
-    # Host and port out of the JDBC URL. The host is either a DNS name/IPv4, or
-    # an IPv6 literal in brackets; the port is optional in JDBC and defaults to
-    # 5432, which is what the driver the service runs with would connect to.
-    $jdbcMatch = [regex]::Match($postgresUrl, "^jdbc:postgresql://(?:\[(?<v6>[^\]]+)\]|(?<host>[^:/?]+))(?::(?<port>\d+))?(?:[/?]|$)")
+    # Host and port out of the JDBC URL (see Get-PostgresEndpoint for the shapes
+    # accepted, including a portless URL and an IPv6 literal).
+    $endpoint = Get-PostgresEndpoint -JdbcUrl $postgresUrl
     Confirm-Condition -Permanent `
-        -Condition ($jdbcMatch.Success) `
+        -Condition ($endpoint.IsValid) `
         -SuccessMessage "Parsed the datastore endpoint from $PostgresEnvVar" `
         -FailureMessage "$PostgresEnvVar='$postgresUrl' is not a jdbc:postgresql://host[:port]/db URL, so no host/port can be probed"
 
-    $postgresHost = if ($jdbcMatch.Groups["v6"].Success) { $jdbcMatch.Groups["v6"].Value } else { $jdbcMatch.Groups["host"].Value }
-    $postgresPort = if ($jdbcMatch.Groups["port"].Success) { $jdbcMatch.Groups["port"].Value } else { "5432" }
+    $postgresHost = $endpoint.HostName
+    $postgresPort = $endpoint.Port
 
     # #146 asks for database connectivity from the services, so an absent
     # Postgres Service is a failure rather than a warning: without it the live

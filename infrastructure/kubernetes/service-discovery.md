@@ -72,6 +72,15 @@ environment where Postgres is deliberately absent, pass `-SkipDatabase`; the run
 then ends with a `[partial]` summary that names the skipped legs and states that
 it is not acceptance evidence for #146.
 
+Everything the validator decides from text rather than from the cluster — the
+`-Services` entries, the JDBC URL read out of the running Pod, and the probe
+markers the debug Pod emits — lives in `scripts/lib/PulseStreamConnectivity.psm1`
+and is covered without a cluster by:
+
+```powershell
+pwsh scripts/tests/test-service-connectivity-parsing.ps1
+```
+
 The manual commands remain here as the underlying reference. Run these from the
 operator shell (`kubectl`), against the namespace the workloads run in. A
 temporary debug Pod gives an unambiguous in-cluster vantage point for DNS and
