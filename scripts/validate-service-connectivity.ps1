@@ -6,7 +6,10 @@
 #   - Peer service-to-service reachability over the internal ClusterIP Services
 #     (#143) by their DNS name (#144), proving internal service communication,
 #     DNS resolution, and the exposed ports all work together.
-#   - The database endpoint the services are configured with.
+#   - Database connectivity from the services: the endpoint telemetry-processor
+#     actually runs with, proved live against Postgres. This leg is required by
+#     default; -SkipDatabase opts out explicitly and downgrades the run to a
+#     partial one that does not claim to have validated #146.
 #
 # The remaining two legs of the issue's scope each already have a dedicated
 # validator, so this script orchestrates them rather than duplicating their
@@ -38,15 +41,19 @@ param(
     # ConfigMap alone is not proof of what the process runs with).
     [string] $ProcessorServiceName = "telemetry-processor",
     [string] $PostgresEnvVar = "PULSESTREAM_POSTGRES_URL",
-    # Name of the Postgres Service, if deployed. Provisioning Postgres itself is
-    # tracked separately (service-discovery.md), so its absence is reported, not
-    # failed: the live DB probe is skipped and the configured endpoint is still
-    # asserted so a regression that drops the URL is caught.
+    # Name of the Postgres Service. #146 requires database connectivity from the
+    # services to be confirmed, so a missing Service fails the default run: an
+    # environment without Postgres cannot produce that proof. Use -SkipDatabase
+    # to run the other legs on such an environment; the summary then says so.
     [string] $PostgresServiceName = "postgres",
     # The ingress and Kafka legs are delegated to their own validators (below).
     # Skip either when it is being run on its own, to avoid a redundant pass.
     [switch] $SkipIngress,
     [switch] $SkipKafka,
+    # Opt out of the database leg entirely (endpoint + live probe). Only for
+    # environments where Postgres is deliberately not deployed; such a run is
+    # explicitly not acceptance evidence for #146.
+    [switch] $SkipDatabase,
     [int] $TimeoutSeconds = 180
 )
 
@@ -210,59 +217,75 @@ Invoke-WithRetry -TimeoutSeconds $TimeoutSeconds -FailureMessage "Not every Serv
         -FailureMessage "Only $(@($okLines).Count) of $(@($serviceTargets).Count) Services were reached. $($probe.Output)"
 }
 
-# 3. Database endpoint. Read from the running processor pod, not the ConfigMap,
-#    for the same reason the Kafka checks do: envFrom is resolved once at pod
-#    start, so a ConfigMap edited after the last rollout is already correct in
-#    the API server while the pod still runs the previous value.
-$processorPodsJson = Invoke-KubectlChecked `
-    -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$ProcessorServiceName", "-o", "json") `
-    -ErrorContext "Deployment '$ProcessorServiceName' was not found or has no pods in namespace '$Namespace'. Deploy infrastructure/kubernetes/$ProcessorServiceName/ first"
+# Legs that were deliberately not run. Kept out of the closing summary and
+# reported at the end, so a partial run is never read as full validation.
+$skippedLegs = [System.Collections.Generic.List[string]]::new()
 
-# Readiness and name have to stay correlated per pod, so this is read from -o
-# json rather than as two index-aligned jsonpath lists that a not-yet-scheduled
-# pod would shift.
-$readyProcessorPod = @(($processorPodsJson | ConvertFrom-Json).items |
-    Where-Object { $_.status.conditions | Where-Object { $_.type -eq "Ready" -and $_.status -eq "True" } } |
-    ForEach-Object { $_.metadata.name } |
-    Select-Object -First 1)[0]
-
-Confirm-Condition -Permanent `
-    -Condition (-not [string]::IsNullOrWhiteSpace($readyProcessorPod)) `
-    -SuccessMessage "'$ProcessorServiceName' has a Ready pod ($readyProcessorPod) to read the datastore endpoint from" `
-    -FailureMessage "'$ProcessorServiceName' has no Ready pod, so its configured datastore endpoint cannot be read"
-
-# printenv rather than a shell snippet: Windows PowerShell 5.1 mangles the double
-# quotes a `bash -c` one-liner would need (see the base64 note in
-# PulseStreamKubernetes.psm1), and printenv exits non-zero precisely when the
-# variable is unset, which is the distinction this check is about.
-$envProbe = Invoke-Kubectl -KubectlArgs @(
-    "exec", $readyProcessorPod, "--namespace", $Namespace, "--", "printenv", $PostgresEnvVar
-)
-$postgresUrl = $envProbe.Output.Trim()
-
-Confirm-Condition -Permanent `
-    -Condition ($envProbe.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($postgresUrl)) `
-    -SuccessMessage "Read $PostgresEnvVar from pod '$readyProcessorPod' ($postgresUrl)" `
-    -FailureMessage "$PostgresEnvVar is unset in pod '$readyProcessorPod', so '$ProcessorServiceName' was never given a datastore endpoint. $($envProbe.Output)"
-
-# Host and port out of the JDBC URL (jdbc:postgresql://<host>:<port>/<db>).
-$jdbcMatch = [regex]::Match($postgresUrl, "^jdbc:postgresql://([^:/]+):(\d+)/")
-Confirm-Condition -Permanent `
-    -Condition ($jdbcMatch.Success) `
-    -SuccessMessage "Parsed the datastore endpoint from $PostgresEnvVar" `
-    -FailureMessage "$PostgresEnvVar='$postgresUrl' is not a jdbc:postgresql://host:port/db URL, so no host/port can be probed"
-
-$postgresHost = $jdbcMatch.Groups[1].Value
-$postgresPort = $jdbcMatch.Groups[2].Value
-
-# Provisioning Postgres is tracked separately, so its absence is reported rather
-# than failed: the endpoint above is asserted either way, and the live TCP probe
-# only runs when the Service actually exists.
-$postgresService = Invoke-Kubectl -KubectlArgs @("get", "service", $PostgresServiceName, "--namespace", $Namespace, "-o", "name")
-
-if ($postgresService.ExitCode -ne 0) {
-    Write-Warning "Postgres Service '$PostgresServiceName' is not deployed in namespace '$Namespace' (provisioning it is tracked separately; see service-discovery.md). '$ProcessorServiceName' is wired to '$postgresHost`:$postgresPort' but live database connectivity was not asserted."
+# 3. Database connectivity from the services. Read from the running processor
+#    pod, not the ConfigMap, for the same reason the Kafka checks do: envFrom is
+#    resolved once at pod start, so a ConfigMap edited after the last rollout is
+#    already correct in the API server while the pod still runs the previous
+#    value. The endpoint is then proved live against Postgres itself; #146 asks
+#    for database connectivity, which a configured URL alone does not show.
+if ($SkipDatabase) {
+    Write-Warning "Skipping the database leg (-SkipDatabase): neither the configured datastore endpoint nor live connectivity to it was asserted. This run does not validate the database requirement of #146."
+    $skippedLegs.Add("database connectivity from '$ProcessorServiceName' (#146)")
 } else {
+    $processorPodsJson = Invoke-KubectlChecked `
+        -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$ProcessorServiceName", "-o", "json") `
+        -ErrorContext "Deployment '$ProcessorServiceName' was not found or has no pods in namespace '$Namespace'. Deploy infrastructure/kubernetes/$ProcessorServiceName/ first"
+
+    # Readiness and name have to stay correlated per pod, so this is read from -o
+    # json rather than as two index-aligned jsonpath lists that a not-yet-scheduled
+    # pod would shift.
+    $readyProcessorPod = @(($processorPodsJson | ConvertFrom-Json).items |
+        Where-Object { $_.status.conditions | Where-Object { $_.type -eq "Ready" -and $_.status -eq "True" } } |
+        ForEach-Object { $_.metadata.name } |
+        Select-Object -First 1)[0]
+
+    Confirm-Condition -Permanent `
+        -Condition (-not [string]::IsNullOrWhiteSpace($readyProcessorPod)) `
+        -SuccessMessage "'$ProcessorServiceName' has a Ready pod ($readyProcessorPod) to read the datastore endpoint from" `
+        -FailureMessage "'$ProcessorServiceName' has no Ready pod, so its configured datastore endpoint cannot be read"
+
+    # printenv rather than a shell snippet: Windows PowerShell 5.1 mangles the
+    # double quotes a `bash -c` one-liner would need (see the base64 note in
+    # PulseStreamKubernetes.psm1), and printenv exits non-zero precisely when the
+    # variable is unset, which is the distinction this check is about.
+    $envProbe = Invoke-Kubectl -KubectlArgs @(
+        "exec", $readyProcessorPod, "--namespace", $Namespace, "--", "printenv", $PostgresEnvVar
+    )
+    $postgresUrl = $envProbe.Output.Trim()
+
+    Confirm-Condition -Permanent `
+        -Condition ($envProbe.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($postgresUrl)) `
+        -SuccessMessage "Read $PostgresEnvVar from pod '$readyProcessorPod' ($postgresUrl)" `
+        -FailureMessage "$PostgresEnvVar is unset in pod '$readyProcessorPod', so '$ProcessorServiceName' was never given a datastore endpoint. $($envProbe.Output)"
+
+    # Host and port out of the JDBC URL. The host is either a DNS name/IPv4, or
+    # an IPv6 literal in brackets; the port is optional in JDBC and defaults to
+    # 5432, which is what the driver the service runs with would connect to.
+    $jdbcMatch = [regex]::Match($postgresUrl, "^jdbc:postgresql://(?:\[(?<v6>[^\]]+)\]|(?<host>[^:/?]+))(?::(?<port>\d+))?(?:[/?]|$)")
+    Confirm-Condition -Permanent `
+        -Condition ($jdbcMatch.Success) `
+        -SuccessMessage "Parsed the datastore endpoint from $PostgresEnvVar" `
+        -FailureMessage "$PostgresEnvVar='$postgresUrl' is not a jdbc:postgresql://host[:port]/db URL, so no host/port can be probed"
+
+    $postgresHost = if ($jdbcMatch.Groups["v6"].Success) { $jdbcMatch.Groups["v6"].Value } else { $jdbcMatch.Groups["host"].Value }
+    $postgresPort = if ($jdbcMatch.Groups["port"].Success) { $jdbcMatch.Groups["port"].Value } else { "5432" }
+
+    # #146 asks for database connectivity from the services, so an absent
+    # Postgres Service is a failure rather than a warning: without it the live
+    # probe below cannot run, and a run that cannot produce that proof must not
+    # report success. -SkipDatabase is the explicit way out on an environment
+    # where Postgres is deliberately not deployed.
+    $postgresService = Invoke-Kubectl -KubectlArgs @("get", "service", $PostgresServiceName, "--namespace", $Namespace, "-o", "name")
+
+    Confirm-Condition -Permanent `
+        -Condition ($postgresService.ExitCode -eq 0) `
+        -SuccessMessage "Postgres Service '$PostgresServiceName' is deployed in namespace '$Namespace'" `
+        -FailureMessage "Postgres Service '$PostgresServiceName' is not deployed in namespace '$Namespace', so database connectivity from '$ProcessorServiceName' (wired to '$postgresHost`:$postgresPort') cannot be proved. Deploy Postgres, or re-run with -SkipDatabase to validate the other legs only — a skipped run is not acceptance evidence for #146. $($postgresService.Output)"
+
     # TCP connect from inside the processor pod, against the endpoint that pod
     # actually runs with. This exercises the service's own DNS resolution and
     # network path to Postgres, so a namespace mismatch that only affects this
@@ -303,11 +326,14 @@ $delegatedLegs = @(
 # with -SkipIngress/-SkipKafka does not claim to have covered a skipped leg.
 $covered = [System.Collections.Generic.List[string]]::new()
 $covered.Add("internal ClusterIP reach")
-$covered.Add("datastore endpoint")
+if (-not $SkipDatabase) {
+    $covered.Add("database connectivity from '$ProcessorServiceName'")
+}
 
 foreach ($leg in $delegatedLegs) {
     if ($leg.Skip) {
         Write-Warning "Skipping '$($leg.Name)'; run scripts/$($leg.Script) on its own to validate it."
+        $skippedLegs.Add($leg.Name)
         continue
     }
 
@@ -317,4 +343,12 @@ foreach ($leg in $delegatedLegs) {
     $covered.Add($leg.Name)
 }
 
-Write-Host "[ok] Platform service connectivity validation completed: $($covered -join '; ')."
+if (@($skippedLegs).Count -gt 0) {
+    # A partial run still exits 0 (the caller asked for the skips), but it must
+    # not read as a completed validation: the closing line names only what ran,
+    # and says outright that the run does not stand as evidence for #146.
+    Write-Warning "Partial run: $(@($skippedLegs).Count) leg(s) were skipped and NOT validated: $($skippedLegs -join '; '). This run is not acceptance evidence for #146."
+    Write-Host "[partial] Platform service connectivity validated for: $($covered -join '; '). Skipped: $($skippedLegs -join '; ')."
+} else {
+    Write-Host "[ok] Platform service connectivity validation completed: $($covered -join '; ')."
+}

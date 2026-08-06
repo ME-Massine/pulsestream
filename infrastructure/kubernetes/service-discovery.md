@@ -52,10 +52,12 @@ wired into the service ConfigMaps:
 
 `scripts/validate-service-connectivity.ps1` (#146) automates the checks below —
 Service shape, Ready EndpointSlices, and a `/readyz` probe of each ClusterIP by
-DNS name from a throwaway debug Pod — plus the configured Postgres endpoint. It
-then delegates the remaining two legs of the connectivity scope to their own
-validators, so a single run covers internal reach, the datastore, external
-ingress (`validate-ingestion-external-access.ps1`, #145), and Kafka
+DNS name from a throwaway debug Pod — plus database connectivity from
+`telemetry-processor` (the endpoint the running Pod is configured with, probed
+live against Postgres). It then delegates the remaining two legs of the
+connectivity scope to their own validators, so a single run covers internal
+reach, the datastore, external ingress
+(`validate-ingestion-external-access.ps1`, #145), and Kafka
 (`validate-kafka-broker-health.ps1`, #142):
 
 ```powershell
@@ -63,6 +65,12 @@ pwsh scripts/validate-service-connectivity.ps1 -Namespace <namespace>
 # Skip a delegated leg when validating it on its own:
 pwsh scripts/validate-service-connectivity.ps1 -Namespace <namespace> -SkipKafka
 ```
+
+A default run fails if Postgres is not deployed in the namespace: without it
+database connectivity cannot be proved, and #146 requires that proof. On an
+environment where Postgres is deliberately absent, pass `-SkipDatabase`; the run
+then ends with a `[partial]` summary that names the skipped legs and states that
+it is not acceptance evidence for #146.
 
 The manual commands remain here as the underlying reference. Run these from the
 operator shell (`kubectl`), against the namespace the workloads run in. A
