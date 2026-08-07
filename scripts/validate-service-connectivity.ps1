@@ -19,7 +19,9 @@
 #
 # Like the Kafka checks, every request is made from a throwaway debug pod that is
 # NOT one of the services under test. A curl run from inside a service pod would
-# hit its own loopback and prove nothing about the ClusterIP or its DNS name.
+# hit its own loopback and prove nothing about the ClusterIP or its DNS name. The
+# pod carries a dedicated label so the NetworkPolicies from #147 can admit this
+# operational probe without opening telemetry-processor to ordinary pods.
 [CmdletBinding()]
 param(
     [string] $Namespace = "default",
@@ -66,6 +68,7 @@ Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamConnectivity.psm1") -Forc
 # Every debug pod this run creates carries the same suffix so an interrupted run
 # leaves an identifiable pod behind that never collides with a concurrent run.
 $runId = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+$probePodLabels = Get-ServiceConnectivityProbeLabels
 
 # Parsed once into name/port pairs. A malformed entry is a caller error, so it
 # fails loudly here rather than producing a confusing DNS name later. The parse
@@ -183,6 +186,7 @@ Invoke-WithRetry -TimeoutSeconds $TimeoutSeconds -FailureMessage "Not every Serv
         -Namespace $Namespace `
         -PodName "svc-connectivity-$runId-$($script:probeAttempt)" `
         -Image $DebugImage `
+        -PodLabels $probePodLabels `
         -Shell "sh" `
         -TimeoutSeconds $TimeoutSeconds `
         -Command $probeCommand

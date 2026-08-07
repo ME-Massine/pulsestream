@@ -1,0 +1,75 @@
+# NetworkPolicy for the ingestion-service REST ingest gateway (#147).
+#
+# This is a self-contained policy: `policyTypes: [Ingress, Egress]` turns on a
+# default-deny for both directions on the selected pods, and the rules below are
+# the only holes. Everything not listed here is denied, so the ingestion-service
+# pods can only be reached on 8081 and can only reach Kafka and DNS.
+#
+# ENFORCEMENT DEPENDS ON THE CNI. A NetworkPolicy is inert unless the cluster's
+# CNI plugin enforces it: kindnet (kind) and Docker Desktop's built-in
+# networking ignore NetworkPolicy entirely, so this applies cleanly there but
+# blocks nothing. Calico and Cilium enforce it. See README.md in this directory.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingestion-service
+  labels:
+    app.kubernetes.io/name: ingestion-service
+    app.kubernetes.io/component: ingest-gateway
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  # Scoped to the ingestion-service pods by their own name label, never by
+  # `part-of: pulsestream`. A broad platform selector would also catch the
+  # Strimzi-managed Kafka pods and the Postgres pod and cut off their traffic;
+  # the deny this policy establishes must apply to this workload alone.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingestion-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # HTTP ingest on 8081 from ANY source, deliberately unrestricted by peer.
+    # External producers arrive through the NodePort Service (#145,
+    # service-nodeport.yaml), whose default `externalTrafficPolicy: Cluster`
+    # SNATs the client to a node IP; kubelet liveness/readiness probes arrive as
+    # a node IP too. Neither is a pod, so no podSelector/namespaceSelector can
+    # match them, and the endpoint is intentionally reachable by "anything that
+    # can reach a node" (#145). So 8081 is open to all peers while every other
+    # port on these pods stays denied by the default-deny above.
+    - ports:
+        - port: http # named container port -> 8081 (deployment.yaml)
+          protocol: TCP
+  egress:
+    # DNS. Required first: with Egress in policyTypes, all egress is denied by
+    # default, so without this rule the pod cannot resolve the Kafka bootstrap
+    # name (or anything else) and every outbound connection fails at lookup.
+    # CoreDNS runs in kube-system as pods labelled `k8s-app: kube-dns`; the
+    # namespace is matched by the automatic `kubernetes.io/metadata.name` label.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Kafka. The ingest gateway's only backend: it publishes to
+    # telemetry.events.raw. Broker pods are managed by the Strimzi operator and
+    # carry `strimzi.io/cluster: pulsestream`; the client talks to the bootstrap
+    # Service and then the per-broker addresses, all backed by those same pods on
+    # the internal 9092 listener. A numeric port is used because this rule
+    # targets pods this repository does not own the port names of.
+    - to:
+        - podSelector:
+            matchLabels:
+              strimzi.io/cluster: pulsestream
+      ports:
+        - port: 9092
+          protocol: TCP
+    # No Postgres egress: ingestion-service holds no datasource. That path is
+    # intentionally left denied.

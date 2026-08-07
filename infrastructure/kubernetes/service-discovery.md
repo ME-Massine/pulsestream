@@ -60,6 +60,11 @@ reach, the datastore, external ingress
 (`validate-ingestion-external-access.ps1`, #145), and Kafka
 (`validate-kafka-broker-health.ps1`, #142):
 
+The debug Pod carries `app.kubernetes.io/name=service-connectivity-probe` and
+`app.kubernetes.io/part-of=pulsestream`. The NetworkPolicies from #147 use that
+explicit same-namespace identity to admit the operational probe to
+`telemetry-processor:8082` while keeping ordinary pods blocked.
+
 ```powershell
 pwsh scripts/validate-service-connectivity.ps1 -Namespace <namespace>
 # Skip a delegated leg when validating it on its own:
@@ -93,7 +98,9 @@ API server.
 #    trailing dot (absolute) so the BusyBox resolver does not walk the search
 #    list, emit NXDOMAIN for each suffix candidate, and exit nonzero.
 #    Replace <namespace> with the namespace the workloads run in.
-kubectl run disco-check --rm -it --restart=Never --image=curlimages/curl -- sh -c '
+kubectl run disco-check --rm -it --restart=Never \
+  --labels='app.kubernetes.io/name=service-connectivity-probe,app.kubernetes.io/part-of=pulsestream' \
+  --image=curlimages/curl -- sh -c '
   ns=<namespace>
   for s in ingestion-service query-service telemetry-processor; do
     nslookup "$s.$ns.svc.cluster.local."
@@ -110,7 +117,9 @@ for s in ingestion-service query-service telemetry-processor; do
 done
 
 # 3. Readiness is reachable through each ClusterIP by DNS name.
-kubectl run disco-check --rm -it --restart=Never --image=curlimages/curl -- sh -c '
+kubectl run disco-check --rm -it --restart=Never \
+  --labels='app.kubernetes.io/name=service-connectivity-probe,app.kubernetes.io/part-of=pulsestream' \
+  --image=curlimages/curl -- sh -c '
   curl -sf http://ingestion-service:8081/readyz &&
   curl -sf http://query-service:8083/readyz &&
   curl -sf http://telemetry-processor:8082/readyz'
