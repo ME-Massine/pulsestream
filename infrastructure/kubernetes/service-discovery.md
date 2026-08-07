@@ -50,10 +50,42 @@ wired into the service ConfigMaps:
 
 ## Verifying resolution
 
-Run these from the operator shell (`kubectl`), against the namespace the
-workloads run in. A temporary debug Pod gives an unambiguous in-cluster vantage
-point for DNS and HTTP checks; the EndpointSlice and readiness checks are read
-straight from the API server.
+`scripts/validate-service-connectivity.ps1` (#146) automates the checks below —
+Service shape, Ready EndpointSlices, and a `/readyz` probe of each ClusterIP by
+DNS name from a throwaway debug Pod — plus database connectivity from
+`telemetry-processor` (the endpoint the running Pod is configured with, probed
+live against Postgres). It then delegates the remaining two legs of the
+connectivity scope to their own validators, so a single run covers internal
+reach, the datastore, external ingress
+(`validate-ingestion-external-access.ps1`, #145), and Kafka
+(`validate-kafka-broker-health.ps1`, #142):
+
+```powershell
+pwsh scripts/validate-service-connectivity.ps1 -Namespace <namespace>
+# Skip a delegated leg when validating it on its own:
+pwsh scripts/validate-service-connectivity.ps1 -Namespace <namespace> -SkipKafka
+```
+
+A default run fails if Postgres is not deployed in the namespace: without it
+database connectivity cannot be proved, and #146 requires that proof. On an
+environment where Postgres is deliberately absent, pass `-SkipDatabase`; the run
+then ends with a `[partial]` summary that names the skipped legs and states that
+it is not acceptance evidence for #146.
+
+Everything the validator decides from text rather than from the cluster — the
+`-Services` entries, the JDBC URL read out of the running Pod, and the probe
+markers the debug Pod emits — lives in `scripts/lib/PulseStreamConnectivity.psm1`
+and is covered without a cluster by:
+
+```powershell
+pwsh scripts/tests/test-service-connectivity-parsing.ps1
+```
+
+The manual commands remain here as the underlying reference. Run these from the
+operator shell (`kubectl`), against the namespace the workloads run in. A
+temporary debug Pod gives an unambiguous in-cluster vantage point for DNS and
+HTTP checks; the EndpointSlice and readiness checks are read straight from the
+API server.
 
 ```bash
 # 1. DNS resolves for each Service, from an explicit in-cluster debug Pod.
