@@ -3,10 +3,10 @@
 # Self-contained policy: `policyTypes: [Ingress, Egress]` default-denies both
 # directions on the selected pods, and the rules below are the only holes.
 #
-# telemetry-processor has the tightest posture of the three services: it has no
-# in-cluster HTTP callers (see ../service-discovery.md), so there is no ingress
-# rule at all — all pod-sourced ingress is denied. Its egress is limited to its
-# two backends, Kafka and Postgres, plus DNS.
+# telemetry-processor has the tightest posture of the three services: its only
+# in-cluster HTTP caller is the explicitly labelled connectivity probe from
+# validate-service-connectivity.ps1. Every ordinary pod remains denied. Its
+# egress is limited to its two backends, Kafka and Postgres, plus DNS.
 #
 # ENFORCEMENT DEPENDS ON THE CNI (kindnet / Docker Desktop do not enforce
 # NetworkPolicy; Calico / Cilium do). See README.md in this directory.
@@ -27,16 +27,20 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  # No `ingress:` rules on purpose. With Ingress in policyTypes and no rules,
-  # every pod-sourced connection is denied. The only inbound traffic this
-  # workload receives is kubelet liveness/readiness probes on 8082, which
-  # originate from the node (a host-network source), not a pod: pod/namespace
-  # selectors cannot match them. Standard CNIs (Calico, Cilium) allow the node to
-  # reach its local pods for health checking regardless of policy, and
-  # kindnet/Docker Desktop do not enforce NetworkPolicy at all, so probes keep
-  # working here. The management/DLQ actuator surface is separately bound to
-  # loopback on 9083 (application.yml) and is not exposed on the pod network at
-  # all. See README.md for the escape hatch if a CNI polices kubelet traffic.
+  # The repository's service-connectivity validator (#146) proves the ClusterIP
+  # route from a short-lived pod carrying both labels below. This narrow rule
+  # preserves that operational validation path while every ordinary pod stays
+  # denied. With no namespaceSelector, the pod must also be in this namespace.
+  # Kubelet probes arrive from the node and are handled separately by the CNI.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: service-connectivity-probe
+              app.kubernetes.io/part-of: pulsestream
+      ports:
+        - port: http
+          protocol: TCP
   egress:
     # DNS — required so the Kafka bootstrap and Postgres names resolve; without
     # it all egress fails at lookup. CoreDNS in kube-system, `k8s-app: kube-dns`.

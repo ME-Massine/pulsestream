@@ -1,7 +1,7 @@
 # Validates the platform-isolation NetworkPolicies (#147).
 #
 # These checks are STRUCTURAL: they assert that the applied policies are shaped
-# correctly — the right pods are selected, both directions are default-denied,
+# correctly - the right pods are selected, both directions are default-denied,
 # DNS is allowed, and each service's required paths are present while the ones it
 # must not have are absent. They are deliberately CNI-independent, so they are
 # the checks that mean something on a dev cluster whose CNI does not enforce
@@ -98,6 +98,36 @@ function Test-IngressFromSameNamespaceOnPort {
     return $false
 }
 
+# Exact ingress shape for telemetry-processor's operational connectivity probe:
+# one rule, one named port, and one same-namespace peer carrying both fixed
+# labels. Requiring the complete shape prevents an additional broad peer or port
+# from being mistaken for the narrow exception.
+function Test-IngressOnlyFromConnectivityProbe {
+    param($Policy)
+
+    $rules = @($Policy.spec.ingress | Where-Object { $null -ne $_ })
+    if ($rules.Count -ne 1) { return $false }
+
+    $rule = $rules[0]
+    if (@($rule.ports).Count -ne 1 -or -not (Test-RuleHasPort $rule "http" "TCP")) {
+        return $false
+    }
+
+    $peers = @($rule.from | Where-Object { $null -ne $_ })
+    if ($peers.Count -ne 1) { return $false }
+
+    $peer = $peers[0]
+    $labels = $peer.podSelector.matchLabels
+    $expectedLabels = Get-ServiceConnectivityProbeLabels
+    return ($null -ne $peer.podSelector) -and
+           ($null -eq $peer.podSelector.matchExpressions) -and
+           (@($labels.PSObject.Properties).Count -eq $expectedLabels.Count) -and
+           ($labels.'app.kubernetes.io/name' -eq $expectedLabels.'app.kubernetes.io/name') -and
+           ($labels.'app.kubernetes.io/part-of' -eq $expectedLabels.'app.kubernetes.io/part-of') -and
+           ($null -eq $peer.namespaceSelector) -and
+           ($null -eq $peer.ipBlock)
+}
+
 # --- Load a policy -----------------------------------------------------------
 function Get-NetworkPolicy {
     param([string] $Name)
@@ -144,22 +174,17 @@ Confirm-Condition `
 
 Confirm-Condition `
     -Condition (-not (Test-EgressHasPort $ingestion 5432 'TCP')) `
-    -SuccessMessage "ingestion-service has no Postgres egress (5432 stays denied — it holds no datasource)" `
+    -SuccessMessage "ingestion-service has no Postgres egress (5432 stays denied - it holds no datasource)" `
     -FailureMessage "ingestion-service allows egress to 5432, an unnecessary path: the ingest gateway has no datasource"
 
 # --- telemetry-processor -----------------------------------------------------
 $processor = Get-NetworkPolicy -Name "telemetry-processor"
 Assert-CommonShape -Policy $processor -Name "telemetry-processor" -ExpectedAppLabel "telemetry-processor"
 
-# An absent `ingress` field (how a deny-all renders: the Go type is `omitempty`,
-# so kubectl -o json drops it) deserializes to $null, and @($null).Count is 1 in
-# PowerShell, not 0. Filtering out the null counts real rules in both the absent
-# and empty-list cases.
-$processorIngressRules = @($processor.spec.ingress | Where-Object { $null -ne $_ }).Count
 Confirm-Condition `
-    -Condition ($processorIngressRules -eq 0) `
-    -SuccessMessage "telemetry-processor denies all pod-sourced ingress (no ingress rules; it has no HTTP callers)" `
-    -FailureMessage "telemetry-processor has $processorIngressRules ingress rule(s); it has no in-cluster HTTP callers, so pod-sourced ingress should be fully denied"
+    -Condition (Test-IngressOnlyFromConnectivityProbe $processor) `
+    -SuccessMessage "telemetry-processor admits only the labelled service-connectivity probe on the 'http' port" `
+    -FailureMessage "telemetry-processor ingress is not limited to one same-namespace service-connectivity-probe peer on the 'http' port"
 
 Confirm-Condition `
     -Condition (Test-KafkaEgress $processor) `

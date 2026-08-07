@@ -57,6 +57,16 @@ function Get-KubectlJsonPath {
     (Invoke-KubectlChecked -KubectlArgs $KubectlArgs -ErrorContext $ErrorContext).Trim()
 }
 
+# Stable identity shared by the #146 connectivity validator and the #147
+# NetworkPolicy structural checks. Keeping it here prevents the producer and
+# consumer of the labels from drifting independently.
+function Get-ServiceConnectivityProbeLabels {
+    return @{
+        "app.kubernetes.io/name"    = "service-connectivity-probe"
+        "app.kubernetes.io/part-of" = "pulsestream"
+    }
+}
+
 # Runs a command from a short-lived pod that is NOT one of the pods under test.
 # This is the point of the connectivity checks: running a Kafka CLI command
 # inside a broker pod would pass even if the Services were broken, because the
@@ -67,6 +77,16 @@ function Invoke-KafkaClientCommand {
         [Parameter(Mandatory)] [string] $PodName,
         [Parameter(Mandatory)] [string] $Image,
         [Parameter(Mandatory)] [string] $Command,
+        # Optional labels for callers whose temporary pod needs an explicit
+        # NetworkPolicy identity. Sorted before serialization so diagnostics
+        # and tests stay deterministic across PowerShell editions.
+        [hashtable] $PodLabels = @{},
+        # Interpreter inside the pod. bash is the default because the Strimzi
+        # Kafka image the connectivity checks use carries it, but a minimal debug
+        # image (e.g. curlimages/curl, which is Alpine and ships only sh) has no
+        # bash, so validate-service-connectivity.ps1 runs its probes with sh.
+        # base64 is a busybox applet there, so the decode below still works.
+        [string] $Shell = "bash",
         [int] $TimeoutSeconds = 300
     )
 
@@ -83,14 +103,24 @@ function Invoke-KafkaClientCommand {
     # container start, so the command's first lines are sometimes lost and the
     # check fails intermittently on output it never received. Creating the pod,
     # waiting for it to terminate, and then reading its logs is deterministic.
-    $created = Invoke-Kubectl -KubectlArgs @(
+    $labelArgs = @()
+    if ($PodLabels.Count -gt 0) {
+        $serializedLabels = @($PodLabels.GetEnumerator() |
+            Sort-Object -Property Key |
+            ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ","
+        $labelArgs = @("--labels", $serializedLabels)
+    }
+
+    $createArgs = @(
         "run", $PodName,
         "--namespace", $Namespace,
-        "--restart=Never",
+        "--restart=Never"
+    ) + $labelArgs + @(
         "--image", $Image,
         "--command", "--",
-        "bash", "-c", "echo $encodedCommand | base64 -d | bash"
+        $Shell, "-c", "echo $encodedCommand | base64 -d | $Shell"
     )
+    $created = Invoke-Kubectl -KubectlArgs $createArgs
 
     if ($created.ExitCode -ne 0) {
         return [pscustomobject]@{ ExitCode = $created.ExitCode; Output = $created.Output }
@@ -130,4 +160,4 @@ function Invoke-KafkaClientCommand {
     }
 }
 
-Export-ModuleMember -Function Invoke-Kubectl, Invoke-KubectlChecked, Get-KubectlJsonPath, Invoke-KafkaClientCommand
+Export-ModuleMember -Function Invoke-Kubectl, Invoke-KubectlChecked, Get-KubectlJsonPath, Get-ServiceConnectivityProbeLabels, Invoke-KafkaClientCommand

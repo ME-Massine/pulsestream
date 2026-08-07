@@ -44,7 +44,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: ingestion-service
-          image: ghcr.io/me-massine/pulsestream/ingestion-service:sha-5969ed2
+          image: ghcr.io/me-massine/pulsestream/ingestion-service:sha-5f5e845
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
