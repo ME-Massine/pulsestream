@@ -1,0 +1,79 @@
+# NetworkPolicy for the telemetry-processor stream consumer (#147).
+#
+# Self-contained policy: `policyTypes: [Ingress, Egress]` default-denies both
+# directions on the selected pods, and the rules below are the only holes.
+#
+# telemetry-processor has the tightest posture of the three services: its only
+# in-cluster HTTP caller is the explicitly labelled connectivity probe from
+# validate-service-connectivity.ps1. Every ordinary pod remains denied. Its
+# egress is limited to its two backends, Kafka and Postgres, plus DNS.
+#
+# ENFORCEMENT DEPENDS ON THE CNI (kindnet / Docker Desktop do not enforce
+# NetworkPolicy; Calico / Cilium do). See README.md in this directory.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: telemetry-processor
+  labels:
+    app.kubernetes.io/name: telemetry-processor
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  # Scoped to this workload alone by its name label, not `part-of: pulsestream`,
+  # so the deny never reaches the Strimzi Kafka pods or the Postgres pod.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: telemetry-processor
+  policyTypes:
+    - Ingress
+    - Egress
+  # The repository's service-connectivity validator (#146) proves the ClusterIP
+  # route from a short-lived pod carrying both labels below. This narrow rule
+  # preserves that operational validation path while every ordinary pod stays
+  # denied. With no namespaceSelector, the pod must also be in this namespace.
+  # Kubelet probes arrive from the node and are handled separately by the CNI.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: service-connectivity-probe
+              app.kubernetes.io/part-of: pulsestream
+      ports:
+        - port: http
+          protocol: TCP
+  egress:
+    # DNS — required so the Kafka bootstrap and Postgres names resolve; without
+    # it all egress fails at lookup. CoreDNS in kube-system, `k8s-app: kube-dns`.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Kafka — consumes telemetry.events.raw and publishes the processed and
+    # anomaly streams. Strimzi broker pods, internal 9092 listener.
+    - to:
+        - podSelector:
+            matchLabels:
+              strimzi.io/cluster: pulsestream
+      ports:
+        - port: 9092
+          protocol: TCP
+    # Postgres — persists processed events. Restricted to TCP 5432 within this
+    # namespace (`podSelector: {}` = all pods in the policy's own namespace)
+    # rather than to a Postgres pod label, because the Postgres workload is
+    # provisioned separately and its labels are not fixed here (see
+    # ../service-discovery.md). Port-scoping to 5432 still reaches only Postgres,
+    # since nothing else in the namespace listens there. Tighten this to a
+    # specific podSelector once Postgres provisioning lands with known labels.
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP

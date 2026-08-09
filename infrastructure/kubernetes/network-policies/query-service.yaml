@@ -1,0 +1,57 @@
+# NetworkPolicy for the query-service read API (#147).
+#
+# Self-contained policy: `policyTypes: [Ingress, Egress]` default-denies both
+# directions on the selected pods, and the rules below are the only holes.
+#
+# query-service is an internal read API with no external Service (#145 exposed
+# only ingestion-service), so its ingress is restricted to the platform
+# namespace. It reads no datastore today (configmap.yaml), so its only egress is
+# DNS; Kafka and Postgres paths stay denied until it gains a backend.
+#
+# ENFORCEMENT DEPENDS ON THE CNI (kindnet / Docker Desktop do not enforce
+# NetworkPolicy; Calico / Cilium do). See README.md in this directory.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: query-service
+  labels:
+    app.kubernetes.io/name: query-service
+    app.kubernetes.io/component: query-api
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: query-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # HTTP reads on 8083 from any pod in the SAME namespace (`podSelector: {}`
+    # with no namespaceSelector = the policy's own namespace). This admits
+    # in-cluster read clients while blocking cross-namespace and off-cluster
+    # callers — there is no NodePort/Ingress for this API, so nothing outside the
+    # cluster is expected to reach it. Kubelet probes on 8083 arrive as node
+    # traffic (see telemetry-processor.yaml) and are handled by the CNI, not by
+    # this rule.
+    - from:
+        - podSelector: {}
+      ports:
+        - port: http # named container port -> 8083 (deployment.yaml)
+          protocol: TCP
+  egress:
+    # DNS only. query-service consumes no Kafka or datasource configuration
+    # today (configmap.yaml), so those egress paths are intentionally denied.
+    # When it gains a backend (e.g. Postgres for processed-event reads), add the
+    # matching egress rule here alongside this DNS one.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
