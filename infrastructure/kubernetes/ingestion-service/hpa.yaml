@@ -1,0 +1,55 @@
+# HorizontalPodAutoscaler for ingestion-service (#150).
+#
+# Implements the ingestion-service row of docs/architecture/autoscaling-strategy.md:
+# CPU utilization against the pod's CPU *request* (250m in deployment.yaml), a
+# 70% target (~175m), and a 2-6 replica range. See that document for the full
+# reasoning behind these numbers, including why CPU was chosen over request-rate
+# or Kafka-lag signals and why 6 is the ceiling.
+#
+# Requires metrics-server to be installed in the cluster; without it this HPA
+# reports an `unknown` current metric and never scales.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ingestion-service
+  labels:
+    app.kubernetes.io/name: ingestion-service
+    app.kubernetes.io/component: ingest-gateway
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ingestion-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Scale up fast and without a stabilization window: a new pod needs ~15-30s
+    # before its readiness probe passes, so the autoscaler should act on a
+    # sustained rise rather than wait through it.
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+      selectPolicy: Max
+    # Scale down slowly: JVM CPU is spiky (GC, JIT), and a short window
+    # misreads a burst as sustained load.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min
