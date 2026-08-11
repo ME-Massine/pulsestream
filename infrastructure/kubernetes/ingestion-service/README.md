@@ -6,6 +6,7 @@ Manifests for the `PulseStream` REST ingest gateway, and the documented way to r
 | --- | --- |
 | `deployment.yaml` | The workload: two replicas, probes, resource limits, pinned image tag. |
 | `hpa.yaml` | `HorizontalPodAutoscaler` scaling the Deployment between 2 and 6 replicas on CPU utilization. |
+| `hpa-runtime-verification.md` | Recorded cluster run of the HPA: scale-up under load and return to `minReplicas`. |
 | `configmap.yaml` | Non-sensitive runtime configuration consumed via `envFrom`. |
 | `service.yaml` | `ClusterIP` Service `ingestion-service` — the in-cluster DNS name other services call. |
 | `service-nodeport.yaml` | `NodePort` Service `ingestion-service-external` — the external entry point. |
@@ -111,6 +112,8 @@ Watch scaling behavior with:
 ```bash
 kubectl get hpa ingestion-service --watch
 ```
+
+A recorded run of that watch — the HPA reading a real CPU metric, scaling `ingestion-service` from 2 to 6 replicas under load, and returning to 2 after the load stops and the 300s stabilization window passes — is in [`hpa-runtime-verification.md`](hpa-runtime-verification.md).
 
 ## Not configured here
 
