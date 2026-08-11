@@ -15,7 +15,8 @@ metadata:
     app.kubernetes.io/part-of: pulsestream
 spec:
   # Stateless HTTP gateway: two replicas give basic availability during node
-  # drains and rolling updates. Autoscaling is intentionally out of scope (#133).
+  # drains and rolling updates. This is also the HPA's minReplicas floor
+  # (hpa.yaml, #150) - the autoscaler moves replicas within [2, 6] from here.
   replicas: 2
   selector:
     matchLabels:
