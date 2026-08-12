@@ -5,6 +5,8 @@ Manifests for the `PulseStream` REST ingest gateway, and the documented way to r
 | File | Purpose |
 | --- | --- |
 | `deployment.yaml` | The workload: two replicas, probes, resource limits, pinned image tag. |
+| `hpa.yaml` | `HorizontalPodAutoscaler` scaling the Deployment between 2 and 6 replicas on CPU utilization. |
+| `hpa-runtime-verification.md` | Recorded cluster run of the HPA: scale-up under load and return to `minReplicas`. |
 | `configmap.yaml` | Non-sensitive runtime configuration consumed via `envFrom`. |
 | `service.yaml` | `ClusterIP` Service `ingestion-service` — the in-cluster DNS name other services call. |
 | `service-nodeport.yaml` | `NodePort` Service `ingestion-service-external` — the external entry point. |
@@ -94,6 +96,24 @@ The scripted equivalent of both checks is:
 ```powershell
 pwsh ./scripts/validate-ingestion-external-access.ps1
 ```
+
+## Autoscaling
+
+`hpa.yaml` applies a `HorizontalPodAutoscaler` targeting the `ingestion-service` Deployment: CPU utilization against the pod's `250m` request, a 70% target, and a 2-6 replica range. The full reasoning behind these numbers lives in [`docs/architecture/autoscaling-strategy.md`](../../../docs/architecture/autoscaling-strategy.md).
+
+The HPA reads from the `metrics.k8s.io` API, so `metrics-server` must be installed and healthy in the cluster first, or the HPA reports `unknown` for its current metric and never scales:
+
+```bash
+kubectl top pods -l app.kubernetes.io/name=ingestion-service
+```
+
+Watch scaling behavior with:
+
+```bash
+kubectl get hpa ingestion-service --watch
+```
+
+A recorded run of that watch — the HPA reading a real CPU metric, scaling `ingestion-service` from 2 to 6 replicas under load, and returning to 2 after the load stops and the 300s stabilization window passes — is in [`hpa-runtime-verification.md`](hpa-runtime-verification.md).
 
 ## Not configured here
 
