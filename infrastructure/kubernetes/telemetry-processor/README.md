@@ -73,8 +73,10 @@ pwsh ./scripts/validate-telemetry-processor-hpa.ps1
 
 They are deliberately independent of cluster load, so they mean something without generating traffic. Proving that the autoscaler reacts to real load requires a cluster with `metrics-server` and a load generator, and is tracked separately (#153).
 
-The same checks run without a cluster against the committed manifest:
+The same checks — the assertions live in `scripts/lib/PulseStreamAutoscaling.psm1`, so there is one copy of them — run against the committed manifest with no cluster, no `kubectl` and no network:
 
 ```bash
 pwsh ./scripts/tests/test-telemetry-processor-hpa-structure.ps1
 ```
+
+That test reads `hpa.yaml` with `scripts/lib/PulseStreamYaml.psm1`, a reader limited to the YAML subset these manifests use; anything outside it (flow collections, anchors, block scalars, multiple documents) throws rather than being misread. Its own coverage is `scripts/tests/test-yaml-parsing.ps1`.

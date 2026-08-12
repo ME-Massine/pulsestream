@@ -1,7 +1,12 @@
-# Exercises validate-telemetry-processor-hpa.ps1 against the committed manifest
-# without applying anything to a cluster. kubectl's client-side serializer
-# supplies the same JSON shape that `kubectl get -o json` returns, then a local
-# function serves that JSON to the validator.
+# Runs the telemetry-processor HPA structural checks against the committed
+# manifest. No cluster, no kubectl, no network.
+#
+# The manifest is read with scripts/lib/PulseStreamYaml.psm1 and handed to the
+# same Confirm-TelemetryProcessorHpa that validate-telemetry-processor-hpa.ps1
+# calls on a live HPA, so the two cannot drift. Nothing here is defined in the
+# global scope: an earlier version stubbed out kubectl as a global function and
+# parked the manifest JSON in a global variable, which every other script in the
+# same session then inherited.
 #
 #   powershell -File scripts\tests\test-telemetry-processor-hpa-structure.ps1
 #   pwsh -File scripts/tests/test-telemetry-processor-hpa-structure.ps1
@@ -9,31 +14,14 @@
 param()
 
 $ErrorActionPreference = "Stop"
-$kubectlExecutable = (Get-Command kubectl -CommandType Application -ErrorAction Stop).Source
-$manifest = Join-Path $PSScriptRoot "..\..\infrastructure\kubernetes\telemetry-processor\hpa.yaml"
-$validator = Join-Path $PSScriptRoot "..\validate-telemetry-processor-hpa.ps1"
 
-$json = & $kubectlExecutable create --dry-run=client --validate=false -o json -f $manifest 2>&1
-if ($LASTEXITCODE -ne 0) {
-    throw "kubectl could not serialize '$manifest'. $(@($json) -join [Environment]::NewLine)"
-}
-$global:PulseStreamHpaJson = @($json) -join [Environment]::NewLine
+Import-Module (Join-Path $PSScriptRoot "..\lib\PulseStreamYaml.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "..\lib\PulseStreamAutoscaling.psm1") -Force
 
-function global:kubectl {
-    param([Parameter(ValueFromRemainingArguments = $true)] [object[]] $Arguments)
+$script:Manifest = Join-Path $PSScriptRoot "..\..\infrastructure\kubernetes\telemetry-processor\hpa.yaml"
 
-    $stringArguments = [string[]] @($Arguments | ForEach-Object { $_.ToString() })
-    $global:LASTEXITCODE = 0
-
-    if ($stringArguments[0] -eq "get" -and $stringArguments[1] -eq "hpa" -and $stringArguments[2] -eq "telemetry-processor") {
-        $global:PulseStreamHpaJson
-        return
-    }
-
-    $global:LASTEXITCODE = 1
-    "unexpected kubectl operation: $($stringArguments -join ' ')"
-}
-
+# Every case starts from a fresh parse, so a mutation cannot leak into the next
+# one and no state has to be restored afterwards.
 function Assert-ValidatorRejects {
     param(
         [scriptblock] $Mutation,
@@ -41,52 +29,61 @@ function Assert-ValidatorRejects {
         [string] $Description
     )
 
-    $original = $global:PulseStreamHpaJson
+    $hpa = ConvertFrom-KubernetesYaml -Path $script:Manifest
+    & $Mutation $hpa
+
     try {
-        $hpa = $original | ConvertFrom-Json
-        & $Mutation $hpa
-        $global:PulseStreamHpaJson = $hpa | ConvertTo-Json -Depth 20
-
-        $rejected = $false
-        try {
-            & $validator -Namespace "hpa-test"
-        } catch {
-            if ($_.Exception.Message -match $ExpectedMessage) {
-                $rejected = $true
-                Write-Host "[ok] $Description"
-            } else {
-                throw
-            }
+        Confirm-TelemetryProcessorHpa -Hpa $hpa
+    } catch {
+        if ($_.Exception.Message -match $ExpectedMessage) {
+            Write-Host "[ok] $Description"
+            return
         }
 
-        if (-not $rejected) {
-            throw "The structural validator accepted $Description."
-        }
-    } finally {
-        $global:PulseStreamHpaJson = $original
+        throw "Expected a rejection matching '$ExpectedMessage' for $Description, got: $($_.Exception.Message)"
     }
+
+    throw "The structural validator accepted $Description."
 }
 
-try {
-    & $validator -Namespace "hpa-test"
+Confirm-TelemetryProcessorHpa -Hpa (ConvertFrom-KubernetesYaml -Path $script:Manifest)
 
-    # minReplicas must stay the documented floor. A lower value would let the
-    # autoscaler undo the availability guarantee deployment.yaml relies on.
-    Assert-ValidatorRejects `
-        -Mutation { param($hpa) $hpa.spec.minReplicas = 1 } `
-        -ExpectedMessage "minReplicas is 1, not 2" `
-        -Description "a minReplicas of 1 was rejected"
+# minReplicas must stay the documented floor. A lower value would let the
+# autoscaler undo the availability guarantee deployment.yaml relies on.
+Assert-ValidatorRejects `
+    -Mutation { param($hpa) $hpa.spec.minReplicas = 1 } `
+    -ExpectedMessage "minReplicas is 1, not 2" `
+    -Description "a minReplicas of 1 was rejected"
 
-    # maxReplicas is the partition count of telemetry.events.raw. A higher
-    # ceiling adds replicas that are assigned no partition and do no work, so it
-    # has to fail structurally rather than be discovered on a live cluster.
-    Assert-ValidatorRejects `
-        -Mutation { param($hpa) $hpa.spec.maxReplicas = 6 } `
-        -ExpectedMessage "maxReplicas is 6, not 3" `
-        -Description "a maxReplicas above the 3-partition ceiling was rejected"
-} finally {
-    Remove-Item -LiteralPath Function:\kubectl -ErrorAction SilentlyContinue
-    Remove-Variable -Name PulseStreamHpaJson -Scope Global -ErrorAction SilentlyContinue
-}
+# maxReplicas is the partition count of telemetry.events.raw. A higher ceiling
+# adds replicas that are assigned no partition and do no work, so it has to fail
+# structurally rather than be discovered on a live cluster.
+Assert-ValidatorRejects `
+    -Mutation { param($hpa) $hpa.spec.maxReplicas = 6 } `
+    -ExpectedMessage "maxReplicas is 6, not 3" `
+    -Description "a maxReplicas above the 3-partition ceiling was rejected"
+
+# A dropped section is valid to the API server - the defaults just take over -
+# so each one has to surface as a validation failure naming the field, not as a
+# PowerShell error about a property on a null object.
+Assert-ValidatorRejects `
+    -Mutation { param($hpa) $hpa.spec.PSObject.Properties.Remove('behavior') } `
+    -ExpectedMessage "scale-up stabilizationWindowSeconds is missing" `
+    -Description "a manifest without .spec.behavior was rejected"
+
+Assert-ValidatorRejects `
+    -Mutation { param($hpa) $hpa.spec.behavior.PSObject.Properties.Remove('scaleDown') } `
+    -ExpectedMessage "scale-down stabilizationWindowSeconds is missing" `
+    -Description "a manifest without .spec.behavior.scaleDown was rejected"
+
+Assert-ValidatorRejects `
+    -Mutation { param($hpa) $hpa.spec.PSObject.Properties.Remove('metrics') } `
+    -ExpectedMessage "no Resource/cpu Utilization metric" `
+    -Description "a manifest without .spec.metrics was rejected"
+
+Assert-ValidatorRejects `
+    -Mutation { param($hpa) $hpa.spec.metrics[0].resource.target.PSObject.Properties.Remove('averageUtilization') } `
+    -ExpectedMessage "CPU averageUtilization is missing" `
+    -Description "a CPU metric without a target utilization was rejected"
 
 Write-Host "[ok] telemetry-processor HPA structure checks behave consistently on $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
