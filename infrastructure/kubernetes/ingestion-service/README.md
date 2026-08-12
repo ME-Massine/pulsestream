@@ -115,6 +115,12 @@ kubectl get hpa ingestion-service --watch
 
 A recorded run of that watch — the HPA reading a real CPU metric, scaling `ingestion-service` from 2 to 6 replicas under load, and returning to 2 after the load stops and the 300s stabilization window passes — is in [`hpa-runtime-verification.md`](hpa-runtime-verification.md).
 
+### Scaling on request rate as well as CPU
+
+[`../autoscaling/ingestion-service-hpa-custom-metrics.yaml`](../autoscaling/ingestion-service-hpa-custom-metrics.yaml) is an **alternative** to `hpa.yaml`: the same HPA object, with the same target, bounds and behavior windows, plus a second metric — request rate per replica, served from `custom.metrics.k8s.io` by prometheus-adapter (#152). Applying it replaces the CPU-only spec in place; applying this directory afterwards puts the CPU-only spec back.
+
+It needs an in-cluster Prometheus and the adapter installed first; applying it without them leaves the HPA reporting `<unknown>` for the rate metric, which blocks scale-down. The install, verification and rollback steps are in [`../autoscaling/README.md`](../autoscaling/README.md), and the reasoning — including why CPU stays on the HPA and where the 50 rps/replica target comes from — is in [`docs/architecture/custom-metrics-autoscaling.md`](../../../docs/architecture/custom-metrics-autoscaling.md).
+
 ## Not configured here
 
 Authentication, TLS termination, and rate limiting are out of scope for the exposure work (#145). Port `30081` serves plain HTTP and accepts any client that can route to a node, so it is an entry point for development and evaluation clusters, not for an untrusted network.
