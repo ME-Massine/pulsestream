@@ -10,11 +10,16 @@ Manifests for the `PulseStream` stream consumer, and the documented way to obser
 | `service.yaml` | `ClusterIP` Service `telemetry-processor` — the in-cluster DNS name for probes and metrics. |
 | `secret.example.yaml` | Shape of the `telemetry-processor-secret` Secret. Provisioned out-of-band; the real Secret is never committed. |
 
-Apply the directory as a whole:
+Apply the safe manifests explicitly — do **not** apply the directory as a whole, since it also contains `secret.example.yaml`, and a directory-wide `apply` would create or overwrite the real `telemetry-processor-secret` with the placeholder `REPLACE_ME` credentials it holds:
 
 ```bash
-kubectl apply -f infrastructure/kubernetes/telemetry-processor/
+kubectl apply -f infrastructure/kubernetes/telemetry-processor/configmap.yaml \
+  -f infrastructure/kubernetes/telemetry-processor/service.yaml \
+  -f infrastructure/kubernetes/telemetry-processor/deployment.yaml \
+  -f infrastructure/kubernetes/telemetry-processor/hpa.yaml
 ```
+
+Provision the real `telemetry-processor-secret` separately, out-of-band, before applying the manifests above — see `secret.example.yaml` for its shape. Never `kubectl apply -f secret.example.yaml` directly.
 
 ## Autoscaling
 
