@@ -1,0 +1,78 @@
+# HorizontalPodAutoscaler for telemetry-processor (#151).
+#
+# Implements the telemetry-processor row of
+# docs/architecture/autoscaling-strategy.md: CPU utilization against the pod's
+# CPU *request* (250m in deployment.yaml), a 70% target (~175m), and a 2-3
+# replica range.
+#
+# Two constraints shape this manifest and neither is a tuning preference:
+#
+#   maxReplicas: 3 is the partition ceiling, not a capacity guess.
+#   `telemetry.events.raw` has 3 partitions (kafka/topics.yaml) and
+#   PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY defaults to 1, so replica four and
+#   beyond would join the consumer group, be assigned no partition, and consume
+#   cluster resources while doing no work. Raising this number requires
+#   repartitioning the topic first.
+#
+#   CPU is the *supported* signal, not the preferred one. Consumer-group lag is
+#   the correct signal for a consumer, but it is not exported as a Prometheus
+#   metric yet (#272) and feeding an external metric to an HPA needs a custom
+#   metrics adapter or KEDA (#152). CPU comes from the standard metrics-server
+#   resource API and the HPA consumes it natively, so it is what can be wired up
+#   today.
+#
+# Known caveat, tracked as #269: sudden-deviation detection keeps previous
+# readings in an in-memory map per replica (TelemetryAnomalyDetectionService),
+# and raw events are keyed by event identifier rather than by device, so a scale
+# event rebalances partitions and discards that history. Anomaly *detection*
+# stays correct for threshold rules; spike detection can miss a comparison
+# across a rebalance. The narrow 2-3 range and the 300s scale-down window below
+# keep rebalances rare, and the README documents the exposure.
+#
+# Requires metrics-server to be installed in the cluster; without it this HPA
+# reports an `unknown` current metric and never scales.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: telemetry-processor
+  labels:
+    app.kubernetes.io/name: telemetry-processor
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: telemetry-processor
+  minReplicas: 2
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Scale up without a stabilization window: a new Spring Boot pod needs
+    # ~15-30s before its readiness probe passes and before it is assigned a
+    # partition, so the autoscaler should act on a sustained rise rather than
+    # wait through it. One pod per minute is the whole range here (2 -> 3), so a
+    # larger step policy would have no effect.
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Max
+    # Scale down slowly. Two reasons: JVM CPU is spiky (GC, JIT) and a short
+    # window misreads a burst as sustained load, and every scale-in triggers a
+    # consumer group rebalance that pauses processing across the whole group.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min

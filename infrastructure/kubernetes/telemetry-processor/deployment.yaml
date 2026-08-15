@@ -15,8 +15,10 @@ metadata:
     app.kubernetes.io/part-of: pulsestream
 spec:
   # Kafka consumer group member: replicas share topic partitions, so two gives
-  # basic availability during node drains and rolling updates. Autoscaling is
-  # intentionally out of scope (#134).
+  # basic availability during node drains and rolling updates. This is also the
+  # HPA's minReplicas floor (hpa.yaml, #151) - the autoscaler moves replicas
+  # within [2, 3] from here, 3 being the partition count of
+  # `telemetry.events.raw`.
   replicas: 2
   selector:
     matchLabels:

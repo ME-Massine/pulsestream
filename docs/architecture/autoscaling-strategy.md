@@ -12,7 +12,7 @@ The strategy is deliberately conservative. The platform has no measured load pro
 
 ## Current Baseline
 
-All three platform services currently run at a fixed replica count, set directly in their Deployment manifests:
+This was the baseline the strategy was written against — all three platform services at a fixed replica count, set directly in their Deployment manifests:
 
 | Service | Replicas | CPU request | CPU limit | Memory request | Memory limit |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -20,7 +20,7 @@ All three platform services currently run at a fixed replica count, set directly
 | `telemetry-processor` | 2 | `250m` | `1` | `512Mi` | `1Gi` |
 | `query-service` | 2 | `250m` | `1` | `512Mi` | `1Gi` |
 
-Two replicas is an availability floor, not a capacity decision: it keeps a service reachable during node drains and rolling updates. Nothing in the platform currently reacts to load.
+Two replicas is an availability floor, not a capacity decision: it keeps a service reachable during node drains and rolling updates. Where an HPA now exists, that same `replicas: 2` is its `minReplicas`, so the floor is unchanged and the autoscaler only moves the count upward from it. The resource requests are unchanged by any autoscaling work, and the 70% target below is defined relative to the `250m` request in this table.
 
 ---
 
@@ -34,17 +34,15 @@ The ingest gateway is a stateless HTTP endpoint that validates a request and pro
 
 Load is driven by inbound HTTP request rate, and the work per request (deserialize, validate, produce) is CPU-bound with no blocking downstream call on the request path.
 
-**This is the only service that autoscales in the initial strategy.**
-
-### telemetry-processor — bounded, and blocked for now
+### telemetry-processor — eligible within a hard ceiling
 
 The processor is a Kafka consumer group member. Two independent constraints apply.
 
 **Partition ceiling.** Replicas of a consumer group divide the partitions of the subscribed topic; a replica that is assigned no partition does no work. `telemetry.events.raw` has 3 partitions (see [topics.md](topics.md)), and `PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY` defaults to `1`, so each replica consumes one partition. **The maximum useful replica count is 3.** More generally, useful replicas equal `partitions ÷ concurrency`; raising concurrency lowers the useful replica count proportionally. Scaling past that ceiling burns cluster resources and adds nothing. Throughput beyond 3 replicas requires repartitioning the topic, not a larger HPA maximum.
 
-**Correctness.** Sudden-deviation detection keeps previous readings in an in-memory `ConcurrentHashMap` inside each replica (`TelemetryAnomalyDetectionService`), and raw events are partitioned by event identifier rather than by stable device identity. Readings for the same device can therefore land on different replicas, and every scale event triggers a consumer group rebalance that reassigns partitions and abandons the in-memory history on the losing replica. Elastic scaling would make anomaly output depend on the current replica count and on rebalance timing.
+**Anomaly history is per-replica.** Sudden-deviation detection keeps previous readings in an in-memory `ConcurrentHashMap` inside each replica (`TelemetryAnomalyDetectionService`), and raw events are partitioned by event identifier rather than by stable device identity. Readings for the same device can therefore land on different replicas, and every scale event triggers a consumer group rebalance that reassigns partitions and abandons the in-memory history on the losing replica.
 
-The processor is therefore **held at a fixed 2 replicas**. It becomes an autoscaling target only after state ownership and partitioning are fixed (issue #269), at which point the bounds below apply.
+The processor autoscales within `[2, 3]` on CPU utilization (issue #151), with that second constraint accepted as a documented limitation rather than solved. What it costs in practice: threshold rules (missing fields, temperature bounds) are stateless and stay correct, while spike detection can miss the comparison for the first reading of a device after a rebalance. What bounds the cost: the range spans a single replica, so at most one rebalance per scale decision, and the 300-second scale-down window keeps those decisions infrequent. Making the output independent of replica count and rebalance timing requires device-stable partitioning and state ownership (issue #269); no autoscaler setting substitutes for it.
 
 ### query-service — deferred
 
@@ -74,7 +72,7 @@ The HPA compares average CPU usage against the **request** (`250m`), not the lim
 
 **Memory utilization.** The JVM reserves heap and does not return it to the operating system under normal operation, so memory utilization rises and stays high regardless of load. As a scaling signal it produces scale-up events that never reverse. Memory stays a limit and an alerting concern, not a scaling trigger.
 
-**Consumer lag.** For `telemetry-processor`, consumer group lag is the correct scaling signal — it measures the actual backlog rather than a proxy for it. It is not usable yet: lag is not exported as a Prometheus metric by the services today (issue #272), and consuming an external metric from an HPA requires a custom metrics adapter or KEDA, which is out of scope here (issue #152). CPU is a poor substitute for a consumer that is often I/O-bound rather than CPU-bound, which is a further reason the processor is not autoscaled in this iteration.
+**Consumer lag.** For `telemetry-processor`, consumer group lag is the correct scaling signal — it measures the actual backlog rather than a proxy for it. It is not usable yet: lag is not exported as a Prometheus metric by the services today (issue #272), and consuming an external metric from an HPA requires a custom metrics adapter or KEDA, which is out of scope here (issue #152). The processor therefore scales on CPU in the meantime, with the understanding that CPU is a weak substitute for a consumer that is often I/O-bound: a processor blocked on Postgres or Kafka accumulates lag without accumulating CPU, so the autoscaler under-reacts to exactly the backlog it exists to drain. The narrow 2-3 range limits what that costs, and the signal is expected to be replaced rather than tuned.
 
 **Request rate (RPS).** Available from Actuator/Micrometer, but it is a custom metric with the same adapter dependency as lag, and it requires a calibrated per-replica capacity number that no load test has produced yet.
 
@@ -85,7 +83,7 @@ The HPA compares average CPU usage against the **request** (`250m`), not the lim
 | Service | Metric | Target | Min | Max | Ceiling rationale |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `ingestion-service` | CPU utilization vs. request | 70% (≈`175m`) | 2 | 6 | Node capacity, and downstream processing capped at 3 partitions |
-| `telemetry-processor` | Consumer lag (planned) | To be measured | 2 | 3 | Hard partition ceiling: 3 partitions ÷ concurrency 1. **Not autoscaled until #269** |
+| `telemetry-processor` | CPU utilization vs. request (consumer lag once #152/#272 land) | 70% (≈`175m`) | 2 | 3 | Hard partition ceiling: 3 partitions ÷ concurrency 1 |
 | `query-service` | CPU utilization vs. request | 70% (≈`175m`) | 2 | 4 | Placeholder. **Not autoscaled until the read API exists (#266)** |
 
 ### Why these bounds
@@ -103,7 +101,7 @@ The HPA compares average CPU usage against the **request** (`250m`), not the lim
 Reaction speed matters as much as the thresholds, because these are JVM services behind a Kafka consumer group.
 
 - **Scale up: react quickly, no stabilization window.** A new Spring Boot pod needs roughly 15–30 seconds before its readiness probe passes (`initialDelaySeconds: 15`), so the autoscaler must act on a sustained rise rather than wait through it.
-- **Scale down: 300-second stabilization window.** JVM CPU is spiky — garbage collection and JIT compilation both produce short bursts that a short window misreads as load. A five-minute window also protects the processor once it is autoscaled, since every scale-in triggers a consumer group rebalance that pauses processing across the whole group.
+- **Scale down: 300-second stabilization window.** JVM CPU is spiky — garbage collection and JIT compilation both produce short bursts that a short window misreads as load. The same window protects the processor, since every scale-in triggers a consumer group rebalance that pauses processing across the whole group.
 - **Startup CPU is not load.** JIT compilation makes a freshly started JVM CPU-hungry for its first few seconds. Combined with the readiness delay, a pod can be counted in HPA metrics while still warming up, which can cause a scale-up cascade. This is a known risk to verify during autoscaling validation (issue #153).
 
 ---
@@ -131,8 +129,8 @@ CPU-based autoscaling is not free of dependencies. Before any HPA is applied:
 ## Limitations
 
 - **No measured load profile.** No load test has been run against the platform, so 70% is a convention rather than a calibrated threshold. Issue #153 exists to validate and correct these numbers.
-- **CPU is a proxy, not the real signal.** For an HTTP gateway it is a reasonable one. For a Kafka consumer it is weak, which is a direct reason the processor is excluded from this iteration.
-- **The processor cannot safely scale today.** Its anomaly state is per-replica and its partitioning key is not device-stable. This is a correctness constraint, and no autoscaling configuration works around it.
+- **CPU is a proxy, not the real signal.** For an HTTP gateway it is a reasonable one. For a Kafka consumer it is weak: lag can grow while CPU stays flat, so the processor's autoscaler is expected to under-react until the lag metric replaces it (#152, #272).
+- **The processor's anomaly history does not survive a scale event.** Its spike-detection state is per-replica and its partitioning key is not device-stable, so a rebalance drops the previous reading for the devices that moved. Threshold rules are unaffected. The 2-3 range bounds how often this happens; only #269 removes it.
 - **Autoscaling does not address Kafka or PostgreSQL capacity.** Scaling ingestion moves the bottleneck downstream to partition count and to a single-instance database. Autoscaling raises the ceiling on one tier only.
 - **Rebalance cost is not quantified.** The pause imposed on a consumer group by a scale event has not been measured, so the 300-second scale-down window is a safety margin rather than a derived value.
 
@@ -143,10 +141,10 @@ CPU-based autoscaling is not free of dependencies. Before any HPA is applied:
 | Issue | Work | Relationship to this document |
 | :--- | :--- | :--- |
 | #150 | CPU-based HPA for `ingestion-service` | Implements the ingestion row of the targets table |
-| #151 | Autoscaling for consumer services | Blocked on #269; implements the processor row |
+| #151 | Autoscaling for consumer services | Implements the processor row on the CPU signal, within the 2-3 partition ceiling |
 | #152 | Custom metrics for advanced autoscaling | Enables the consumer-lag metric this document prefers |
 | #153 | Validate autoscaling behavior end-to-end | Replaces the assumed thresholds with measured ones |
-| #269 | Deterministic anomaly detection under scaling | Correctness precondition for scaling the processor |
+| #269 | Deterministic anomaly detection under scaling | Removes the per-replica anomaly-history limitation the processor row accepts |
 | #272 | Processing and consumer-lag metrics | Prerequisite for #152 |
 
 ---
