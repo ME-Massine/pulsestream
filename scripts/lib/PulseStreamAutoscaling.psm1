@@ -222,4 +222,29 @@ function Confirm-IngestionServiceCustomMetricsHpa {
         -FailureMessage "scale-down stabilizationWindowSeconds is $(Format-ManifestValue $scaleDownWindow), not 300. A shorter window misreads a GC or JIT burst, or the tail of the 2-minute rate window, as sustained load"
 }
 
-Export-ModuleMember -Function Confirm-TelemetryProcessorHpa, Confirm-IngestionServiceCustomMetricsHpa, Get-ManifestValue
+# A custom metric can resolve for *some* pods and still leave the HPA scaling
+# on a partial view: the adapter's Prometheus query matches whatever series
+# exist, and a pod Prometheus has not scraped yet (or has stopped scraping,
+# because service discovery went stale) simply has no series rather than a
+# zero one. `$MetricItems.Count -gt 0` cannot see that gap - it passes as soon
+# as one pod out of however many is reporting.
+#
+# Pure comparison so it can be exercised offline
+# (scripts/tests/test-custom-metrics-pod-coverage.ps1) instead of only ever
+# being exercised by a cluster that happens to have a scraping gap.
+function Confirm-PodsMetricCoverage {
+    param(
+        [string[]] $ReadyPodNames = @(),
+        [string[]] $MetricPodNames = @(),
+        [Parameter(Mandatory)] [string] $MetricName
+    )
+
+    $missingPodNames = @($ReadyPodNames | Where-Object { $MetricPodNames -notcontains $_ })
+
+    Confirm-Condition `
+        -Condition ($missingPodNames.Count -eq 0) `
+        -SuccessMessage "$MetricName resolves for every Ready pod ($($ReadyPodNames.Count) of $($ReadyPodNames.Count))" `
+        -FailureMessage "$MetricName is missing for $($missingPodNames.Count) of $($ReadyPodNames.Count) Ready pod(s): $($missingPodNames -join ', '). The adapter is only serving a subset - check that Prometheus service discovery is not stale and that /actuator/prometheus is reachable on every Ready pod"
+}
+
+Export-ModuleMember -Function Confirm-TelemetryProcessorHpa, Confirm-IngestionServiceCustomMetricsHpa, Confirm-PodsMetricCoverage, Get-ManifestValue

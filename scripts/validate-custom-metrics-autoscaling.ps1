@@ -4,7 +4,8 @@
 # on the HPA - `<unknown>` for the metric - so each is checked separately:
 #
 #   1. custom.metrics.k8s.io is registered and Available (prometheus-adapter)
-#   2. http_requests_per_second actually resolves for the service's pods
+#   2. http_requests_per_second resolves for every Ready ingestion-service pod,
+#      not just some of them
 #   3. exactly one HPA targets the Deployment (two of them fight)
 #   4. the applied HPA has the shape documented in
 #      docs/architecture/custom-metrics-autoscaling.md
@@ -47,12 +48,30 @@ Confirm-Condition `
     -SuccessMessage "the custom metrics APIService is Available (backed by $(Get-ManifestValue $apiService @('spec','service','namespace'))/$(Get-ManifestValue $apiService @('spec','service','name')))" `
     -FailureMessage "The custom metrics APIService is registered but not Available: $(if ($null -eq $available) { 'no Available condition' } else { "$($available.reason) - $($available.message)" }). The HPA will report <unknown> for every custom metric until the aggregation layer can reach the adapter"
 
-# 2. The metric resolves.
+# 2. The metric resolves for every Ready pod, not just some of them.
 #
 # An adapter rule that matches no series is not an error on either side: the API
 # answers with an empty list and the HPA reports <unknown>. The usual causes are
 # Prometheus not scraping the pods, series without `namespace`/`pod` labels, or
-# a Micrometer upgrade that renamed the counter.
+# a Micrometer upgrade that renamed the counter. A partial match is a quieter
+# version of the same failure - the HPA still reports a value, computed from
+# whichever pods Prometheus happens to be scraping - so the check compares the
+# metric's pod list against the Deployment's actual Ready pods rather than
+# accepting any non-empty response.
+$podsJson = Invoke-KubectlChecked `
+    -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=ingestion-service", "-o", "json") `
+    -ErrorContext "Could not list ingestion-service pods in namespace '$Namespace'"
+
+$readyPodNames = @(($podsJson | ConvertFrom-Json).items | Where-Object {
+    $readyCondition = @($_.status.conditions | Where-Object { $_.type -eq 'Ready' }) | Select-Object -First 1
+    $null -ne $readyCondition -and $readyCondition.status -eq 'True'
+} | ForEach-Object { $_.metadata.name })
+
+Confirm-Condition `
+    -Condition ($readyPodNames.Count -gt 0) `
+    -SuccessMessage "$($readyPodNames.Count) ingestion-service pod(s) are Ready in '$Namespace'" `
+    -FailureMessage "No ingestion-service pods are Ready in '$Namespace'. Apply infrastructure/kubernetes/ingestion-service/ and wait for the Deployment to become Ready before validating the metric it should be reporting"
+
 $metricPath = "/apis/custom.metrics.k8s.io/v1beta1/namespaces/$Namespace/pods/*/http_requests_per_second"
 $metricResult = Invoke-Kubectl -KubectlArgs @("get", "--raw", $metricPath)
 Confirm-Condition `
@@ -61,14 +80,12 @@ Confirm-Condition `
     -FailureMessage "GET $metricPath failed. The adapter is serving the API but has no rule producing http_requests_per_second, or Prometheus is unreachable from it. $($metricResult.Output)"
 
 $metricItems = @(($metricResult.Output | ConvertFrom-Json).items)
-Confirm-Condition `
-    -Condition ($metricItems.Count -gt 0) `
-    -SuccessMessage "http_requests_per_second resolves for $($metricItems.Count) pod(s) in '$Namespace'" `
-    -FailureMessage "http_requests_per_second resolved to an empty list in '$Namespace'. The rule matched no series: check that Prometheus scrapes /actuator/prometheus on the ingestion-service pods and that the series carry namespace and pod labels"
-
 foreach ($item in $metricItems) {
     Write-Host "       $($item.describedObject.name) = $($item.value)"
 }
+
+$metricPodNames = @($metricItems | ForEach-Object { $_.describedObject.name })
+Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $metricPodNames -MetricName "http_requests_per_second"
 
 # 3. Exactly one HPA targets the Deployment.
 #
