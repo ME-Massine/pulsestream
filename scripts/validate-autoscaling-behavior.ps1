@@ -247,7 +247,7 @@ function Confirm-LoadPodTraffic {
     Confirm-Condition `
         -Condition $false `
         -SuccessMessage "load pod '$PodName' reached its real traffic path and is still generating traffic" `
-        -FailureMessage "load pod '$PodName' has not emitted both ready and heartbeat markers. Its image, shell, base64 decoder, service/Kafka route, or producer may have failed; inspect: kubectl logs -n $Namespace $PodName" `
+        -FailureMessage "load pod '$PodName' has not emitted both ready and heartbeat markers. Its image, shell, base64 decoder, service/Kafka route, or producer may have failed. Last logs: $logs" `
         -Permanent
 }
 
