@@ -245,6 +245,29 @@ function Confirm-PodsMetricCoverage {
         -Condition ($missingPodNames.Count -eq 0) `
         -SuccessMessage "$MetricName resolves for every Ready pod ($($ReadyPodNames.Count) of $($ReadyPodNames.Count))" `
         -FailureMessage "$MetricName is missing for $($missingPodNames.Count) of $($ReadyPodNames.Count) Ready pod(s): $($missingPodNames -join ', '). The adapter is only serving a subset - check that Prometheus service discovery is not stale and that /actuator/prometheus is reachable on every Ready pod"
+
+    # Coverage is not just presence: the HPA averages the values it is served,
+    # so a pod carrying two entries is weighted twice and drags the average
+    # towards whichever series is duplicated. The adapter emits one entry per
+    # pod, so a second entry for the same pod means the underlying Prometheus
+    # query matched more than one series for it (a leftover series from a
+    # previous pod incarnation with the same name, or a rule whose label set
+    # is not unique per pod), and the number the HPA scales on is no longer
+    # the metric it claims to be.
+    $duplicatedPodNames = @($ReadyPodNames | Where-Object {
+        $podName = $_
+        @($MetricPodNames | Where-Object { $_ -eq $podName }).Count -gt 1
+    })
+
+    $duplicateDetail = @($duplicatedPodNames | ForEach-Object {
+        $podName = $_
+        "$podName ($(@($MetricPodNames | Where-Object { $_ -eq $podName }).Count) entries)"
+    })
+
+    Confirm-Condition `
+        -Condition ($duplicatedPodNames.Count -eq 0) `
+        -SuccessMessage "$MetricName resolves to exactly one value per Ready pod" `
+        -FailureMessage "$MetricName returns more than one entry for $($duplicatedPodNames.Count) of $($ReadyPodNames.Count) Ready pod(s): $($duplicateDetail -join ', '). The HPA averages every entry it is served, so a duplicated pod is weighted twice - check that the adapter rule's series are unique per pod and that no stale series for a previous pod of the same name is still in Prometheus"
 }
 
 Export-ModuleMember -Function Confirm-TelemetryProcessorHpa, Confirm-IngestionServiceCustomMetricsHpa, Confirm-PodsMetricCoverage, Get-ManifestValue

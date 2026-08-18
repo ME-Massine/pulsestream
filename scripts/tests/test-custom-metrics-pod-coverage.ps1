@@ -59,6 +59,27 @@ if (-not $rejectedAllMissing) {
     throw "Confirm-PodsMetricCoverage accepted an empty metric response with a Ready pod outstanding."
 }
 
+# One Ready pod carrying two metric entries is still "present" by name, but
+# the HPA averages both, so the pod is weighted twice. Presence alone cannot
+# see that - only counting the entries per pod can.
+$rejectedDuplicate = $false
+try {
+    Confirm-PodsMetricCoverage `
+        -ReadyPodNames @("ingestion-service-a", "ingestion-service-b") `
+        -MetricPodNames @("ingestion-service-a", "ingestion-service-a", "ingestion-service-b") `
+        -MetricName "http_requests_per_second"
+} catch {
+    if ($_.Exception.Message -match "more than one entry for 1 of 2 Ready pod\(s\): ingestion-service-a \(2 entries\)") {
+        $rejectedDuplicate = $true
+        Write-Host "[ok] a Ready pod with two metric entries was rejected"
+    } else {
+        throw
+    }
+}
+if (-not $rejectedDuplicate) {
+    throw "Confirm-PodsMetricCoverage accepted two metric entries for the same Ready pod."
+}
+
 # A metric entry for a pod that is no longer Ready (mid-termination, or
 # scraped a moment before it failed its probe) is not this check's problem -
 # every Ready pod is still covered, so it must not fail.
