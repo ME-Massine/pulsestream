@@ -101,19 +101,24 @@ function New-ShellCommand {
 # about when the load ended.
 
 $httpLoadTemplate = @'
-set -eu
+set -u
 n=0
 while [ $n -lt {{CONCURRENCY}} ]; do
   n=$((n+1))
   (
     i=0
+    successes=0
     while true; do
       i=$((i+1))
-      curl -fsS -o /dev/null -m 5 -X POST "http://{{TARGET}}:{{PORT}}/api/v1/events" \
+      if curl -fsS -o /dev/null -m 5 -X POST "http://{{TARGET}}:{{PORT}}/api/v1/events" \
         -H 'Content-Type: application/json' \
-        -d "{\"eventId\":\"evt_{{RUN}}_${n}_${i}\",\"tenantId\":\"autoscaling_validation\",\"eventType\":\"telemetry.reading\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"source\":\"validate-autoscaling-behavior\",\"version\":\"1.0\",\"payload\":{\"deviceId\":\"load-{{RUN}}-${n}\",\"deviceType\":\"temperature-sensor\",\"metric\":\"temperature\",\"value\":21.5,\"unit\":\"celsius\",\"location\":\"validation-lab\"}}" 2>/dev/null
-      if [ "$i" -eq 1 ]; then echo "pulsestream-autoscaling-load ready http" >&2; fi
-      if [ $((i % 5)) -eq 0 ]; then echo "pulsestream-autoscaling-load heartbeat http $i" >&2; fi
+        -d "{\"eventId\":\"evt_{{RUN}}_${n}_${i}\",\"tenantId\":\"autoscaling_validation\",\"eventType\":\"telemetry.reading\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"source\":\"validate-autoscaling-behavior\",\"version\":\"1.0\",\"payload\":{\"deviceId\":\"load-{{RUN}}-${n}\",\"deviceType\":\"temperature-sensor\",\"metric\":\"temperature\",\"value\":21.5,\"unit\":\"celsius\",\"location\":\"validation-lab\"}}" 2>/dev/null; then
+        successes=$((successes+1))
+        if [ "$successes" -eq 1 ]; then echo "pulsestream-autoscaling-load ready http" >&2; fi
+        if [ $((successes % 5)) -eq 0 ]; then echo "pulsestream-autoscaling-load heartbeat http $successes" >&2; fi
+      else
+        sleep 1
+      fi
     done
   ) &
 done
@@ -225,11 +230,22 @@ function Confirm-LoadPodRunning {
 function Confirm-LoadPodTraffic {
     param([Parameter(Mandatory)] [string] $PodName)
 
-    $logs = Invoke-KubectlChecked `
-        -KubectlArgs @("logs", "--namespace", $Namespace, $PodName, "--tail", "100") `
-        -ErrorContext "Could not read load pod '$PodName' logs to verify traffic generation"
+    $deadline = (Get-Date).AddSeconds(60)
+    $logs = ""
+    do {
+        $logs = Invoke-KubectlChecked `
+            -KubectlArgs @("logs", "--namespace", $Namespace, $PodName, "--tail", "100") `
+            -ErrorContext "Could not read load pod '$PodName' logs to verify traffic generation"
+        if ($logs -match "pulsestream-autoscaling-load ready" -and $logs -match "pulsestream-autoscaling-load heartbeat") {
+            Confirm-LoadPodRunning -PodName $PodName
+            Write-Host "[ok] load pod '$PodName' reached its real traffic path and is still generating traffic"
+            return
+        }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+
     Confirm-Condition `
-        -Condition ($logs -match "pulsestream-autoscaling-load ready" -and $logs -match "pulsestream-autoscaling-load heartbeat") `
+        -Condition $false `
         -SuccessMessage "load pod '$PodName' reached its real traffic path and is still generating traffic" `
         -FailureMessage "load pod '$PodName' has not emitted both ready and heartbeat markers. Its image, shell, base64 decoder, service/Kafka route, or producer may have failed; inspect: kubectl logs -n $Namespace $PodName" `
         -Permanent
