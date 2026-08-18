@@ -1,0 +1,104 @@
+# HorizontalPodAutoscaler for ingestion-service, scaling on request rate as well
+# as CPU (#152).
+#
+# This is an ALTERNATIVE to ../ingestion-service/hpa.yaml, not an addition:
+# exactly one HPA may target a Deployment, because two of them fight, each
+# undoing the other's decision. It deliberately carries the SAME object name, so
+# switching over is an apply rather than a delete-and-create, and there is no
+# window in which the Deployment has no autoscaler:
+#
+#   kubectl apply -f infrastructure/kubernetes/autoscaling/ingestion-service-hpa-custom-metrics.yaml
+#
+# and rolling back is the same operation with the CPU-only manifest:
+#
+#   kubectl apply -f infrastructure/kubernetes/ingestion-service/hpa.yaml
+#
+# It lives here rather than next to the Deployment for exactly that reason: this
+# file and hpa.yaml describe one object two ways, so a wholesale
+# `kubectl apply -f infrastructure/kubernetes/ingestion-service/` must not pick
+# up both. Note the consequence - re-applying that directory reverts a
+# switched-over cluster to CPU-only autoscaling, silently and immediately.
+#
+# PREREQUISITES, in this order (see
+# docs/architecture/custom-metrics-autoscaling.md):
+#   1. metrics-server, for the CPU metric - as with the CPU-only hpa.yaml.
+#   2. An in-cluster Prometheus scraping /actuator/prometheus on these pods,
+#      keeping the `namespace` and `pod` labels on the series.
+#   3. prometheus-adapter installed with
+#      infrastructure/kubernetes/autoscaling/prometheus-adapter-values.yaml, and
+#      `http_requests_per_second` resolving in custom.metrics.k8s.io.
+#
+# Applying this without step 3 leaves the HPA reporting `<unknown>` for the rate
+# metric. That is not neutral: it sets ScalingActive=False, which blocks
+# scale-DOWN while still allowing scale-up on CPU. Roll back to hpa.yaml rather
+# than leaving it in that state.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ingestion-service
+  labels:
+    app.kubernetes.io/name: ingestion-service
+    app.kubernetes.io/component: ingest-gateway
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ingestion-service
+  # Unchanged from hpa.yaml: the bounds are an availability floor and a
+  # capacity/partition ceiling, and neither depends on which metric drives the
+  # decision. See docs/architecture/autoscaling-strategy.md.
+  minReplicas: 2
+  maxReplicas: 6
+  # The HPA computes a desired replica count from each metric independently and
+  # takes the highest. So either signal alone can scale up, scale-down needs
+  # both to fall, and a metric the HPA cannot read blocks scale-down without
+  # blocking scale-up. Keeping CPU here is what makes the custom metric an
+  # addition rather than a dependency: if the adapter is down, autoscaling
+  # degrades to the CPU behaviour of hpa.yaml instead of stopping.
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Request rate per replica, served by prometheus-adapter from the
+    # Micrometer counter the service already exposes. `Pods` (not `External`)
+    # because the metric is attached to these pods, so the HPA divides by the
+    # current replica count and compares against the per-replica target below.
+    #
+    # 50 rps/replica is derived, not measured: the CPU target is 70% of a 250m
+    # request (~175m), which at 50 rps is ~3.5ms of CPU per request. The two
+    # metrics therefore cross at roughly the same load if a request costs about
+    # that much. Whichever assumption is wrong, the other metric is the
+    # backstop - and #153 replaces this number with a measured one.
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "50"
+  behavior:
+    # Identical to hpa.yaml. The rate metric reacts sooner than CPU, but it
+    # arrives through a scrape and a 2-minute rate window, so it is not fast
+    # enough to justify a looser scale-down window: a burst that has already
+    # passed can still be inside the rate window.
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min

@@ -76,6 +76,8 @@ The HPA compares average CPU usage against the **request** (`250m`), not the lim
 
 **Request rate (RPS).** Available from Actuator/Micrometer, but it is a custom metric with the same adapter dependency as lag, and it requires a calibrated per-replica capacity number that no load test has produced yet.
 
+> **Update (#152).** The adapter dependency named in both rejections is now designed and configured — see [Custom Metrics for Autoscaling](custom-metrics-autoscaling.md). Request rate is available as an optional second metric on the `ingestion-service` HPA, alongside CPU rather than instead of it, in [`ingestion-service-hpa-custom-metrics.yaml`](../../infrastructure/kubernetes/autoscaling/ingestion-service-hpa-custom-metrics.yaml); its per-replica target is still derived rather than measured, so #153 remains the calibration. Consumer lag has an adapter rule but no HPA, because nothing exports the series yet (#272). The targets and bounds in this document are unchanged by that work.
+
 ---
 
 ## Targets and Bounds
@@ -142,7 +144,7 @@ CPU-based autoscaling is not free of dependencies. Before any HPA is applied:
 | :--- | :--- | :--- |
 | #150 | CPU-based HPA for `ingestion-service` | Implements the ingestion row of the targets table |
 | #151 | Autoscaling for consumer services | Implements the processor row on the CPU signal, within the 2-3 partition ceiling |
-| #152 | Custom metrics for advanced autoscaling | Enables the consumer-lag metric this document prefers |
+| #152 | Custom metrics for advanced autoscaling | Delivers the adapter path both rejected metrics depend on. See [Custom Metrics for Autoscaling](custom-metrics-autoscaling.md) |
 | #153 | Validate autoscaling behavior end-to-end | Replaces the assumed thresholds with measured ones |
 | #269 | Deterministic anomaly detection under scaling | Removes the per-replica anomaly-history limitation the processor row accepts |
 | #272 | Processing and consumer-lag metrics | Prerequisite for #152 |
@@ -151,6 +153,7 @@ CPU-based autoscaling is not free of dependencies. Before any HPA is applied:
 
 ## Related Documentation
 
+- [Custom Metrics for Autoscaling](custom-metrics-autoscaling.md) — the adapter path for request-rate and consumer-lag signals
 - [Kafka Topics](topics.md) — partition counts that bound consumer scaling
 - [Services](services.md) — service boundaries and responsibilities
 - [Service Discovery](../../infrastructure/kubernetes/service-discovery.md) — how traffic reaches replicas

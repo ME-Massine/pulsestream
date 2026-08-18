@@ -1,0 +1,95 @@
+# Helm values for prometheus-adapter (#152).
+#
+# prometheus-adapter is an extension API server: once installed it registers
+# itself as the APIService for custom.metrics.k8s.io and external.metrics.k8s.io,
+# translates the requests an HPA makes into PromQL, and answers with the result.
+# The rules below are the entire translation table - a metric that has no rule
+# does not exist as far as any HPA is concerned.
+#
+# Installed as an add-on rather than vendored as manifests, matching how
+# metrics-server and the Strimzi operator are handled elsewhere in this
+# repository:
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
+#     --namespace kube-system \
+#     --values infrastructure/kubernetes/autoscaling/prometheus-adapter-values.yaml
+#
+# The design behind these rules - why request rate, why not KEDA, why lag is
+# specified but unused - is in docs/architecture/custom-metrics-autoscaling.md.
+#
+# WARNING: exactly one component in a cluster can serve custom.metrics.k8s.io.
+# Installing this where another adapter is already registered takes that API
+# over silently.
+
+# Where the adapter reads from. This must be an in-cluster Prometheus that
+# scrapes the service pods and keeps the `namespace` and `pod` labels on the
+# series; without those labels the pod rule below cannot map a metric to a pod
+# and the metric never appears in the API. See README.md in this directory.
+prometheus:
+  url: http://prometheus-server.monitoring.svc
+  port: 80
+  path: ""
+
+# The adapter is on the scaling path but holds no state: two replicas so a node
+# drain does not leave every HPA reporting <unknown> for its custom metric.
+replicas: 2
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+# Pod metrics, served on custom.metrics.k8s.io. These are attached to specific
+# pods, which is what lets an HPA divide by replica count and compare against a
+# per-replica target.
+rules:
+  default: false
+  custom:
+    # ingestion-service request rate, from the Micrometer/Actuator counter the
+    # services already expose on /actuator/prometheus. No service change was
+    # needed for this metric, which is why it is the one that ships.
+    #
+    # The name is hard-coded from Micrometer's exposition format: if a Spring
+    # Boot or Micrometer upgrade renames the counter, this rule matches nothing
+    # and the metric silently disappears from the API rather than erroring.
+    # scripts/validate-custom-metrics-autoscaling.ps1 checks that it resolves.
+    - seriesQuery: 'http_server_requests_seconds_count{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace:
+            resource: namespace
+          pod:
+            resource: pod
+      name:
+        matches: "^http_server_requests_seconds_count$"
+        as: "http_requests_per_second"
+      # Summed across every URI, method and status: the HPA scales on how much
+      # work arrives, not on how it is routed. `rate` over 2 minutes covers
+      # eight 15s scrapes - short enough to react before a backlog builds,
+      # long enough that a single noisy scrape does not move the replica count.
+      metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+
+  # External metrics, served on external.metrics.k8s.io. These belong to
+  # something outside the cluster's pod model - here, a Kafka consumer group.
+  external:
+    # Consumer lag for telemetry-processor. INERT TODAY: nothing exports
+    # kafka_consumergroup_lag yet (Strimzi's Kafka Exporter is not enabled on
+    # the Kafka CR, and the services do not export lag themselves - #272), so
+    # this rule matches no series and the metric does not appear in the API.
+    #
+    # It ships anyway because it is the metric the autoscaling strategy actually
+    # prefers for a consumer, and a rule with no series is harmless. The HPA
+    # that would consume it is deliberately absent: the processor cannot safely
+    # autoscale until #269, and its useful range is a single replica step.
+    - seriesQuery: 'kafka_consumergroup_lag{topic!="",consumergroup!=""}'
+      name:
+        matches: "^kafka_consumergroup_lag$"
+        as: "kafka_consumergroup_lag"
+      # Summed across partitions: the backlog of the group as a whole is the
+      # quantity worth scaling on. Per-partition lag matters for diagnosing
+      # skew, not for deciding replica count.
+      metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>}) by (consumergroup, topic)'
