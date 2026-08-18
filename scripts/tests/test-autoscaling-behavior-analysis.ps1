@@ -246,10 +246,10 @@ Assert-BehaviorRejects `
 # remains part of the workload.
 Assert-BehaviorRejects `
     -Timeline (New-Timeline -Steps @(
-        @{ Offset = 0; Replicas = 2; Cpu = 3; RestartCounts = @{ "old/app" = 0; "survivor/app" = 0 } },
-        @{ Offset = 30; Replicas = 2; Cpu = 190; RestartCounts = @{ "old/app" = 0; "survivor/app" = 1 } },
-        @{ Offset = 60; Replicas = 1; Ready = 1; Cpu = 160; RestartCounts = @{ "survivor/app" = 1 } }
-    ) -MinReplicas 1) `
+        @{ Offset = 0; Replicas = 2; Cpu = 3; RestartCounts = @{ "old/app" = 5; "survivor/app" = 0 } },
+        @{ Offset = 30; Replicas = 4; Cpu = 190; RestartCounts = @{ "old/app" = 5; "survivor/app" = 0; "new-a/app" = 0; "new-b/app" = 0 } },
+        @{ Offset = 60; Replicas = 2; Cpu = 160; RestartCounts = @{ "survivor/app" = 1; "new-a/app" = 0 } }
+    )) `
     -ExpectedMessage "restarts increased by 1 during the run" `
     -Description "a scaled-down pod cannot hide a restart on a surviving pod"
 
