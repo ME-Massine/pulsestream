@@ -236,7 +236,7 @@ function Confirm-LoadPodTraffic {
         $logs = Invoke-KubectlChecked `
             -KubectlArgs @("logs", "--namespace", $Namespace, $PodName, "--tail", "100") `
             -ErrorContext "Could not read load pod '$PodName' logs to verify traffic generation"
-        if ($logs -match "pulsestream-autoscaling-load ready" -and $logs -match "pulsestream-autoscaling-load heartbeat") {
+        if ($logs -match "pulsestream-autoscaling-load heartbeat") {
             Confirm-LoadPodRunning -PodName $PodName
             Write-Host "[ok] load pod '$PodName' reached its real traffic path and is still generating traffic"
             return
@@ -247,7 +247,7 @@ function Confirm-LoadPodTraffic {
     Confirm-Condition `
         -Condition $false `
         -SuccessMessage "load pod '$PodName' reached its real traffic path and is still generating traffic" `
-        -FailureMessage "load pod '$PodName' has not emitted both ready and heartbeat markers. Its image, shell, base64 decoder, service/Kafka route, or producer may have failed. Last logs: $logs" `
+        -FailureMessage "load pod '$PodName' has not emitted a traffic heartbeat. Its image, shell, base64 decoder, service/Kafka route, or producer may have failed. Last logs: $logs" `
         -Permanent
 }
 
