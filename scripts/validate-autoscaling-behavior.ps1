@@ -111,9 +111,9 @@ while [ $n -lt {{CONCURRENCY}} ]; do
       i=$((i+1))
       curl -fsS -o /dev/null -m 5 -X POST "http://{{TARGET}}:{{PORT}}/api/v1/events" \
         -H 'Content-Type: application/json' \
-        -d "{\"eventId\":\"evt_{{RUN}}_${n}_${i}\",\"tenantId\":\"autoscaling_validation\",\"eventType\":\"telemetry.reading\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"source\":\"validate-autoscaling-behavior\",\"version\":\"1.0\",\"payload\":{\"deviceId\":\"load-{{RUN}}-${n}\",\"deviceType\":\"temperature-sensor\",\"metric\":\"temperature\",\"value\":21.5,\"unit\":\"celsius\",\"location\":\"validation-lab\"}}"
+        -d "{\"eventId\":\"evt_{{RUN}}_${n}_${i}\",\"tenantId\":\"autoscaling_validation\",\"eventType\":\"telemetry.reading\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"source\":\"validate-autoscaling-behavior\",\"version\":\"1.0\",\"payload\":{\"deviceId\":\"load-{{RUN}}-${n}\",\"deviceType\":\"temperature-sensor\",\"metric\":\"temperature\",\"value\":21.5,\"unit\":\"celsius\",\"location\":\"validation-lab\"}}" 2>/dev/null
       if [ "$i" -eq 1 ]; then echo "pulsestream-autoscaling-load ready http" >&2; fi
-      if [ $((i % 25)) -eq 0 ]; then echo "pulsestream-autoscaling-load heartbeat http $i" >&2; fi
+      if [ $((i % 5)) -eq 0 ]; then echo "pulsestream-autoscaling-load heartbeat http $i" >&2; fi
     done
   ) &
 done
