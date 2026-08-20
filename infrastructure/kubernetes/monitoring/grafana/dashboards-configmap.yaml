@@ -1,0 +1,205 @@
+# The platform dashboards, as Grafana loads them in the cluster (#156).
+#
+# WHY THESE ARE NOT observability/grafana/dashboards/*.json VERBATIM.
+# The two Prometheus deployments label the same Micrometer series differently,
+# so one dashboard cannot serve both:
+#
+#   Compose      static target, one job per service   ->  job="ingestion-service"
+#   Kubernetes   pod discovery, one job for all pods  ->  job="kubernetes-pods"
+#                                                         service="ingestion-service"
+#
+# ../configmap.yaml relabels `app.kubernetes.io/name` into a `service` label
+# precisely so a query has something stable to select on; `job` is the same
+# constant for every scraped pod there and selecting on it matches everything or
+# nothing. A panel copied across unchanged does not error - it draws an empty
+# graph, which is the failure this file exists to avoid.
+#
+# Beyond the label swap the panels are the same dashboards: same UIDs, same
+# titles, same panel IDs, same expressions. The differences are all consequences
+# of pods being plural where a Compose container is singular - per-pod series are
+# broken out by `pod` instead of being summed into one line. Which panels differ
+# and why is spelled out in observability/grafana/dashboards/README.md, and
+# scripts/tests/test-grafana-dashboard-provisioning.ps1 fails if a panel is added
+# to one set and not the other.
+#
+# THE JSON IS INLINE, not generated from those files, because it is not a copy
+# of them. Keeping a second set of .json files on disk and rendering them into a
+# ConfigMap would add a build step and a generated artefact without removing the
+# fact that the queries genuinely differ.
+#
+# Kept small on purpose: a ConfigMap cannot exceed 1 MiB, which is roughly a
+# dozen dashboards of this size. Past that, dashboards move to one ConfigMap
+# each and the provider picks up all of them from the same mount.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: visualization
+    app.kubernetes.io/part-of: pulsestream
+    # Watched by the grafana chart's dashboard sidecar. See README.md.
+    grafana_dashboard: "1"
+data:
+  service-health.json: |
+    {
+      "uid": "pulsestream-service-health",
+      "title": "Service Health",
+      "tags": ["pulsestream", "kubernetes"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "5s",
+      "time": { "from": "now-15m", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "service",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "query": "label_values(process_uptime_seconds, service)",
+            "refresh": 2,
+            "includeAll": true,
+            "multi": true,
+            "current": { "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "JVM Memory Used",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "fieldConfig": {
+            "defaults": { "unit": "bytes" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(jvm_memory_used_bytes{service=~\"$service\"}) by (service, pod)",
+              "legendFormat": "{{service}}/{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "CPU Usage",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "fieldConfig": {
+            "defaults": { "unit": "percentunit", "max": 1, "min": 0 },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "process_cpu_usage{service=~\"$service\"}",
+              "legendFormat": "{{service}}/{{pod}} process"
+            },
+            {
+              "expr": "system_cpu_usage{service=~\"$service\"}",
+              "legendFormat": "{{service}}/{{pod}} system"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Uptime",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "dtdurations" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "process_uptime_seconds{service=~\"$service\"}",
+              "legendFormat": "{{service}}/{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Request Count",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "reqps" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_count{service=~\"$service\"}[1m])) by (service)",
+              "legendFormat": "{{service}}"
+            }
+          ]
+        }
+      ]
+    }
+  ingestion-metrics.json: |
+    {
+      "uid": "pulsestream-ingestion-metrics",
+      "title": "Ingestion Metrics",
+      "tags": ["pulsestream", "ingestion", "kubernetes"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "5s",
+      "time": { "from": "now-15m", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request Rate",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+          "fieldConfig": {
+            "defaults": { "unit": "reqps" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_count{service=\"ingestion-service\", uri=\"/api/v1/events\"}[1m]))",
+              "legendFormat": "requests/s"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Success vs Failure Count",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "short" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(http_server_requests_seconds_count{service=\"ingestion-service\", uri=\"/api/v1/events\"}[$__range])) by (outcome)",
+              "legendFormat": "{{outcome}} count"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Average Ingestion Latency",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "s" },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_sum{service=\"ingestion-service\", uri=\"/api/v1/events\"}[1m])) / sum(rate(http_server_requests_seconds_count{service=\"ingestion-service\", uri=\"/api/v1/events\"}[1m]))",
+              "legendFormat": "avg latency"
+            }
+          ]
+        }
+      ]
+    }
