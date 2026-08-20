@@ -45,6 +45,11 @@ $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
+# Get-ConfigMapDataKey/Get-ConfigMapDataValue: ConvertFrom-KubernetesYaml in the
+# same module cannot read a ConfigMap whose values are JSON. Shared with
+# tests/test-grafana-dashboard-provisioning.ps1 so the cluster path and the
+# no-cluster path cannot disagree about what the manifest contains.
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamYaml.psm1") -Force
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $grafanaRoot = Join-Path $repositoryRoot "infrastructure/kubernetes/monitoring/grafana"
@@ -56,93 +61,65 @@ $authHeader = @{
 }
 
 # Grafana interpolates dashboard variables before sending PromQL to Prometheus,
-# so the committed expressions are not valid PromQL as written. These are the
-# substitutions Grafana would make with every variable set to its default:
-# a multi-value variable on "All" becomes a match-anything regex, and $__range
-# becomes the dashboard's time range (both dashboards default to now-15m).
-$variableSubstitutions = [ordered]@{
-    '$service'  = '.+'
-    '$__range'  = '15m'
-}
+# so the committed expressions are not valid PromQL as written. The
+# substitutions are derived from each dashboard rather than hard-coded, and
+# anything left unresolved afterwards is a hard failure (see below) - a
+# validator that quietly skipped an expression it could not interpolate would
+# report success over a panel nobody had checked.
+function Get-DashboardVariableSubstitution {
+    param([Parameter(Mandatory)] $Dashboard)
 
-# Reads one literal block entry out of a ConfigMap manifest. The repository's
-# YAML reader strips '#' comments and has no block scalar support, so it cannot
-# read a ConfigMap whose values are JSON; the same reader is used by
-# scripts/tests/test-grafana-dashboard-provisioning.ps1.
-function Get-ConfigMapDataValue {
-    param(
-        [Parameter(Mandatory)] [string] $Path,
-        [Parameter(Mandatory)] [string] $Key
-    )
+    $substitutions = [ordered]@{}
 
-    $lines = @(Get-Content -LiteralPath $Path)
-    $start = -1
+    foreach ($variable in $Dashboard.templating.list) {
+        $value = [string] $variable.current.value
 
-    for ($index = 0; $index -lt $lines.Count; $index++) {
-        if ($lines[$index] -match ('^  ' + [regex]::Escape($Key) + ':\s*\|\s*$')) {
-            $start = $index + 1
-            break
+        # A multi-value variable sitting on "All" is sent as a match-anything
+        # regex; anything else is sent as its selected value.
+        if ($value -eq '$__all' -or [string]::IsNullOrWhiteSpace($value)) {
+            $value = '.+'
         }
+
+        $substitutions['$' + $variable.name] = $value
     }
 
-    if ($start -lt 0) {
-        throw "ConfigMap '$Path' has no literal block entry named '$Key'."
+    # $__range is the dashboard's own time range, which both dashboards declare
+    # as `now-<range>`.
+    $from = [string] $Dashboard.time.from
+    if ($from -match '^now-(?<range>\d+[smhdwy])$') {
+        $substitutions['$__range'] = $Matches['range']
     }
 
-    $collected = [System.Collections.Generic.List[string]]::new()
-
-    for ($index = $start; $index -lt $lines.Count; $index++) {
-        $line = $lines[$index]
-
-        if ($line.Trim().Length -eq 0) {
-            $collected.Add("") | Out-Null
-            continue
-        }
-
-        if ($line -notmatch '^    ') {
-            break
-        }
-
-        $collected.Add($line.Substring(4)) | Out-Null
-    }
-
-    return [string]::Join([Environment]::NewLine, $collected.ToArray())
-}
-
-function Get-ConfigMapDataKeys {
-    param([Parameter(Mandatory)] [string] $Path)
-
-    $keys = [System.Collections.Generic.List[string]]::new()
-    $inData = $false
-
-    foreach ($line in (Get-Content -LiteralPath $Path)) {
-        if ($line -match '^data:\s*$') {
-            $inData = $true
-            continue
-        }
-
-        if (-not $inData) {
-            continue
-        }
-
-        if ($line.Trim().Length -gt 0 -and $line -notmatch '^\s') {
-            break
-        }
-
-        if ($line -match '^  (?<key>[A-Za-z0-9][A-Za-z0-9._-]*):\s*\|\s*$') {
-            $keys.Add($Matches['key']) | Out-Null
-        }
-    }
-
-    return $keys.ToArray()
+    return $substitutions
 }
 
 function Resolve-DashboardExpression {
-    param([Parameter(Mandatory)] [string] $Expression)
+    param(
+        [Parameter(Mandatory)] [string] $Expression,
+        [Parameter(Mandatory)] $Substitutions
+    )
 
     $resolved = $Expression
-    foreach ($variable in $variableSubstitutions.Keys) {
-        $resolved = $resolved.Replace($variable, $variableSubstitutions[$variable])
+    foreach ($variable in $Substitutions.Keys) {
+        $resolved = $resolved.Replace($variable, [string] $Substitutions[$variable])
+    }
+
+    # Grafana has more built-ins than the two these dashboards use
+    # ($__interval, $__rate_interval, $__to, ...). Rather than guess at a value
+    # for one that appears later, refuse: an un-substituted variable would be
+    # sent to Prometheus as a syntax error and reported as "the panel is broken"
+    # instead of "this validator does not know that variable yet".
+    #
+    # Raised through Confirm-Condition rather than as a bare throw, because
+    # PermanentValidationError is declared inside PulseStreamValidation.psm1 and
+    # a PowerShell class does not leave its module for a plain Import-Module.
+    # Constructing it here would fail with "unable to find type" - and only on
+    # the path that was supposed to report the problem.
+    $unresolved = [regex]::Match($resolved, '\$(?<variable>[A-Za-z_][A-Za-z0-9_]*)')
+    if ($unresolved.Success) {
+        Confirm-Condition -Permanent -Condition $false -FailureMessage (
+            "Expression uses the variable '`$$($unresolved.Groups['variable'].Value)', which this validator " +
+            "cannot interpolate. Add it to Get-DashboardVariableSubstitution. Expression: $Expression")
     }
 
     return $resolved
@@ -185,7 +162,7 @@ foreach ($configMap in $expectedConfigMaps) {
         -FailureMessage "ConfigMap '$($configMap.Name)' has no '$($configMap.Key)' entry"
 }
 
-$dashboardKeys = Get-ConfigMapDataKeys -Path $dashboardsManifest
+$dashboardKeys = Get-ConfigMapDataKey -Path $dashboardsManifest
 $appliedDashboards = Get-KubectlJsonPath `
     -KubectlArgs @("get", "configmap", "grafana-dashboards", "-n", $Namespace, "-o", "jsonpath={.data}") `
     -ErrorContext "ConfigMap 'grafana-dashboards' was not found in namespace '$Namespace'"
@@ -361,10 +338,13 @@ try {
 
     foreach ($key in $dashboardKeys) {
         $dashboard = Get-ConfigMapDataValue -Path $dashboardsManifest -Key $key | ConvertFrom-Json
+        $substitutions = Get-DashboardVariableSubstitution -Dashboard $dashboard
 
         foreach ($panel in $dashboard.panels) {
             foreach ($target in $panel.targets) {
-                $expression = Resolve-DashboardExpression -Expression ([string] $target.expr)
+                $expression = Resolve-DashboardExpression `
+                    -Expression ([string] $target.expr) `
+                    -Substitutions $substitutions
 
                 Invoke-WithRetry `
                     -TimeoutSeconds $TimeoutSeconds `

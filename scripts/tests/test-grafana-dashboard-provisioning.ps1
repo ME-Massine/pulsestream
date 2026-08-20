@@ -43,78 +43,12 @@ function Confirm-That {
     }
 }
 
-# The repository's YAML reader (scripts/lib/PulseStreamYaml.psm1) strips
-# everything after a '#' and has no literal block scalar support, so it cannot
-# read a ConfigMap whose values are JSON. These two readers handle the shape
-# this file actually has: a 'key: |' line followed by an indented block.
-function Get-ConfigMapDataKeys {
-    param([Parameter(Mandatory)] [string] $Path)
-
-    $keys = [System.Collections.Generic.List[string]]::new()
-    $inData = $false
-
-    foreach ($line in (Get-Content -LiteralPath $Path)) {
-        if ($line -match '^data:\s*$') {
-            $inData = $true
-            continue
-        }
-
-        if (-not $inData) {
-            continue
-        }
-
-        # A non-indented, non-blank line ends the 'data' mapping.
-        if ($line.Trim().Length -gt 0 -and $line -notmatch '^\s') {
-            break
-        }
-
-        if ($line -match '^  (?<key>[A-Za-z0-9][A-Za-z0-9._-]*):\s*\|\s*$') {
-            $keys.Add($Matches['key']) | Out-Null
-        }
-    }
-
-    return $keys.ToArray()
-}
-
-function Get-ConfigMapDataValue {
-    param(
-        [Parameter(Mandatory)] [string] $Path,
-        [Parameter(Mandatory)] [string] $Key
-    )
-
-    $lines = @(Get-Content -LiteralPath $Path)
-    $start = -1
-
-    for ($index = 0; $index -lt $lines.Count; $index++) {
-        if ($lines[$index] -match ('^  ' + [regex]::Escape($Key) + ':\s*\|\s*$')) {
-            $start = $index + 1
-            break
-        }
-    }
-
-    if ($start -lt 0) {
-        throw "ConfigMap '$Path' has no literal block entry named '$Key'."
-    }
-
-    $collected = [System.Collections.Generic.List[string]]::new()
-
-    for ($index = $start; $index -lt $lines.Count; $index++) {
-        $line = $lines[$index]
-
-        if ($line.Trim().Length -eq 0) {
-            $collected.Add("") | Out-Null
-            continue
-        }
-
-        if ($line -notmatch '^    ') {
-            break
-        }
-
-        $collected.Add($line.Substring(4)) | Out-Null
-    }
-
-    return [string]::Join([Environment]::NewLine, $collected.ToArray())
-}
+# ConvertFrom-KubernetesYaml cannot read these manifests - it strips '#'
+# comments and refuses block scalars, and a ConfigMap whose values are JSON is
+# both. Get-ConfigMapDataKey/Get-ConfigMapDataValue in the same module handle
+# that shape, and are shared with ../validate-grafana-kubernetes.ps1 so the two
+# cannot disagree about what the manifests contain.
+Import-Module (Join-Path $PSScriptRoot "..\lib\PulseStreamYaml.psm1") -Force
 
 # Every PromQL expression in a dashboard, in document order.
 function Get-DashboardExpression {
@@ -201,7 +135,7 @@ Confirm-That -Condition ($providerYaml -match '(?m)^\s*allowUiUpdates:\s*false\s
 Write-Host ""
 Write-Host "4. Every dashboard in the ConfigMap is valid, addressable JSON."
 
-$dashboardKeys = Get-ConfigMapDataKeys -Path $dashboardsPath
+$dashboardKeys = Get-ConfigMapDataKey -Path $dashboardsPath
 
 Confirm-That -Condition ($dashboardKeys.Count -gt 0) `
     -Description "dashboards ConfigMap has at least one entry"

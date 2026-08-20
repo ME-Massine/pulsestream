@@ -86,11 +86,15 @@ By hand:
 ```bash
 kubectl port-forward -n monitoring svc/grafana 3000:80
 
+# Read the admin credentials from wherever Grafana takes them (#155) rather
+# than typing them into a shell that records its history.
+GRAFANA_AUTH="admin:$(kubectl get secret grafana -n monitoring -o jsonpath='{.data.admin-password}' | base64 -d)"
+
 # The datasource resolves and Grafana can reach Prometheus through it.
-curl -s -u admin:admin http://localhost:3000/api/datasources/uid/prometheus/health
+curl -s -u "$GRAFANA_AUTH" http://localhost:3000/api/datasources/uid/prometheus/health
 
 # Both dashboards are loaded.
-curl -s -u admin:admin "http://localhost:3000/api/search?type=dash-db"
+curl -s -u "$GRAFANA_AUTH" "http://localhost:3000/api/search?type=dash-db"
 ```
 
 Then open `http://localhost:3000` and look under `Dashboards > PulseStream`.
@@ -124,7 +128,7 @@ The ConfigMap is the source of truth, and `allowUiUpdates: false` makes Grafana 
 | Symptom | Cause |
 | --- | --- |
 | `Datasource prometheus was not found` on every panel | The datasource ConfigMap is not mounted, or Grafana was not restarted after it was applied. |
-| Panels render but are empty, no error | The queries match nothing. Check the `service` label exists: `curl -s -u admin:admin http://localhost:3000/api/datasources/uid/prometheus/resources/api/v1/label/service/values`. An empty list means the relabel rule in [`../configmap.yaml`](../configmap.yaml) is missing or no pod carries `prometheus.io/scrape`. |
+| Panels render but are empty, no error | The queries match nothing. Check the `service` label exists: `curl -s -u "$GRAFANA_AUTH" http://localhost:3000/api/datasources/uid/prometheus/resources/api/v1/label/service/values`. An empty list means the relabel rule in [`../configmap.yaml`](../configmap.yaml) is missing or no pod carries `prometheus.io/scrape`. |
 | Datasource health says `dial tcp: lookup prometheus-server...` | Prometheus (#154) is not deployed, or is not in the `monitoring` namespace the URL names. |
 | The `PulseStream` folder is empty | The dashboards ConfigMap is not mounted at the provider's `options.path`, or its keys are not named `*.json`. |
 | A UI edit disappears after a minute | Expected. The provider re-reads the ConfigMap and overwrites; export the JSON and commit it instead. |
