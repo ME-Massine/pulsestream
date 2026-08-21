@@ -32,7 +32,7 @@ Two rules apply throughout:
 | :--- | :--- | :--- |
 | `ingestion-service` | 8081 from **any** peer | DNS, Kafka `:9092` |
 | `telemetry-processor` | 8082 from the labelled `service-connectivity-probe` only | DNS, Kafka `:9092`, Postgres `:5432` |
-| `query-service` | 8083 from the **same namespace** | DNS |
+| `query-service` | 8083 from the **same namespace**, plus the `monitoring` Prometheus server pods (#154) | DNS |
 
 Everything absent from this table is blocked when the CNI enforces policy — for example `query-service` cannot reach Kafka or Postgres, `ingestion-service` cannot reach Postgres, and nothing off-cluster can reach `query-service` or `telemetry-processor`.
 
@@ -111,6 +111,23 @@ kubectl run np-probe --rm -it --restart=Never -n np-test --image=curlimages/curl
   http://query-service.default.svc.cluster.local:8083/readyz
 # expect: timeout when enforced (same-namespace probe would return 200)
 kubectl delete namespace np-test
+```
+
+It also admits the `monitoring` Prometheus server pods specifically (#154), and rejects an ordinary pod placed in that same namespace:
+
+```bash
+# Allowed: carries the chart's own server-pod labels, in the monitoring namespace.
+kubectl run np-probe --rm -it --restart=Never -n monitoring --image=curlimages/curl \
+  --labels app.kubernetes.io/name=prometheus,app.kubernetes.io/component=server,app.kubernetes.io/instance=prometheus -- \
+  curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 \
+  http://query-service.default.svc.cluster.local:8083/readyz
+# expect: 200
+
+# Blocked: same namespace, but none of the three Prometheus server-pod labels.
+kubectl run np-probe --rm -it --restart=Never -n monitoring --image=curlimages/curl -- \
+  curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 \
+  http://query-service.default.svc.cluster.local:8083/readyz
+# expect: timeout when enforced
 ```
 
 **Egress — a service reaches only its declared backends.** A debug pod carrying a service's `app.kubernetes.io/name` label is selected by that service's policy, so it inherits the same egress rules while providing tooling the Spring images lack. (It also briefly becomes an endpoint of that Service; it is short-lived and `--rm`.)

@@ -5,8 +5,11 @@
 #
 # query-service is an internal read API with no external Service (#145 exposed
 # only ingestion-service), so its ingress is restricted to the platform
-# namespace. It reads no datastore today (configmap.yaml), so its only egress is
-# DNS; Kafka and Postgres paths stay denied until it gains a backend.
+# namespace, plus one narrow exception for the in-cluster Prometheus (#154),
+# which lives in the separate `monitoring` namespace and needs to reach
+# /actuator/prometheus on this same port to scrape it. It reads no datastore
+# today (configmap.yaml), so its only egress is DNS; Kafka and Postgres paths
+# stay denied until it gains a backend.
 #
 # ENFORCEMENT DEPENDS ON THE CNI (kindnet / Docker Desktop do not enforce
 # NetworkPolicy; Calico / Cilium do). See README.md in this directory.
@@ -37,6 +40,27 @@ spec:
         - podSelector: {}
       ports:
         - port: http # named container port -> 8083 (deployment.yaml)
+          protocol: TCP
+    # Prometheus scraping (#154). The in-cluster Prometheus lives in the
+    # `monitoring` namespace and polls /actuator/prometheus on this same
+    # `http` port, so without this rule the same-namespace-only ingress above
+    # blocks every scrape on an enforcing CNI. Scoped to the chart's own
+    # server pod labels (app.kubernetes.io/name=prometheus,
+    # app.kubernetes.io/component=server, app.kubernetes.io/instance=prometheus
+    # - verified against `helm template` for prometheus-community/prometheus
+    # 29.27.0), not to the whole monitoring namespace, so no other pod placed
+    # there is admitted.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+              app.kubernetes.io/component: server
+              app.kubernetes.io/instance: prometheus
+      ports:
+        - port: http
           protocol: TCP
   egress:
     # DNS only. query-service consumes no Kafka or datasource configuration

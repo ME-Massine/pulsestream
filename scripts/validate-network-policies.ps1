@@ -128,6 +128,45 @@ function Test-IngressOnlyFromConnectivityProbe {
            ($null -eq $peer.ipBlock)
 }
 
+# Ingress rule that admits, on a port, ONLY peers carrying the in-cluster
+# Prometheus server's own pod labels from the `monitoring` namespace (#154).
+# The namespaceSelector and podSelector must be on the SAME peer entry - that
+# is what makes it an AND ("monitoring pods that are also the Prometheus
+# server"), not an OR across two separate peers ("all of monitoring, or these
+# pods anywhere"). The label set is checked for an exact match (count and
+# value) so a peer that drops a label - and therefore admits a broader set of
+# monitoring pods than just the Prometheus server - is rejected, not silently
+# accepted as "close enough".
+function Test-IngressFromMonitoringPrometheusOnPort {
+    param($Policy, $Port, $Protocol)
+
+    $expectedLabels = @{
+        'app.kubernetes.io/name'      = 'prometheus'
+        'app.kubernetes.io/component' = 'server'
+        'app.kubernetes.io/instance'  = 'prometheus'
+    }
+
+    foreach ($rule in @($Policy.spec.ingress)) {
+        if (-not (Test-RuleHasPort $rule $Port $Protocol)) { continue }
+        foreach ($peer in @($rule.from)) {
+            if ($null -eq $peer.namespaceSelector -or $null -eq $peer.podSelector) { continue }
+            if ($peer.namespaceSelector.matchLabels.'kubernetes.io/metadata.name' -ne 'monitoring') { continue }
+            if ($null -ne $peer.ipBlock) { continue }
+
+            $labels = $peer.podSelector.matchLabels
+            if ($null -eq $labels) { continue }
+            if (@($labels.PSObject.Properties).Count -ne $expectedLabels.Count) { continue }
+
+            $allMatch = $true
+            foreach ($key in $expectedLabels.Keys) {
+                if ($labels.$key -ne $expectedLabels[$key]) { $allMatch = $false; break }
+            }
+            if ($allMatch) { return $true }
+        }
+    }
+    return $false
+}
+
 # --- Load a policy -----------------------------------------------------------
 function Get-NetworkPolicy {
     param([string] $Name)
@@ -204,6 +243,11 @@ Confirm-Condition `
     -Condition (Test-IngressFromSameNamespaceOnPort $query "http" "TCP") `
     -SuccessMessage "query-service admits the 'http' port from the same namespace only" `
     -FailureMessage "query-service has no ingress rule admitting the 'http' port from same-namespace pods (empty podSelector). In-cluster read clients would be blocked, or the rule is broader than intended"
+
+Confirm-Condition `
+    -Condition (Test-IngressFromMonitoringPrometheusOnPort $query "http" "TCP") `
+    -SuccessMessage "query-service admits the monitoring Prometheus server pods on 'http' for scraping (#154)" `
+    -FailureMessage "query-service has no ingress rule narrowly admitting the monitoring-namespace Prometheus server pods (app.kubernetes.io/name=prometheus, app.kubernetes.io/component=server, app.kubernetes.io/instance=prometheus) on 'http'. Prometheus cannot scrape it on an enforcing CNI"
 
 Confirm-Condition `
     -Condition ((-not (Test-EgressHasPort $query 9092 'TCP')) -and (-not (Test-EgressHasPort $query 5432 'TCP'))) `

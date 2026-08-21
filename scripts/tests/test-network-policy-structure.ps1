@@ -50,7 +50,8 @@ try {
 
     # The telemetry exception must remain exact. An extra broad ingress rule
     # would allow ordinary pods and must make the structural validator fail.
-    $processor = $global:PulseStreamPolicyJson["telemetry-processor"] | ConvertFrom-Json
+    $originalProcessorJson = $global:PulseStreamPolicyJson["telemetry-processor"]
+    $processor = $originalProcessorJson | ConvertFrom-Json
     $processor.spec.ingress = @($processor.spec.ingress) + [pscustomobject]@{
         ports = @([pscustomobject]@{ port = "http"; protocol = "TCP" })
     }
@@ -70,6 +71,62 @@ try {
 
     if (-not $rejectedBroadIngress) {
         throw "The structural validator accepted an additional broad telemetry-processor ingress rule."
+    }
+    $global:PulseStreamPolicyJson["telemetry-processor"] = $originalProcessorJson
+
+    # The Prometheus scrape allowance on query-service (#154) must stay pinned
+    # to the exact server-pod labels. Dropping one label widens the peer to
+    # "any pod in monitoring carrying the other two labels" - the validator
+    # must reject that, not treat it as close enough.
+    $originalQueryJson = $global:PulseStreamPolicyJson["query-service"]
+    $query = $originalQueryJson | ConvertFrom-Json
+    $prometheusRule = @($query.spec.ingress) | Where-Object {
+        @($_.from) | Where-Object { $null -ne $_.namespaceSelector -and $_.namespaceSelector.matchLabels.'kubernetes.io/metadata.name' -eq 'monitoring' }
+    } | Select-Object -First 1
+    if ($null -eq $prometheusRule) {
+        throw "query-service.yaml has no ingress rule for the monitoring namespace to mutate; add the Prometheus scrape allowance first"
+    }
+    $prometheusPeer = @($prometheusRule.from) | Where-Object { $null -ne $_.namespaceSelector } | Select-Object -First 1
+    $prometheusPeer.podSelector.matchLabels.PSObject.Properties.Remove('app.kubernetes.io/component')
+    $global:PulseStreamPolicyJson["query-service"] = $query | ConvertTo-Json -Depth 20
+
+    $rejectedWidenedPrometheusPeer = $false
+    try {
+        & $validator -Namespace "policy-test"
+    } catch {
+        if ($_.Exception.Message -match "monitoring-namespace Prometheus server pods") {
+            $rejectedWidenedPrometheusPeer = $true
+            Write-Host "[ok] query-service Prometheus ingress peer with a dropped label was rejected"
+        } else {
+            throw
+        }
+    }
+    if (-not $rejectedWidenedPrometheusPeer) {
+        throw "The structural validator accepted a query-service Prometheus ingress peer missing a required label."
+    }
+    $global:PulseStreamPolicyJson["query-service"] = $originalQueryJson
+
+    # Removing the Prometheus allowance entirely must also fail - it is not
+    # implied by the same-namespace rule.
+    $queryNoPrometheus = $originalQueryJson | ConvertFrom-Json
+    $queryNoPrometheus.spec.ingress = @($queryNoPrometheus.spec.ingress | Where-Object {
+        -not (@($_.from) | Where-Object { $null -ne $_.namespaceSelector -and $_.namespaceSelector.matchLabels.'kubernetes.io/metadata.name' -eq 'monitoring' })
+    })
+    $global:PulseStreamPolicyJson["query-service"] = $queryNoPrometheus | ConvertTo-Json -Depth 20
+
+    $rejectedMissingPrometheusRule = $false
+    try {
+        & $validator -Namespace "policy-test"
+    } catch {
+        if ($_.Exception.Message -match "monitoring-namespace Prometheus server pods") {
+            $rejectedMissingPrometheusRule = $true
+            Write-Host "[ok] query-service missing the Prometheus ingress allowance was rejected"
+        } else {
+            throw
+        }
+    }
+    if (-not $rejectedMissingPrometheusRule) {
+        throw "The structural validator accepted a query-service policy with no Prometheus scrape ingress rule."
     }
 } finally {
     Remove-Item -LiteralPath Function:\kubectl -ErrorAction SilentlyContinue

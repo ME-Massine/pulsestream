@@ -41,12 +41,11 @@ Its actuator surface — including the state-changing `dlqreplay` endpoint (#125
 
 ### NetworkPolicies and an enforcing CNI
 
-The platform NetworkPolicies (#147) predate this Prometheus and do not know about it:
+`ingestion-service` admits its `http` port from **any** peer, so it is scraped from any namespace regardless of CNI.
 
-- `ingestion-service` admits its `http` port from **any** peer, so it is scraped from any namespace.
-- `query-service` admits its `http` port from the **same namespace only**. On a cluster whose CNI enforces NetworkPolicy (Calico, Cilium), a Prometheus in `monitoring` is therefore blocked from scraping it and that job's targets report a connection error. On kind/kindnet and Docker Desktop, which do not enforce NetworkPolicy, it is scraped normally.
+`query-service` admits its `http` port from the same namespace, plus one narrowly-scoped exception for this Prometheus: [`../network-policies/query-service.yaml`](../network-policies/query-service.yaml) carries an ingress rule admitting only pods in the `monitoring` namespace that also carry the chart's own server-pod labels (`app.kubernetes.io/name=prometheus`, `app.kubernetes.io/component=server`, `app.kubernetes.io/instance=prometheus` - verified against `helm template` for `prometheus-community/prometheus` 29.27.0). That rule is what lets a Prometheus installed as documented above scrape `query-service` on a cluster whose CNI enforces NetworkPolicy (Calico, Cilium); it does not admit any other pod placed in `monitoring`. On kind/kindnet and Docker Desktop, which do not enforce NetworkPolicy, `query-service` was already reachable regardless.
 
-Two ways out, neither of which this issue makes: install this release into the platform namespace instead (and repoint `prometheus.url` in the adapter values), or add an ingress rule to [`../network-policies/query-service.yaml`](../network-policies/query-service.yaml) admitting the `monitoring` namespace on the `http` port.
+Renaming the release or moving it to another namespace breaks this the same way it breaks `prometheus.url` above: the peer labels or the namespace name would no longer match, and `query-service`'s targets would go back to a connection error on an enforcing CNI. Keep the three identifiers (release `prometheus`, namespace `monitoring`, and the chart's own server-pod labels) in sync with [`../network-policies/query-service.yaml`](../network-policies/query-service.yaml) if you change any of them.
 
 ## Validate
 

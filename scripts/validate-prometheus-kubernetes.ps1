@@ -18,6 +18,12 @@
 [CmdletBinding()]
 param(
     [string] $Namespace = "monitoring",
+    # Where ingestion-service and query-service run - NOT where Prometheus
+    # runs. The scrape configuration reaches across namespaces via pod
+    # discovery (infrastructure/kubernetes/monitoring/prometheus-values.yaml),
+    # so the platform services' own namespace has to be given separately from
+    # $Namespace, which names Prometheus's.
+    [string] $WorkloadNamespace = "default",
     [string] $ReleaseName = "prometheus",
     [int] $TimeoutSeconds = 120
 )
@@ -28,6 +34,7 @@ Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamYaml.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamPrometheus.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamAutoscaling.psm1") -Force
 
 # The chart names the server workload, ConfigMap and Service <release>-server.
 $serverName = "$ReleaseName-server"
@@ -121,22 +128,68 @@ Invoke-WithRetry `
             -FailureMessage "Prometheus answered the proxy but reported status '$($result.status)'"
     } | Out-Null
 
-# --- 4. Targets are healthy and produce samples ------------------------------
-$expectedJobs = @(Get-PrometheusSelfJobName) + @(Get-PrometheusServiceJobNames)
+# --- 4. The Prometheus self-target is healthy ---------------------------------
+# Not pod-discovery based (it is the server scraping its own /metrics), so
+# there is no Ready-pod list to compare it against; a healthy active target is
+# the whole check.
+$selfJobName = Get-PrometheusSelfJobName
 
 Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
-    -FailureMessage "Prometheus targets were not all healthy within $TimeoutSeconds seconds." `
+    -FailureMessage "Prometheus's own target was not healthy within $TimeoutSeconds seconds." `
     -Operation {
         $targets = Invoke-PrometheusApi -Path "/api/v1/targets?state=active"
+        $selfTargets = @($targets.data.activeTargets | Where-Object { $_.labels.job -eq $selfJobName })
 
-        foreach ($jobName in $expectedJobs) {
-            $jobTargets = @($targets.data.activeTargets | Where-Object { $_.labels.job -eq $jobName })
+        Confirm-Condition `
+            -Condition ($selfTargets.Count -gt 0) `
+            -SuccessMessage "job '$selfJobName' has $($selfTargets.Count) active target(s)" `
+            -FailureMessage "job '$selfJobName' has no active target"
 
+        foreach ($target in $selfTargets) {
             Confirm-Condition `
-                -Condition ($jobTargets.Count -gt 0) `
-                -SuccessMessage "job '$jobName' has $($jobTargets.Count) active target(s)" `
-                -FailureMessage "job '$jobName' has no active target. For a service job this means no pod carries app.kubernetes.io/name=$jobName - deploy infrastructure/kubernetes/$jobName/ first"
+                -Condition ($target.health -eq "up") `
+                -SuccessMessage "target $($target.scrapeUrl) is up" `
+                -FailureMessage "target $($target.scrapeUrl) is '$($target.health)': $($target.lastError)"
+        }
+    } | Out-Null
+
+Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
+    -FailureMessage "Prometheus did not report up{job=""$selfJobName""} = 1 within $TimeoutSeconds seconds." `
+    -Operation {
+        $upValues = @(Invoke-PrometheusQuery "up{job=""$selfJobName""}" | ForEach-Object { $_.value[1] })
+        Confirm-Condition `
+            -Condition ($upValues -contains "1") `
+            -SuccessMessage "up{job=""$selfJobName""} = 1" `
+            -FailureMessage "Prometheus has no up{job=""$selfJobName""} = 1 sample"
+    } | Out-Null
+
+# --- 5. Every service job covers every Ready pod, exactly once ---------------
+#
+# `$jobTargets.Count -gt 0` and `$upValues -contains "1"` (the checks this
+# replaces) both pass as soon as ONE replica out of several is being scraped -
+# neither can see a gap where the rest are silently unscraped. That is exactly
+# the failure mode a broken relabel rule or a stale service-discovery cache
+# produces: some targets healthy, others simply absent, with nothing here
+# telling you which pods are missing. Comparing against the Deployment's actual
+# Ready pods (Get-ReadyPodNames, also used by validate-custom-metrics-autoscaling.ps1)
+# closes that gap, and also catches the opposite fault - a pod scraped twice
+# (e.g. a port-name keep rule that lets a second container port through)
+# feeding a duplicated series into any average or sum downstream.
+foreach ($jobName in Get-PrometheusServiceJobNames) {
+    $readyPodNames = Get-ReadyPodNames -Namespace $WorkloadNamespace -AppName $jobName
+    Confirm-Condition `
+        -Condition ($readyPodNames.Count -gt 0) `
+        -SuccessMessage "$($readyPodNames.Count) '$jobName' pod(s) are Ready in '$WorkloadNamespace'" `
+        -FailureMessage "No '$jobName' pods are Ready in namespace '$WorkloadNamespace'. Deploy infrastructure/kubernetes/$jobName/ and wait for it to become Ready before validating its scrape coverage"
+
+    Invoke-WithRetry `
+        -TimeoutSeconds $TimeoutSeconds `
+        -FailureMessage "job '$jobName' did not have a healthy target for every Ready pod within $TimeoutSeconds seconds." `
+        -Operation {
+            $targets = Invoke-PrometheusApi -Path "/api/v1/targets?state=active"
+            $jobTargets = @($targets.data.activeTargets | Where-Object { $_.labels.job -eq $jobName })
 
             foreach ($target in $jobTargets) {
                 Confirm-Condition `
@@ -144,39 +197,31 @@ Invoke-WithRetry `
                     -SuccessMessage "target $($target.scrapeUrl) is up" `
                     -FailureMessage "target $($target.scrapeUrl) is '$($target.health)': $($target.lastError)"
             }
-        }
-    } | Out-Null
 
-# up == 1 per job proves collection, not just target registration: a target is
-# reported healthy from its first successful scrape, and this is the query a
-# reader would run to confirm the same thing by hand.
-foreach ($jobName in $expectedJobs) {
-    Invoke-WithRetry `
-        -TimeoutSeconds $TimeoutSeconds `
-        -FailureMessage "Prometheus did not report up{job=""$jobName""} = 1 within $TimeoutSeconds seconds." `
-        -Operation {
-            $upValues = @(Invoke-PrometheusQuery "up{job=""$jobName""}" | ForEach-Object { $_.value[1] })
-            Confirm-Condition `
-                -Condition ($upValues -contains "1") `
-                -SuccessMessage "up{job=""$jobName""} = 1" `
-                -FailureMessage "Prometheus has no up{job=""$jobName""} = 1 sample"
+            $targetPodNames = @($jobTargets | ForEach-Object { $_.labels.pod })
+            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $targetPodNames -MetricName "job '$jobName' active targets"
         } | Out-Null
-}
 
-# Application-level series, not just the scrape's own `up`: this is what proves
-# the Actuator exposition is being parsed and stored. jvm_info is exported by
-# every Spring Boot service and is the same metric the Compose validator
-# (validate-prometheus-metrics.ps1) checks.
-foreach ($jobName in Get-PrometheusServiceJobNames) {
+    # up == 1 proves collection, not just target registration: a target is
+    # reported healthy from its first successful scrape, and this is the query
+    # a reader would run to confirm the same thing by hand.
     Invoke-WithRetry `
         -TimeoutSeconds $TimeoutSeconds `
-        -FailureMessage "Prometheus returned no jvm_info series for job '$jobName' within $TimeoutSeconds seconds." `
+        -FailureMessage "up{job=""$jobName""} = 1 did not cover every Ready pod within $TimeoutSeconds seconds." `
+        -Operation {
+            $upPodNames = @(Invoke-PrometheusQuery "up{job=""$jobName""}" | Where-Object { $_.value[1] -eq "1" } | ForEach-Object { $_.metric.pod })
+            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $upPodNames -MetricName "up{job=""$jobName""}=1"
+        } | Out-Null
+
+    # Application-level series, not just the scrape's own `up`: this is what
+    # proves the Actuator exposition is being parsed and stored. jvm_info is
+    # exported by every Spring Boot service and is the same metric the Compose
+    # validator (validate-prometheus-metrics.ps1) checks.
+    Invoke-WithRetry `
+        -TimeoutSeconds $TimeoutSeconds `
+        -FailureMessage "jvm_info{job=""$jobName""} did not cover every Ready pod within $TimeoutSeconds seconds." `
         -Operation {
             $series = Invoke-PrometheusQuery "jvm_info{job=""$jobName""}"
-            Confirm-Condition `
-                -Condition ($series.Count -gt 0) `
-                -SuccessMessage "job '$jobName' produces application metrics (jvm_info)" `
-                -FailureMessage "job '$jobName' has healthy targets but no jvm_info series; the scrape is reaching something other than /actuator/prometheus"
 
             # The labels prometheus-adapter maps a metric onto a pod with. A
             # series without them is collected but invisible to the custom
@@ -188,6 +233,9 @@ foreach ($jobName in Get-PrometheusServiceJobNames) {
                     -SuccessMessage "job '$jobName' series carry namespace='$($sample.metric.namespace)' and pod='$($sample.metric.pod)'" `
                     -FailureMessage "a job '$jobName' series is missing the 'namespace' or 'pod' label; prometheus-adapter cannot attach such a metric to a pod"
             }
+
+            $jvmInfoPodNames = @($series | ForEach-Object { $_.metric.pod })
+            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $jvmInfoPodNames -MetricName "jvm_info{job=""$jobName""}"
         } | Out-Null
 }
 
