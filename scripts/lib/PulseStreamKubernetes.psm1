@@ -48,6 +48,28 @@ function Invoke-KubectlChecked {
     return $result.Output
 }
 
+# Pods matching `app.kubernetes.io/name=$AppName` whose Ready condition is
+# True. Used everywhere a check needs to compare "what should be scraped/
+# metriced" against the workload's actual Ready replicas, rather than trusting
+# a non-empty response - a target list or metric response that only covers
+# some of them is a silent partial failure (see Confirm-PodsMetricCoverage,
+# PulseStreamAutoscaling.psm1).
+function Get-ReadyPodNames {
+    param(
+        [Parameter(Mandatory)] [string] $Namespace,
+        [Parameter(Mandatory)] [string] $AppName
+    )
+
+    $podsJson = Invoke-KubectlChecked `
+        -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$AppName", "-o", "json") `
+        -ErrorContext "Could not list '$AppName' pods in namespace '$Namespace'"
+
+    return @(($podsJson | ConvertFrom-Json).items | Where-Object {
+        $readyCondition = @($_.status.conditions | Where-Object { $_.type -eq 'Ready' }) | Select-Object -First 1
+        $null -ne $readyCondition -and $readyCondition.status -eq 'True'
+    } | ForEach-Object { $_.metadata.name })
+}
+
 function Get-KubectlJsonPath {
     param(
         [Parameter(Mandatory)] [string[]] $KubectlArgs,
@@ -160,4 +182,4 @@ function Invoke-KafkaClientCommand {
     }
 }
 
-Export-ModuleMember -Function Invoke-Kubectl, Invoke-KubectlChecked, Get-KubectlJsonPath, Get-ServiceConnectivityProbeLabels, Invoke-KafkaClientCommand
+Export-ModuleMember -Function Invoke-Kubectl, Invoke-KubectlChecked, Get-KubectlJsonPath, Get-ReadyPodNames, Get-ServiceConnectivityProbeLabels, Invoke-KafkaClientCommand
