@@ -30,9 +30,11 @@ Two rules apply throughout:
 
 | Service | Ingress allowed | Egress allowed |
 | :--- | :--- | :--- |
-| `ingestion-service` | 8081 from **any** peer | DNS, Kafka `:9092` |
-| `telemetry-processor` | 8082 from the labelled `service-connectivity-probe` only | DNS, Kafka `:9092`, Postgres `:5432` |
+| `ingestion-service` | 8081 from **any** peer | DNS, Kafka `:9092`, OTLP `:4318` to `otel-collector` |
+| `telemetry-processor` | 8082 from the labelled `service-connectivity-probe` only | DNS, Kafka `:9092`, Postgres `:5432`, OTLP `:4318` to `otel-collector` |
 | `query-service` | 8083 from the **same namespace** | DNS |
+
+`query-service` has no OTLP egress because it exports no traces — it carries no `otel` configuration in `application.yml` (#157). The two OTLP holes are scoped to the `otel-collector` pods in the `observability` namespace, not to the namespace as a whole.
 
 Everything absent from this table is blocked when the CNI enforces policy — for example `query-service` cannot reach Kafka or Postgres, `ingestion-service` cannot reach Postgres, and nothing off-cluster can reach `query-service` or `telemetry-processor`.
 
