@@ -184,17 +184,17 @@ function Get-Sample {
 
     $timestamp = (Get-Date).ToUniversalTime()
 
-    $hpa = (Invoke-KubectlChecked `
+    $hpa = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "hpa", $Service, "--namespace", $Namespace, "-o", "json") `
-            -ErrorContext "HorizontalPodAutoscaler '$Service' disappeared mid-run") | ConvertFrom-Json
+            -ErrorContext "HorizontalPodAutoscaler '$Service' disappeared mid-run"
 
-    $deployment = (Invoke-KubectlChecked `
+    $deployment = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "deployment", $Service, "--namespace", $Namespace, "-o", "json") `
-            -ErrorContext "Deployment '$Service' disappeared mid-run") | ConvertFrom-Json
+            -ErrorContext "Deployment '$Service' disappeared mid-run"
 
-    $pods = (Invoke-KubectlChecked `
+    $pods = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "pods", "--namespace", $Namespace, "--selector", $podSelector, "-o", "json") `
-            -ErrorContext "Could not list pods for '$Service'") | ConvertFrom-Json
+            -ErrorContext "Could not list pods for '$Service'"
 
     # Left null when the HPA has no reading yet or reports <unknown>. See
     # New-AutoscalingSample for why this must not become 0.
@@ -287,9 +287,9 @@ Confirm-Condition `
     -FailureMessage "the metrics.k8s.io APIService is not Available (kubectl said: $($metricsApi.Output.Trim())). Without metrics-server every HPA reports <unknown> and never scales; on kind or Docker Desktop it also needs --kubelet-insecure-tls" `
     -Permanent
 
-$hpaJson = (Invoke-KubectlChecked `
+$hpaJson = Invoke-KubectlJsonChecked `
         -KubectlArgs @("get", "hpa", $Service, "--namespace", $Namespace, "-o", "json") `
-        -ErrorContext "HorizontalPodAutoscaler '$Service' was not found in namespace '$Namespace'. Apply infrastructure/kubernetes/$Service/") | ConvertFrom-Json
+        -ErrorContext "HorizontalPodAutoscaler '$Service' was not found in namespace '$Namespace'. Apply infrastructure/kubernetes/$Service/"
 
 $minReplicas = [int] $hpaJson.spec.minReplicas
 $maxReplicas = [int] $hpaJson.spec.maxReplicas
@@ -334,6 +334,8 @@ if ($IncludeScaleDown -and $ScaleDownTimeoutSeconds -lt $timingRequirements.Mini
 
 $samples = @()
 $markers = @{}
+$runFailure = $null
+$cleanupConfirmed = $false
 
 try {
     # --- 1. Baseline ---------------------------------------------------------
@@ -458,6 +460,7 @@ try {
     # --- 4. Remove load ------------------------------------------------------
     Write-Host "Removing load pods..."
     Stop-AutoscalingLoadPods -Namespace $Namespace -RunId $runId -LoadPodLabel $loadPodLabel
+    $cleanupConfirmed = $true
     $loadStopped = (Get-Date).ToUniversalTime()
 
     if ($IncludeScaleDown) {
@@ -493,10 +496,25 @@ try {
     if ($null -ne $firstAfterLoad) {
         $markers[$firstAfterLoad.Timestamp] = "<- load removed"
     }
+} catch {
+    $runFailure = $_
 } finally {
     # Runs on Ctrl-C and on any assertion failure above. Load pods left running
     # would keep the cluster under load indefinitely and poison the next run.
-    Stop-AutoscalingLoadPods -Namespace $Namespace -RunId $runId -LoadPodLabel $loadPodLabel
+    if (-not $cleanupConfirmed) {
+        try {
+            Stop-AutoscalingLoadPods -Namespace $Namespace -RunId $runId -LoadPodLabel $loadPodLabel
+        } catch {
+            if ($null -ne $runFailure) {
+                throw "$($runFailure.Exception.Message) Cleanup also failed: $($_.Exception.Message)"
+            }
+            throw
+        }
+    }
+}
+
+if ($null -ne $runFailure) {
+    throw $runFailure
 }
 
 # --- 5. Verdict --------------------------------------------------------------
