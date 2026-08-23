@@ -180,6 +180,24 @@ try {
 
     Set-PolicyObject -Name "ingestion-service" -Policy $originalIngestion
 
+    # Same widening, hidden behind a port range. `port` reads 4000 here, so a
+    # check that compares the port field to 4318 never looks at this rule even
+    # though endPort carries it well past the collector port.
+    $ingestion = Get-PolicyObject -Name "ingestion-service"
+    $ingestion.spec.egress = @($ingestion.spec.egress) + [pscustomobject]@{
+        to    = @([pscustomobject]@{
+            namespaceSelector = [pscustomobject]@{ matchLabels = [pscustomobject]@{ "kubernetes.io/metadata.name" = "observability" } }
+        })
+        ports = @([pscustomobject]@{ port = 4000; endPort = 5000; protocol = "TCP" })
+    }
+    Set-PolicyObject -Name "ingestion-service" -Policy $ingestion
+
+    Assert-ValidatorRejects `
+        -ExpectedMessage "not exclusively scoped to the collector" `
+        -Description "an ingestion-service policy whose extra rule reaches 4318 through an endPort range"
+
+    Set-PolicyObject -Name "ingestion-service" -Policy $originalIngestion
+
     # A dropped rule is the other failure mode, and the quiet one: the service
     # stays healthy and only its own log shows the export timing out.
     $processor = Get-PolicyObject -Name "telemetry-processor"

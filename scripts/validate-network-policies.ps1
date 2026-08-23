@@ -68,9 +68,25 @@ function Test-RuleIsScopedToOtelCollector {
     return @($peers | Where-Object { Test-PeerIsOtelCollector $_ }).Count -eq $peers.Count
 }
 
+# Every rule that opens TCP 4318, including one that opens it as part of a
+# range. A NetworkPolicy port entry may carry `endPort`, so {port: 4000,
+# endPort: 5000} reaches the collector port while its `port` field reads 4000 -
+# matching on `port` alone would walk straight past it.
+function Test-RuleOpensOtlpPort {
+    param($Rule)
+    if ($null -eq $Rule.ports) { return $false }
+    return @($Rule.ports | Where-Object {
+        if ($_.protocol -ne 'TCP') { return $false }
+        $start = $_.port -as [int]
+        if ($null -eq $start) { return $false }   # named port ("http"), not 4318
+        $end = if ($null -ne $_.endPort) { [int] $_.endPort } else { $start }
+        return (4318 -ge $start) -and (4318 -le $end)
+    }).Count -ge 1
+}
+
 function Get-OtlpEgressRules {
     param($Policy)
-    return @($Policy.spec.egress | Where-Object { Test-RuleHasPort $_ 4318 'TCP' })
+    return @($Policy.spec.egress | Where-Object { Test-RuleOpensOtlpPort $_ })
 }
 
 # The OTLP hole is correct only when BOTH facts hold, which is why they are two
@@ -283,7 +299,7 @@ Confirm-Condition `
     -FailureMessage "query-service allows egress to Kafka (9092) or Postgres (5432); it consumes neither today, so those paths are unnecessary and should stay denied"
 
 Confirm-Condition `
-    -Condition (-not (Test-EgressHasPort $query 4318 'TCP')) `
+    -Condition (@(Get-OtlpEgressRules $query).Count -eq 0) `
     -SuccessMessage "query-service has no OTLP egress (4318 stays denied - it carries no 'otel' configuration and emits no spans)" `
     -FailureMessage "query-service allows egress to 4318; it has no OpenTelemetry configuration in application.yml and exports no traces, so that path is unnecessary and should stay denied"
 
