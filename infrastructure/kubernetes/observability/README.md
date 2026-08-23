@@ -72,19 +72,61 @@ An invalid pipeline also fails loudly at startup — the container exits and `ku
 
 ```powershell
 kubectl port-forward svc/ingestion-service 8081:8081
-# in another shell
-curl.exe -X POST http://localhost:8081/api/v1/events -H "Content-Type: application/json" -d '{\"deviceId\":\"device-1\",\"metric\":\"temperature\",\"value\":21.5,\"timestamp\":\"2026-01-01T00:00:00Z\"}'
-
-kubectl logs -n observability -l app.kubernetes.io/name=otel-collector --tail=50 | Select-String "TracesExporter"
 ```
 
-A `TracesExporter` line with a non-zero span count means the span left the service, crossed the pod network, and was accepted. Allow up to the `batch` processor's 5s timeout before it appears.
+```powershell
+# in another shell
+$body = @{
+    eventId   = [Guid]::NewGuid().ToString()
+    tenantId  = "otel-collector-validation"
+    eventType = "telemetry.reading"
+    timestamp = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    source    = "otel-collector-validation"
+    version   = "1.0"
+    payload   = @{
+        deviceId   = "sensor_1042"
+        deviceType = "temperature-sensor"
+        metric     = "temperature"
+        value      = 21.5
+        unit       = "celsius"
+        location   = "zone-a"
+    }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod -Method Post -Uri "http://localhost:8081/api/v1/events" `
+    -ContentType "application/json" -Body $body
+```
+
+Every field above is required. `TelemetryIngestionRequestDto` rejects a body that omits one, or that flattens `payload` into the top level, with `400 Bad Request` — and a rejected request never reaches the span-producing path, so a malformed body looks exactly like a broken collector. A `202 Accepted` is the signal to move on. The scripted equivalent of this request is the body built in [`scripts/validate-distributed-tracing.ps1`](../../../scripts/validate-distributed-tracing.ps1).
+
+Then read the collector's stdout:
+
+```powershell
+kubectl logs -n observability -l app.kubernetes.io/name=otel-collector --tail=50 |
+    Select-String -Pattern 'Traces.*"spans"'
+```
+
+The debug exporter logs one line per exported batch, and in collector `0.128.0` that line's message is `Traces` — the `TracesExporter` message of older builds was renamed when component telemetry moved to the `otelcol.component.*` attributes:
+
+```
+info  Traces  {"otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 3}
+```
+
+A non-zero `"spans"` count means the span left the service, crossed the pod network, and was accepted. Allow up to the `batch` processor's 5s timeout before it appears.
 
 If nothing arrives, the service side names the reason — the SDK logs its export failures in the service's own log, not the collector's:
 
 ```powershell
 kubectl logs deploy/ingestion-service | Select-String -Pattern "otlp|Failed to export"
 ```
+
+**4. The OTLP egress rules are shaped correctly.** The structural NetworkPolicy validator covers the two rules added here:
+
+```powershell
+.\scripts\validate-network-policies.ps1
+```
+
+It asserts that `ingestion-service` and `telemetry-processor` each reach the collector on TCP 4318 with the namespace and pod selectors on a *single* peer, and that `query-service` has no 4318 egress. That check is CNI-independent, so unlike step 3 it is meaningful on a dev cluster whose CNI does not enforce policy — where a missing or over-wide rule is invisible because nothing is blocked either way. The offline equivalent, which needs no cluster at all, is `scripts/tests/test-network-policy-structure.ps1`.
 
 ## Operational notes
 

@@ -84,6 +84,10 @@ kubectl get networkpolicies
 
 Override `-Namespace` if the workloads run elsewhere.
 
+The OTLP egress rules are covered there too, and the check inspects peer structure rather than just the port: it requires the collector's `namespaceSelector` and `podSelector` to sit on **one** peer element. Splitting them across two peers turns their AND into an OR, which reaches every pod in `observability` and every pod labelled `otel-collector` anywhere else while the port and the labels all still look right. `query-service` is asserted to have no 4318 egress at all, since it emits no spans.
+
+`scripts/tests/test-network-policy-structure.ps1` runs the validator against the committed manifests with no cluster, then feeds it each of those broken shapes and requires it to reject them.
+
 ## Verify enforcement (policy-enforcing CNI only)
 
 The checks below only demonstrate isolation on a CNI that enforces NetworkPolicy (see the table above). On a non-enforcing cluster every probe reports "reachable"; that is the CNI, not a broken policy.
