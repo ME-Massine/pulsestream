@@ -42,6 +42,9 @@ param(
     # the target.
     [ValidateRange(1, 2147483647)] [int] $LoadPodCount = 3,
     [ValidateRange(1, 2147483647)] [int] $LoadConcurrency = 16,
+    # The telemetry generator is intentionally bounded. An unthrottled Kafka
+    # producer measures backlog growth and node starvation, not HPA behavior.
+    [ValidateRange(1, 10000)] [int] $KafkaEventsPerSecond = 100,
     # How long to keep the load running. The scale-up policies allow one step per
     # 60s, so this needs to span several steps to show more than a single jump.
     [ValidateRange(1, 2147483647)] [int] $LoadDurationSeconds = 240,
@@ -170,6 +173,7 @@ while true; do
   printf '{"eventId":"evt_{{RUN}}_{{POD}}_%s","tenantId":"autoscaling_validation","eventType":"telemetry.reading","timestamp":"2026-01-01T00:00:00Z","source":"validate-autoscaling-behavior","version":"1.0","payload":{"deviceId":"load-{{RUN}}-{{POD}}-%s","deviceType":"temperature-sensor","metric":"temperature","value":%s,"unit":"celsius","location":"validation-lab"}}\n' \
     "$i" "$((i % {{DEVICES}}))" "$v"
   if [ $((i % 100)) -eq 0 ]; then echo "pulsestream-autoscaling-load heartbeat kafka $i" >&2; fi
+  if [ $((i % {{RATE}})) -eq 0 ]; then sleep 1; fi
 done | {{BIN}}/kafka-console-producer.sh \
   --bootstrap-server {{BOOTSTRAP}} --topic {{TOPIC}} \
   --producer-property acks=all --producer-property linger.ms=5
@@ -378,6 +382,7 @@ try {
             BIN       = "/opt/kafka/bin"
             BOOTSTRAP = "$KafkaClusterName-kafka-bootstrap:$BootstrapPort"
             TOPIC     = $RawTopic
+            RATE      = $KafkaEventsPerSecond
             # Odd on purpose. The value alternates on the parity of `i` and the
             # device is `i % DEVICES`, so an even count would give every device
             # the same parity forever and every reading for it the same value -
@@ -589,7 +594,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "| HPA bounds | ``[$minReplicas, $maxReplicas]`` at a $targetPercent% CPU target |",
         "| Scale-down window | ``${scaleDownWindow}s`` (read from the applied HPA) |",
         "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of grace |",
-        "| Load | $LoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic" }) |",
+        "| Load | $LoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, capped at $KafkaEventsPerSecond events/s per pod" }) |",
         "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first |",
         "| Peak utilization | $($timeline.PeakUtilizationPercent)% |",
         "| Peak replicas | $($timeline.PeakReplicas) |",

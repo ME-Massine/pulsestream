@@ -46,9 +46,11 @@ Both load generators drive the service's actual work path. A CPU burner would mo
 | Workload | Load | Path exercised |
 | :--- | :--- | :--- |
 | `ingestion-service` | In-cluster `curl` pods running concurrent `POST /api/v1/events` loops against the ClusterIP Service | Deserialization, validation, and the produce to `telemetry.events.raw` |
-| `telemetry-processor` | A `kafka-console-producer` per load pod, publishing valid `TelemetryEvent` JSON into `telemetry.events.raw` | Consumption, anomaly detection, the Postgres insert, and the republish to `telemetry.events.processed` / `telemetry.events.anomalies` |
+| `telemetry-processor` | A rate-limited `kafka-console-producer` per load pod, publishing valid `TelemetryEvent` JSON into `telemetry.events.raw` | Consumption, anomaly detection, the Postgres insert, and the republish to `telemetry.events.processed` / `telemetry.events.anomalies` |
 
 The processor's payload alternates each device's reading between `20.5` and `95.5`, so consecutive readings for the same device cross both the `MAX_TEMPERATURE` threshold and the 50% spike ratio in `TelemetryAnomalyDetectionService`. That keeps every event on the expensive path rather than the cheap one, which is what makes CPU move at all.
+
+Each producer is capped at 100 events/s by default (`-KafkaEventsPerSecond`). The cap keeps the default run focused on HPA behavior: an unbounded console producer can create backlog faster than the processor can drain it and starve a laptop-class single-node cluster, which turns the validation into an accidental stress test. Increase the rate only when the reported peak remains below the applied CPU target.
 
 Every generated `eventId` carries both the run id and the load pod's ordinal. Without the ordinal each pod of a run emits the same id sequence, and the default three-pod run would send every event three times — which exercises the platform's persistence de-duplication path rather than representative traffic, and makes the CPU the HPA reads the cost of rejecting duplicates.
 
