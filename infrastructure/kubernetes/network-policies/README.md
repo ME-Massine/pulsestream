@@ -30,9 +30,11 @@ Two rules apply throughout:
 
 | Service | Ingress allowed | Egress allowed |
 | :--- | :--- | :--- |
-| `ingestion-service` | 8081 from **any** peer | DNS, Kafka `:9092` |
-| `telemetry-processor` | 8082 from the labelled `service-connectivity-probe` only | DNS, Kafka `:9092`, Postgres `:5432` |
+| `ingestion-service` | 8081 from **any** peer | DNS, Kafka `:9092`, OTLP `:4318` to `otel-collector` |
+| `telemetry-processor` | 8082 from the labelled `service-connectivity-probe` only | DNS, Kafka `:9092`, Postgres `:5432`, OTLP `:4318` to `otel-collector` |
 | `query-service` | 8083 from the **same namespace** | DNS |
+
+`query-service` has no OTLP egress because it exports no traces — it carries no `otel` configuration in `application.yml` (#157). The two OTLP holes are scoped to the `otel-collector` pods in the `observability` namespace, not to the namespace as a whole.
 
 Everything absent from this table is blocked when the CNI enforces policy — for example `query-service` cannot reach Kafka or Postgres, `ingestion-service` cannot reach Postgres, and nothing off-cluster can reach `query-service` or `telemetry-processor`.
 
@@ -81,6 +83,10 @@ kubectl get networkpolicies
 ```
 
 Override `-Namespace` if the workloads run elsewhere.
+
+The OTLP egress rules are covered there too, and the check inspects peer structure rather than just the port: it requires the collector's `namespaceSelector` and `podSelector` to sit on **one** peer element. Splitting them across two peers turns their AND into an OR, which reaches every pod in `observability` and every pod labelled `otel-collector` anywhere else while the port and the labels all still look right. `query-service` is asserted to have no 4318 egress at all, since it emits no spans.
+
+`scripts/tests/test-network-policy-structure.ps1` runs the validator against the committed manifests with no cluster, then feeds it each of those broken shapes and requires it to reject them.
 
 ## Verify enforcement (policy-enforcing CNI only)
 
