@@ -136,6 +136,50 @@ try {
 
     Set-PolicyObject -Name "ingestion-service" -Policy $originalIngestion
 
+    # The committed narrow rule is KEPT here and a second, wider 4318 rule is
+    # added beside it. This is the case a first-match check reports as sound:
+    # the correct rule is present and matches, so anything that stops looking
+    # once it finds one never sees the rule that opens the port to the whole
+    # `observability` namespace.
+    $ingestion = Get-PolicyObject -Name "ingestion-service"
+    $ingestion.spec.egress = @($ingestion.spec.egress) + [pscustomobject]@{
+        to    = @([pscustomobject]@{
+            namespaceSelector = [pscustomobject]@{ matchLabels = [pscustomobject]@{ "kubernetes.io/metadata.name" = "observability" } }
+        })
+        ports = @([pscustomobject]@{ port = 4318; protocol = "TCP" })
+    }
+    Set-PolicyObject -Name "ingestion-service" -Policy $ingestion
+
+    # Guard the premise: if the narrow rule stopped matching, this case would
+    # pass for the wrong reason - a missing rule rather than the extra one.
+    $ingestionCheck = Get-PolicyObject -Name "ingestion-service"
+    $rules4318 = @($ingestionCheck.spec.egress | Where-Object {
+        @($_.ports | Where-Object { "$($_.port)" -eq "4318" }).Count -ge 1
+    })
+    if ($rules4318.Count -ne 2) {
+        throw "Expected the narrow rule plus the added broad rule (2 rules on 4318), found $($rules4318.Count). This case is no longer testing a valid-plus-broad policy."
+    }
+
+    Assert-ValidatorRejects `
+        -ExpectedMessage "not exclusively scoped to the collector" `
+        -Description "an ingestion-service policy carrying a valid narrow collector rule AND a namespace-wide 4318 rule"
+
+    Set-PolicyObject -Name "ingestion-service" -Policy $originalIngestion
+
+    # Same shape, widest possible peer: an egress rule with ports and no `to`
+    # at all allows 4318 to every destination in the cluster and beyond.
+    $ingestion = Get-PolicyObject -Name "ingestion-service"
+    $ingestion.spec.egress = @($ingestion.spec.egress) + [pscustomobject]@{
+        ports = @([pscustomobject]@{ port = 4318; protocol = "TCP" })
+    }
+    Set-PolicyObject -Name "ingestion-service" -Policy $ingestion
+
+    Assert-ValidatorRejects `
+        -ExpectedMessage "not exclusively scoped to the collector" `
+        -Description "an ingestion-service policy carrying a valid narrow collector rule AND a 4318 rule with no 'to' peers"
+
+    Set-PolicyObject -Name "ingestion-service" -Policy $originalIngestion
+
     # A dropped rule is the other failure mode, and the quiet one: the service
     # stays healthy and only its own log shows the export timing out.
     $processor = Get-PolicyObject -Name "telemetry-processor"

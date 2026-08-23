@@ -61,7 +61,17 @@ spec:
           type: RuntimeDefault
       containers:
         - name: otel-collector
-          image: otel/opentelemetry-collector-contrib:0.128.0
+          # Pinned by digest, with the tag kept alongside it so the version is
+          # readable at a glance. When both are present the digest is what is
+          # resolved, so the tag cannot drift the deployed bytes: a retagged or
+          # republished 0.159.0 upstream would be rejected rather than rolled
+          # out silently. The digest is the multi-arch manifest LIST, so each
+          # node still resolves its own architecture.
+          #
+          # To update, take the new list digest and change both halves together:
+          #   docker buildx imagetools inspect \
+          #     otel/opentelemetry-collector-contrib:<tag>
+          image: otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
           imagePullPolicy: IfNotPresent
           # The image's default command points at its own bundled config path.
           # This overrides it with the mounted pipeline; leaving the default in

@@ -44,32 +44,50 @@ function Test-PeerIsKafka {
 # element: within one peer they are ANDed, so this reaches the collector pods in
 # `observability` and nothing else there. Split across two peers they are ORed,
 # which silently widens the hole to every pod in that namespace plus every pod
-# named otel-collector in any namespace - the shape Test-OtlpEgress below
-# rejects.
+# named otel-collector in any namespace.
 function Test-PeerIsOtelCollector {
     param($Peer)
     return ($Peer.namespaceSelector.matchLabels.'kubernetes.io/metadata.name' -eq 'observability') -and
            ($Peer.podSelector.matchLabels.'app.kubernetes.io/name' -eq 'otel-collector')
 }
 
-# An OTLP egress hole is correct only if it reaches the collector on TCP 4318
-# (OTLP over HTTP, the transport the services are configured for) AND every peer
-# in that rule is scoped to the collector. The second half is what keeps a
-# namespace-wide peer from passing: a rule that also carries a bare
-# namespaceSelector reaches Prometheus, Grafana and Jaeger in `observability`
-# too, and the first half alone would not notice.
-function Test-OtlpEgress {
+# A 4318 rule is acceptable only if EVERY one of its peers is the collector.
+# One unscoped peer is enough to widen the whole rule, because peers within a
+# rule are ORed.
+function Test-RuleIsScopedToOtelCollector {
+    param($Rule)
+
+    $peers = @($Rule.to | Where-Object { $null -ne $_ })
+    # An egress rule carrying ports but no `to` allows those ports to EVERY
+    # destination. That is the widest shape there is, and an absent `to`
+    # serializes to null rather than an empty array, so it has to be rejected
+    # here explicitly instead of falling through the all-peers-match test below
+    # (which an empty collection would pass vacuously).
+    if ($peers.Count -eq 0) { return $false }
+
+    return @($peers | Where-Object { Test-PeerIsOtelCollector $_ }).Count -eq $peers.Count
+}
+
+function Get-OtlpEgressRules {
     param($Policy)
-    foreach ($rule in @($Policy.spec.egress)) {
-        if (-not (Test-RuleHasPort $rule 4318 'TCP')) { continue }
+    return @($Policy.spec.egress | Where-Object { Test-RuleHasPort $_ 4318 'TCP' })
+}
 
-        $peers = @($rule.to | Where-Object { $null -ne $_ })
-        if ($peers.Count -eq 0) { continue }
-        if (@($peers | Where-Object { Test-PeerIsOtelCollector $_ }).Count -ne $peers.Count) { continue }
+# The OTLP hole is correct only when BOTH facts hold, which is why they are two
+# assertions and not one. "A collector rule exists" is not sufficient on its
+# own: a policy can carry a correctly narrow rule AND a second unrestricted
+# 4318 rule beside it, and stopping at the first acceptable rule would report
+# that policy as sound. So every 4318 rule is inspected, and any rule not
+# exclusively scoped to the collector fails the policy no matter what else it
+# contains.
+function Test-OtlpEgressToCollector {
+    param($Policy)
+    return @(Get-OtlpEgressRules $Policy | Where-Object { Test-RuleIsScopedToOtelCollector $_ }).Count -ge 1
+}
 
-        return $true
-    }
-    return $false
+function Get-UnscopedOtlpEgressRules {
+    param($Policy)
+    return @(Get-OtlpEgressRules $Policy | Where-Object { -not (Test-RuleIsScopedToOtelCollector $_) })
 }
 
 # A DNS egress hole is only correct if it reaches the kube-dns pods on BOTH
@@ -189,6 +207,23 @@ function Assert-CommonShape {
         -FailureMessage "$Name has no DNS egress rule to kube-dns on UDP and TCP 53. With egress default-denied, the pod could not resolve any name and every outbound connection would fail at lookup"
 }
 
+# Two assertions, because the required path and the absence of a wider one are
+# separate failures with separate causes.
+function Assert-OtlpEgress {
+    param($Policy, [string] $Name)
+
+    Confirm-Condition `
+        -Condition (Test-OtlpEgressToCollector $Policy) `
+        -SuccessMessage "$Name allows OTLP egress (TCP 4318 to app.kubernetes.io/name=otel-collector in the 'observability' namespace)" `
+        -FailureMessage "$Name has no OTLP egress rule scoped to the collector on TCP 4318. Either the rule is missing - egress default-deny then drops every span, and the workload keeps running while only its own log reports the export timing out - or its namespace and pod selectors are split across separate peers, which ORs them instead of ANDing them"
+
+    $unscoped = @(Get-UnscopedOtlpEgressRules $Policy)
+    Confirm-Condition `
+        -Condition ($unscoped.Count -eq 0) `
+        -SuccessMessage "$Name opens TCP 4318 to the collector and nothing else" `
+        -FailureMessage "$Name has $($unscoped.Count) TCP 4318 egress rule(s) that are not exclusively scoped to the collector. A rule with no 'to' reaches every destination, and a rule carrying any non-collector peer reaches that peer too - beside a correct rule this is invisible unless every 4318 rule is inspected"
+}
+
 Write-Host "Validating platform-isolation NetworkPolicies in namespace '$Namespace'..."
 
 # --- ingestion-service -------------------------------------------------------
@@ -205,10 +240,7 @@ Confirm-Condition `
     -SuccessMessage "ingestion-service allows Kafka egress (9092 to strimzi.io/cluster=pulsestream)" `
     -FailureMessage "ingestion-service has no Kafka egress rule; it could not publish to telemetry.events.raw"
 
-Confirm-Condition `
-    -Condition (Test-OtlpEgress $ingestion) `
-    -SuccessMessage "ingestion-service allows OTLP egress (TCP 4318 to app.kubernetes.io/name=otel-collector in the 'observability' namespace)" `
-    -FailureMessage "ingestion-service has no OTLP egress rule scoped to the collector on TCP 4318. Either the rule is missing - egress default-deny then drops every span, and the service keeps serving traffic while only its own log reports the export timing out - or its namespace and pod selectors are split across separate peers, which opens the whole 'observability' namespace"
+Assert-OtlpEgress -Policy $ingestion -Name "ingestion-service"
 
 Confirm-Condition `
     -Condition (-not (Test-EgressHasPort $ingestion 5432 'TCP')) `
@@ -234,10 +266,7 @@ Confirm-Condition `
     -SuccessMessage "telemetry-processor allows Postgres egress (TCP 5432)" `
     -FailureMessage "telemetry-processor has no egress rule to 5432; it could not persist processed events"
 
-Confirm-Condition `
-    -Condition (Test-OtlpEgress $processor) `
-    -SuccessMessage "telemetry-processor allows OTLP egress (TCP 4318 to app.kubernetes.io/name=otel-collector in the 'observability' namespace)" `
-    -FailureMessage "telemetry-processor has no OTLP egress rule scoped to the collector on TCP 4318. Either the rule is missing - egress default-deny then drops every span, and the consumer keeps processing while only its own log reports the export timing out - or its namespace and pod selectors are split across separate peers, which opens the whole 'observability' namespace"
+Assert-OtlpEgress -Policy $processor -Name "telemetry-processor"
 
 # --- query-service -----------------------------------------------------------
 $query = Get-NetworkPolicy -Name "query-service"

@@ -11,7 +11,7 @@ The platform services are already instrumented — both `ingestion-service` and 
 | `namespace.yaml` | The `observability` namespace. Its automatic `kubernetes.io/metadata.name` label is what the NetworkPolicy egress rules match on. |
 | `serviceaccount.yaml` | Dedicated ServiceAccount with **no** RBAC and no mounted API token — the pipeline never calls the Kubernetes API. |
 | `configmap.yaml` | The collector pipeline: OTLP receivers, `memory_limiter` + `batch` processors, `debug` exporter, `health_check` extension. |
-| `deployment.yaml` | Two stateless replicas, non-root, read-only root filesystem. |
+| `deployment.yaml` | Two stateless replicas, non-root, read-only root filesystem. Image `0.159.0`, pinned by digest. |
 | `service.yaml` | ClusterIP `otel-collector` publishing `4317` (gRPC) and `4318` (HTTP). |
 
 ## Pipeline
@@ -106,7 +106,7 @@ kubectl logs -n observability -l app.kubernetes.io/name=otel-collector --tail=50
     Select-String -Pattern 'Traces.*"spans"'
 ```
 
-The debug exporter logs one line per exported batch, and in collector `0.128.0` that line's message is `Traces` — the `TracesExporter` message of older builds was renamed when component telemetry moved to the `otelcol.component.*` attributes:
+The debug exporter logs one line per exported batch, and in collector `0.159.0` that line's message is `Traces` — the `TracesExporter` message of older builds was renamed when component telemetry moved to the `otelcol.component.*` attributes:
 
 ```
 info  Traces  {"otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 3}
@@ -133,6 +133,7 @@ It asserts that `ingestion-service` and `telemetry-processor` each reach the col
 - **A ConfigMap edit does not reload the collector.** It reads `collector.yaml` once at start. Apply a change with `kubectl rollout restart deployment/otel-collector -n observability`.
 - **`memory_limiter` percentages are relative to the container memory limit** in `deployment.yaml`. Changing the limit without revisiting the percentages changes the point at which the collector sheds load.
 - **`verbosity: detailed`** on the debug exporter prints every span and attribute. It is useful for a minute and fills a node's log disk over an hour.
+- **The image is pinned by digest**, with the tag kept beside it for readability. The digest is what resolves, so a retagged upstream `0.159.0` cannot change the deployed bytes. Bump both halves together — `docker buildx imagetools inspect otel/opentelemetry-collector-contrib:<tag>` prints the manifest list digest to use — and re-run the verification below, since the debug exporter's log format is version-dependent.
 - **Nothing buffers spans while the collector is down.** Traces are diagnostic data; the event pipeline (Kafka) is unaffected, because the SDK exporters are non-blocking and drop after their own retry.
 
 ## Out of scope
