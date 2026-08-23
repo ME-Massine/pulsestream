@@ -115,9 +115,9 @@ function Stop-AutoscalingLoadPods {
 
     $deadline = (Get-Date).AddSeconds(60)
     do {
-        $remaining = (Invoke-KubectlChecked `
+        $remaining = Invoke-KubectlJsonChecked `
                 -KubectlArgs @("get", "pods", "--namespace", $Namespace, "--selector", $LoadPodLabel, "-o", "json") `
-                -ErrorContext "Could not confirm cleanup of autoscaling load pods for run '$RunId'") | ConvertFrom-Json
+                -ErrorContext "Could not confirm cleanup of autoscaling load pods for run '$RunId'"
         if (@($remaining.items).Count -eq 0) {
             Write-Host "[ok] All run-labelled load pods were deleted."
             return
@@ -139,9 +139,9 @@ function Confirm-AutoscalingLoadPodRunning {
         -KubectlArgs @("wait", "--namespace", $Namespace, "--for=condition=Ready", "pod/$PodName", "--timeout=120s") `
         -ErrorContext "Load pod '$PodName' did not become Ready; check its image, shell, bootstrap prerequisites, and startup command" | Out-Null
 
-    $pod = (Invoke-KubectlChecked `
+    $pod = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "pod", $PodName, "--namespace", $Namespace, "-o", "json") `
-            -ErrorContext "Could not read load pod '$PodName' after it became Ready") | ConvertFrom-Json
+            -ErrorContext "Could not read load pod '$PodName' after it became Ready"
     $statuses = @($pod.status.containerStatuses)
     $allRunning = $statuses.Count -gt 0 -and @($statuses | Where-Object { $_.state.running }).Count -eq $statuses.Count
     Confirm-Condition `
