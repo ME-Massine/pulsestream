@@ -76,7 +76,7 @@ The HPA compares average CPU usage against the **request** (`250m`), not the lim
 
 **Request rate (RPS).** Available from Actuator/Micrometer, but it is a custom metric with the same adapter dependency as lag, and it requires a calibrated per-replica capacity number that no load test has produced yet.
 
-> **Update (#152).** The adapter dependency named in both rejections is now designed and configured — see [Custom Metrics for Autoscaling](custom-metrics-autoscaling.md). Request rate is available as an optional second metric on the `ingestion-service` HPA, alongside CPU rather than instead of it, in [`ingestion-service-hpa-custom-metrics.yaml`](../../infrastructure/kubernetes/autoscaling/ingestion-service-hpa-custom-metrics.yaml); its per-replica target is still derived rather than measured, so #153 remains the calibration. Consumer lag has an adapter rule but no HPA, because nothing exports the series yet (#272). The targets and bounds in this document are unchanged by that work.
+> **Update (#152).** The adapter dependency named in both rejections is now designed and configured — see [Custom Metrics for Autoscaling](custom-metrics-autoscaling.md). Request rate is available as an optional second metric on the `ingestion-service` HPA, alongside CPU rather than instead of it, in [`ingestion-service-hpa-custom-metrics.yaml`](../../infrastructure/kubernetes/autoscaling/ingestion-service-hpa-custom-metrics.yaml); its per-replica target is still derived rather than measured, and measuring it is #277's "define representative telemetry workloads and success thresholds", not #153's. Consumer lag has an adapter rule but no HPA, because nothing exports the series yet (#272). The targets and bounds in this document are unchanged by that work.
 
 ---
 
@@ -130,7 +130,7 @@ CPU-based autoscaling is not free of dependencies. Before any HPA is applied:
 
 ## Limitations
 
-- **No measured load profile.** No load test has been run against the platform, so 70% is a convention rather than a calibrated threshold. Issue #153 exists to validate and correct these numbers.
+- **No measured load profile yet.** The autoscalers are exercised under real load and their behavior is asserted end-to-end — see [Autoscaling Validation](autoscaling-validation.md) — but that proves the configured values behave as configured, not that they are the right values. The 70% CPU target and ingestion request-rate target remain conventions until a sustained CPU/RPS profile calibrates them. That profiling is #277's, whose scope defines the representative workloads and success thresholds; #153 generates load only long enough to observe a reaction, and its own Out of Scope section excludes long-duration stress testing.
 - **CPU is a proxy, not the real signal.** For an HTTP gateway it is a reasonable one. For a Kafka consumer it is weak: lag can grow while CPU stays flat, so the processor's autoscaler is expected to under-react until the lag metric replaces it (#152, #272).
 - **The processor's anomaly history does not survive a scale event.** Its spike-detection state is per-replica and its partitioning key is not device-stable, so a rebalance drops the previous reading for the devices that moved. Threshold rules are unaffected. The 2-3 range bounds how often this happens; only #269 removes it.
 - **Autoscaling does not address Kafka or PostgreSQL capacity.** Scaling ingestion moves the bottleneck downstream to partition count and to a single-instance database. Autoscaling raises the ceiling on one tier only.
@@ -145,15 +145,17 @@ CPU-based autoscaling is not free of dependencies. Before any HPA is applied:
 | #150 | CPU-based HPA for `ingestion-service` | Implements the ingestion row of the targets table |
 | #151 | Autoscaling for consumer services | Implements the processor row on the CPU signal, within the 2-3 partition ceiling |
 | #152 | Custom metrics for advanced autoscaling | Delivers the adapter path both rejected metrics depend on. See [Custom Metrics for Autoscaling](custom-metrics-autoscaling.md) |
-| #153 | Validate autoscaling behavior end-to-end | Replaces the assumed thresholds with measured ones |
+| #153 | Validate autoscaling behavior end-to-end | Proves the shipped rows behave as configured under load. It does not calibrate the target values themselves. See [Autoscaling Validation](autoscaling-validation.md) |
 | #269 | Deterministic anomaly detection under scaling | Removes the per-replica anomaly-history limitation the processor row accepts |
 | #272 | Processing and consumer-lag metrics | Prerequisite for #152 |
+| #277 | Validate load, failure recovery, and data durability | Owns the sustained load profile that turns the 70% CPU target and the per-replica request-rate capacity from conventions into measured values |
 
 ---
 
 ## Related Documentation
 
 - [Custom Metrics for Autoscaling](custom-metrics-autoscaling.md) — the adapter path for request-rate and consumer-lag signals
+- [Autoscaling Validation](autoscaling-validation.md) — how the configuration below is proven on a running cluster
 - [Kafka Topics](topics.md) — partition counts that bound consumer scaling
 - [Services](services.md) — service boundaries and responsibilities
 - [Service Discovery](../../infrastructure/kubernetes/service-discovery.md) — how traffic reaches replicas
