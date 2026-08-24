@@ -1,0 +1,137 @@
+# Grafana visualization layer for the Kubernetes platform (#155).
+#
+# SINGLE REPLICA + RECREATE: Grafana uses its embedded SQLite database on the
+# ReadWriteOnce PVC below. Two pods, or a rolling update that briefly starts a
+# second pod, would contend for state that is not a shared database. A future HA
+# deployment needs an external MySQL/PostgreSQL backend before increasing this.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: visualization
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  # Cold image pulls plus first-start SQLite migrations can take several
+  # minutes on development clusters backed by slow host-path storage.
+  progressDeadlineSeconds: 1500
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/component: visualization
+        app.kubernetes.io/part-of: pulsestream
+    spec:
+      # Grafana does not call the Kubernetes API. Avoid mounting a bearer token
+      # that the process cannot use legitimately.
+      automountServiceAccountToken: false
+      securityContext:
+        # The official image runs as uid 472 (with gid 0 by default). Override
+        # the primary group to a non-root numeric gid; fsGroup then makes a
+        # dynamically provisioned volume writable without a root init container.
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: grafana
+          # Official multi-architecture image pinned to the manifest-list digest.
+          # The readable tag and immutable digest must be updated together.
+          image: grafana/grafana:13.1.3@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            # Bootstrap credentials are created out-of-band. They initialize a
+            # new database only; rotating the Secret does not rewrite an existing
+            # admin account in the persistent database (see DEPLOYMENT.md).
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana
+                  key: admin-user
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana
+                  key: admin-password
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            # Grafana 13 otherwise downloads suggested plugins in the
+            # background and auto-updates bundled plugins. That makes startup
+            # depend on the public catalog and tries to rewrite bundled content
+            # under /usr/share/grafana, which is read-only here. The dashboards
+            # in #156 need only Grafana's built-in Prometheus support.
+            - name: GF_PLUGINS_PREINSTALL_DISABLED
+              value: "true"
+            - name: GF_PLUGINS_PREINSTALL_AUTO_UPDATE
+              value: "false"
+            # Keep every writable Grafana path on the PVC so the container root
+            # filesystem can remain read-only.
+            - name: GF_PATHS_DATA
+              value: /var/lib/grafana
+            - name: GF_PATHS_LOGS
+              value: /var/lib/grafana/logs
+            - name: GF_PATHS_PLUGINS
+              value: /var/lib/grafana/plugins
+          resources:
+            requests:
+              cpu: 250m
+              memory: 750Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            # Twenty-minute first-start budget. Readiness still withholds traffic,
+            # and the tighter liveness probe takes over after startup succeeds.
+            failureThreshold: 240
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data
+        - name: tmp
+          emptyDir: {}

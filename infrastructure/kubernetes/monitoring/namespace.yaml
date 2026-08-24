@@ -1,0 +1,12 @@
+# Shared namespace for the in-cluster metrics stack (#154, #155, #156).
+#
+# Keeping the namespace as a manifest makes the Grafana deployment independent
+# of Helm's --create-namespace side effect. Applying it is idempotent when
+# Prometheus has already created `monitoring`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: pulsestream
+
