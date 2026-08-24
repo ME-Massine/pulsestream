@@ -51,6 +51,11 @@ param(
     # 60s, so this needs to span several steps to show more than a single jump.
     [ValidateRange(1, 2147483647)] [int] $LoadDurationSeconds = 240,
     [ValidateRange(1, 2147483647)] [int] $SampleIntervalSeconds = 15,
+    # kube-controller-manager's --horizontal-pod-autoscaler-tolerance. The
+    # scale-down verdict reproduces the controller's desired-replica arithmetic,
+    # and that arithmetic ignores a metric within this fraction of its target, so
+    # a cluster running a non-default tolerance has to say so here.
+    [ValidateRange(0.0, 0.99)] [double] $HpaTolerance = 0.1,
     # Observe the return to minReplicas as well. Off by default because it costs
     # the full scale-down stabilization window (300s) plus one step per replica,
     # which roughly triples the runtime of the script.
@@ -250,6 +255,15 @@ function Get-Sample {
         }
     }
 
+    # Every metric the HPA is configured with beyond CPU, read at the same
+    # instant. The scale-down verdict recomputes the HPA's desired replica count,
+    # which is the maximum across all of its metrics: a second metric still
+    # asking for the current count is what makes a low CPU reading not a scale-in
+    # recommendation.
+    $additionalMetrics = Get-HpaMetricReadings `
+        -SpecMetrics @($hpa.spec.metrics) `
+        -CurrentMetrics @($hpa.status.currentMetrics)
+
     return New-AutoscalingSample `
         -Timestamp $timestamp `
         -Replicas $replicas `
@@ -257,7 +271,8 @@ function Get-Sample {
         -TargetPercent $TargetPercent `
         -UtilizationPercent $utilization `
         -RestartCounts $restartCounts `
-        -ScalingActiveStatus $scalingActive
+        -ScalingActiveStatus $scalingActive `
+        -AdditionalMetrics $additionalMetrics
 }
 
 function Write-SampleLine {
@@ -528,7 +543,7 @@ if ($null -ne $runFailure) {
 # --- 5. Verdict --------------------------------------------------------------
 Write-Host ""
 Write-Host "Timeline ($($samples.Count) samples):"
-$timeline = Get-AutoscalingTimeline -Samples $samples -MinReplicas $minReplicas -MaxReplicas $maxReplicas
+$timeline = Get-AutoscalingTimeline -Samples $samples -MinReplicas $minReplicas -MaxReplicas $maxReplicas -Tolerance $HpaTolerance
 $rendered = Format-AutoscalingTimeline -Timeline $timeline -Markers $markers
 Write-Host $rendered
 Write-Host ""
@@ -581,6 +596,19 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         $revision = "unknown (git unavailable: $($_.Exception.Message))"
     }
 
+    # Named from the last sample so the report states what the verdict actually
+    # judged: every metric the HPA weighed, not just the CPU one in the timeline.
+    $metricSummary = (@($samples[-1].Metrics | ForEach-Object { "``$($_.Name)`` at $($_.TargetValue)" }) -join ", ")
+
+    # The scale-down assertion is anchored to the HPA's own recommendation, so
+    # the report carries that anchor rather than leaving a reader to infer it
+    # from the timeline.
+    if ($null -ne $timeline.ObservedScaleDownDelaySeconds) {
+        $scaleDownAnchorRow = "| Scale-down window observed | ``$($timeline.ObservedScaleDownDelaySeconds)s`` from the first sample recommending fewer replicas ($($timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')): $($timeline.DownscaleRecommendationDetail)) to the scale-in at $($timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) |"
+    } else {
+        $scaleDownAnchorRow = "| Scale-down window observed | not measured: this run recorded no scale-in preceded by a scale-in recommendation |"
+    }
+
     $scaleEventLines = @($timeline.ScaleEvents | ForEach-Object {
             "| {0} | {1} | {2} -> {3} |" -f $_.At.ToString("HH:mm:ssZ"), $_.Direction, $_.From, $_.To
         })
@@ -599,6 +627,8 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of grace |",
         "| Load | $effectiveLoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, $KafkaBurstEventsPerSecond events/s for ${KafkaBurstDurationSeconds}s then $KafkaEventsPerSecond events/s per pod" }) |",
         "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first |",
+        "| HPA metrics | $($metricSummary) (desired replicas = max across metrics, tolerance ``$HpaTolerance``) |",
+        $scaleDownAnchorRow,
         "| Peak utilization | $($timeline.PeakUtilizationPercent)% |",
         "| Peak replicas | $($timeline.PeakReplicas) |",
         "| Container restarts | $($timeline.RestartDelta) |",

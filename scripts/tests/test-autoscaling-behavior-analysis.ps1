@@ -68,6 +68,18 @@ function New-Timeline {
             $scalingActive = $step.ScalingActive
         }
 
+        # Metrics besides CPU, as @{ Name = 'rps'; Target = 100; Current = 40 }.
+        $additional = @()
+        if ($step.ContainsKey("Metrics")) {
+            $additional = @($step.Metrics | ForEach-Object {
+                    $current = $null
+                    if ($_.ContainsKey("Current")) {
+                        $current = $_.Current
+                    }
+                    New-AutoscalingMetricReading -Name $_.Name -TargetValue $_.Target -CurrentValue $current
+                })
+        }
+
         New-AutoscalingSample `
             -Timestamp $script:Origin.AddSeconds($step.Offset) `
             -Replicas $step.Replicas `
@@ -75,7 +87,8 @@ function New-Timeline {
             -TargetPercent $TargetPercent `
             -UtilizationPercent $cpu `
             -RestartCounts $restartCounts `
-            -ScalingActiveStatus $scalingActive
+            -ScalingActiveStatus $scalingActive `
+            -AdditionalMetrics $additional
     }
 
     return Get-AutoscalingTimeline -Samples @($samples) -MinReplicas $MinReplicas -MaxReplicas $MaxReplicas
@@ -139,6 +152,23 @@ function Assert-Equal {
     Write-Host "[ok] $Description"
 }
 
+# Separate from Assert-Equal because $null cannot be passed to a Mandatory
+# parameter, and making Expected optional would let a mistyped call assert
+# nothing at all. Null is a meaningful result here - "the HPA had no computable
+# recommendation" - so it gets its own assertion.
+function Assert-Null {
+    param(
+        $Actual,
+        [Parameter(Mandatory)] [string] $Description
+    )
+
+    if ($null -ne $Actual) {
+        throw "$Description : expected null, got '$Actual'."
+    }
+
+    Write-Host "[ok] $Description"
+}
+
 # --- Timeline reduction ------------------------------------------------------
 
 $healthy = New-HealthyTimeline
@@ -151,10 +181,12 @@ Assert-Equal -Expected 2 -Actual $healthy.ScaleUpCount -Description "both scale-
 Assert-Equal -Expected 4 -Actual $healthy.ScaleDownCount -Description "all four scale-down steps are counted"
 Assert-Equal -Expected 0 -Actual $healthy.RestartDelta -Description "a run with no restarts reports a zero restart delta"
 
-# 150s is the last sample at or above the 70% target; the first scale-down is at
-# 480s. The window is measured between those two, not from the end of the load.
-Assert-Equal -Expected 330 -Actual $healthy.ObservedScaleDownDelaySeconds `
-    -Description "the observed scale-down delay is measured from the last at-or-above-target sample"
+# 180s is the first sample at which the HPA's own desired replica count drops
+# below the running one (6 replicas at 4% of a 70% target recommends the floor);
+# the first scale-down is at 480s. The window is measured between those two, not
+# from the end of the load and not from the last at-or-above-target sample.
+Assert-Equal -Expected 300 -Actual $healthy.ObservedScaleDownDelaySeconds `
+    -Description "the observed scale-down delay is measured from the first scale-in recommendation"
 
 # Ready pods lag the replica count during a scale-up, which is normal and must
 # not be read as a failure - only a drop below the floor is.
@@ -353,6 +385,211 @@ Assert-BehaviorRejects `
     )) `
     -ExpectedMessage "short of the configured 300s stabilization window" `
     -Description "a scale-in that came before the stabilization window elapsed was rejected"
+
+# --- Desired-replica arithmetic ----------------------------------------------
+# Utilization below target is not a scale-in recommendation. The HPA computes
+# ceil(replicas * current / target), skips any metric within its tolerance of
+# 1.0, and clamps into [minReplicas, maxReplicas]; every one of those steps keeps
+# a workload at its current size while CPU sits under the target.
+function New-RecommendationSample {
+    param(
+        [Parameter(Mandatory)] [int] $Replicas,
+        [nullable[int]] $Cpu,
+        [int] $TargetPercent = 70,
+        [object[]] $Metrics = @()
+    )
+
+    $additional = @($Metrics | ForEach-Object {
+            $current = $null
+            if ($_.ContainsKey("Current")) {
+                $current = $_.Current
+            }
+            New-AutoscalingMetricReading -Name $_.Name -TargetValue $_.Target -CurrentValue $current
+        })
+
+    return New-AutoscalingSample `
+        -Timestamp $script:Origin `
+        -Replicas $Replicas `
+        -ReadyReplicas $Replicas `
+        -TargetPercent $TargetPercent `
+        -UtilizationPercent $Cpu `
+        -ScalingActiveStatus "True" `
+        -AdditionalMetrics $additional
+}
+
+function Get-Recommendation {
+    param(
+        [Parameter(Mandatory)] $Sample,
+        [int] $MinReplicas = 2,
+        [int] $MaxReplicas = 6
+    )
+
+    return Get-HpaScaleRecommendation -Sample $Sample -MinReplicas $MinReplicas -MaxReplicas $MaxReplicas
+}
+
+# The exact case from the #290 review: 6 replicas at 69% against a 70% target.
+# The ratio is inside the 0.1 tolerance, so the HPA proposes no change at all.
+$borderline = Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Cpu 69)
+Assert-Equal -Expected 6 -Actual $borderline.DesiredReplicas -Description "6 replicas at 69% of a 70% target still desires 6 replicas"
+Assert-Equal -Expected $false -Actual $borderline.RecommendsDownscale -Description "utilization just below target is not a scale-in recommendation"
+
+# Outside the tolerance but still rounding back up: ceil(6 * 62 / 70) = 6.
+$rounded = Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Cpu 62)
+Assert-Equal -Expected 6 -Actual $rounded.DesiredReplicas -Description "ceil() keeps 6 replicas at 62% of a 70% target"
+Assert-Equal -Expected $false -Actual $rounded.RecommendsDownscale -Description "a reading outside the tolerance that still rounds up to the current count is not a scale-in recommendation"
+
+# 58% is where the arithmetic finally produces a smaller count: ceil(6*58/70)=5.
+$genuine = Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Cpu 58)
+Assert-Equal -Expected 5 -Actual $genuine.DesiredReplicas -Description "58% of a 70% target at 6 replicas desires 5"
+Assert-Equal -Expected $true -Actual $genuine.RecommendsDownscale -Description "the first count below the running one is a scale-in recommendation"
+
+# The HPA never recommends below its own floor, so an idle workload already at
+# minReplicas is not waiting on a stabilization window.
+$atFloor = Get-Recommendation -Sample (New-RecommendationSample -Replicas 2 -Cpu 1)
+Assert-Equal -Expected 2 -Actual $atFloor.DesiredReplicas -Description "the desired count is clamped to the minReplicas floor"
+Assert-Equal -Expected $false -Actual $atFloor.RecommendsDownscale -Description "an idle workload at the floor recommends no scale-in"
+
+# The desired count is the maximum across metrics: a second metric at its target
+# holds the replica count up no matter how low CPU falls.
+$multiMetric = Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Cpu 5 -Metrics @(
+        @{ Name = "pods/http_requests_per_second"; Target = 100; Current = 100 }
+    ))
+Assert-Equal -Expected 6 -Actual $multiMetric.DesiredReplicas -Description "the desired count is the maximum across the HPA's metrics"
+Assert-Equal -Expected $false -Actual $multiMetric.RecommendsDownscale -Description "idle CPU is not a scale-in recommendation while another configured metric sits at its target"
+
+# An unreadable metric is not a low one. A controller that cannot see a metric
+# does not scale in on it, so no recommendation can be attributed to the sample.
+$unknownMetric = Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Cpu 5 -Metrics @(
+        @{ Name = "pods/http_requests_per_second"; Target = 100 }
+    ))
+Assert-Null -Actual $unknownMetric.DesiredReplicas -Description "an <unknown> metric leaves the desired replica count uncomputable"
+Assert-Equal -Expected $false -Actual $unknownMetric.RecommendsDownscale -Description "an <unknown> metric is not treated as a scale-in recommendation"
+
+# --- Quantity parsing ---------------------------------------------------------
+# Non-utilization targets arrive as Kubernetes quantities, and their ratio is
+# only meaningful once the suffixes are applied.
+Assert-Equal -Expected 0.1 -Actual (ConvertFrom-KubernetesQuantity -Quantity "100m") -Description "a milli-suffixed quantity is scaled by 1/1000"
+Assert-Equal -Expected 1500 -Actual (ConvertFrom-KubernetesQuantity -Quantity "1500") -Description "a bare quantity parses as itself"
+Assert-Equal -Expected 2048 -Actual (ConvertFrom-KubernetesQuantity -Quantity "2Ki") -Description "a binary-suffixed quantity is scaled by 1024"
+Assert-Equal -Expected 3000 -Actual (ConvertFrom-KubernetesQuantity -Quantity "3k") -Description "a decimal-suffixed quantity is scaled by 1000"
+
+try {
+    ConvertFrom-KubernetesQuantity -Quantity "12 requests" | Out-Null
+    throw "A non-quantity string was accepted."
+} catch {
+    if ($_.Exception.Message -notmatch "is not a Kubernetes quantity") {
+        throw "Expected a non-quantity string to be rejected, got: $($_.Exception.Message)"
+    }
+    Write-Host "[ok] a value that is not a Kubernetes quantity is rejected rather than silently treated as zero"
+}
+
+# --- HPA metric extraction ----------------------------------------------------
+# The readings are built from the applied object, so a metric the HPA carries
+# cannot be left out of the desired-replica calculation by the sampler.
+$hpaSpecMetrics = @(
+    [pscustomobject]@{ type = "Resource"; resource = [pscustomobject]@{ name = "cpu"; target = [pscustomobject]@{ averageUtilization = 70 } } },
+    [pscustomobject]@{ type = "Pods"; pods = [pscustomobject]@{ metric = [pscustomobject]@{ name = "http_requests_per_second" }; target = [pscustomobject]@{ averageValue = "100" } } },
+    [pscustomobject]@{ type = "Resource"; resource = [pscustomobject]@{ name = "memory"; target = [pscustomobject]@{ averageValue = "512Mi" } } }
+)
+$hpaCurrentMetrics = @(
+    [pscustomobject]@{ type = "Resource"; resource = [pscustomobject]@{ name = "cpu"; current = [pscustomobject]@{ averageUtilization = 12 } } },
+    [pscustomobject]@{ type = "Pods"; pods = [pscustomobject]@{ metric = [pscustomobject]@{ name = "http_requests_per_second" }; current = [pscustomobject]@{ averageValue = "40" } } }
+)
+$readings = Get-HpaMetricReadings -SpecMetrics $hpaSpecMetrics -CurrentMetrics $hpaCurrentMetrics
+
+Assert-Equal -Expected 2 -Actual $readings.Count -Description "the CPU utilization metric is left to the sample and the other two are extracted"
+Assert-Equal -Expected 100 -Actual $readings[0].TargetValue -Description "a Pods metric target is read from the applied HPA"
+Assert-Equal -Expected 40 -Actual $readings[0].CurrentValue -Description "a Pods metric reading is paired with its target by type and name"
+Assert-Equal -Expected 536870912 -Actual $readings[1].TargetValue -Description "a memory target written as a binary quantity is converted before it is divided"
+Assert-Null -Actual $readings[1].CurrentValue `
+    -Description "a configured metric with no reading in status is kept with a null value rather than dropped"
+
+# --- Scale-down anchoring -----------------------------------------------------
+
+# The #290 regression. Utilization sits at 69% - under the 70% target, but still
+# desiring all 6 replicas - then collapses to 10%, and the workload scales in 60s
+# later. Anchoring on "utilization last at or above target" measures 270s here
+# and accepts the run against a 300s window with 30s of grace. The HPA's own
+# recommendation only turned over at 240s, so the window observed is 60s.
+$falsePassTimeline = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 90; Replicas = 6; Cpu = 69 },
+    @{ Offset = 150; Replicas = 6; Cpu = 69 },
+    @{ Offset = 210; Replicas = 6; Cpu = 69 },
+    @{ Offset = 240; Replicas = 6; Cpu = 10 },
+    @{ Offset = 300; Replicas = 5; Cpu = 8 },
+    @{ Offset = 360; Replicas = 4; Cpu = 6 },
+    @{ Offset = 420; Replicas = 3; Cpu = 5 },
+    @{ Offset = 480; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected 60 -Actual $falsePassTimeline.ObservedScaleDownDelaySeconds `
+    -Description "a run that idled at 69% measures the window from the 10% sample, not from the last sample at or above target"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $falsePassTimeline `
+    -ExpectedMessage "short of the configured 300s stabilization window" `
+    -Description "a scale-in 60s after the first genuine scale-in recommendation, preceded by 150s of sub-target-but-not-scale-in utilization, was rejected"
+
+# The window stabilizes the MAXIMUM recommendation it holds, so a recommendation
+# that recovers restarts it. Measuring from the earlier, interrupted dip would
+# credit the run with a window the controller never ran.
+$interrupted = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 60; Replicas = 6; Cpu = 10 },
+    @{ Offset = 120; Replicas = 6; Cpu = 300 },
+    @{ Offset = 300; Replicas = 6; Cpu = 10 },
+    @{ Offset = 360; Replicas = 5; Cpu = 8 },
+    @{ Offset = 420; Replicas = 4; Cpu = 6 },
+    @{ Offset = 480; Replicas = 3; Cpu = 5 },
+    @{ Offset = 540; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected 60 -Actual $interrupted.ObservedScaleDownDelaySeconds `
+    -Description "a scale-in recommendation that recovered restarts the observed window"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $interrupted `
+    -ExpectedMessage "short of the configured 300s stabilization window" `
+    -Description "a run whose earlier scale-in recommendation recovered before the scale-in was rejected"
+
+# A second metric holding at its target means the HPA wanted every replica it
+# had, however idle the CPU looked. The window cannot start until that metric
+# falls too.
+$secondMetricHeld = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 20 }) },
+    @{ Offset = 30; Replicas = 6; Cpu = 300; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 300 }) },
+    @{ Offset = 90; Replicas = 6; Cpu = 5; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 100 }) },
+    @{ Offset = 210; Replicas = 6; Cpu = 5; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 100 }) },
+    @{ Offset = 300; Replicas = 6; Cpu = 5; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 5 }) },
+    @{ Offset = 360; Replicas = 5; Cpu = 4; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 4 }) },
+    @{ Offset = 420; Replicas = 4; Cpu = 4; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 4 }) },
+    @{ Offset = 480; Replicas = 3; Cpu = 3; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 3 }) },
+    @{ Offset = 540; Replicas = 2; Cpu = 3; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 3 }) }
+)
+Assert-Equal -Expected 60 -Actual $secondMetricHeld.ObservedScaleDownDelaySeconds `
+    -Description "the window is measured from the point where the LAST configured metric stopped asking for the current replica count"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $secondMetricHeld `
+    -ExpectedMessage "short of the configured 300s stabilization window" `
+    -Description "a run judged on CPU alone would have passed, but the second metric held the desired count up until 60s before the scale-in"
+
+# A scale-in with no preceding scale-in recommendation at all is not a window
+# that held; it is a replica change the autoscaler did not ask for.
+$unexplainedScaleIn = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 90; Replicas = 6; Cpu = 300 },
+    @{ Offset = 150; Replicas = 2; Cpu = 300 }
+)
+Assert-Null -Actual $unexplainedScaleIn.ObservedScaleDownDelaySeconds `
+    -Description "no delay is reported for a scale-in the HPA never recommended"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $unexplainedScaleIn `
+    -ExpectedMessage "without a single preceding sample in which the HPA's desired replica count was below the running one" `
+    -Description "a scale-in that no recommendation preceded was rejected instead of being credited to the window"
 
 # The sampling grace is a tolerance for observation quantization, never an
 # alternative stabilization window. A grace equal to the window used to make
