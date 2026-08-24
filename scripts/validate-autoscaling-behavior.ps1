@@ -44,9 +44,9 @@ param(
     # The telemetry generator uses a short scale-up burst, then a sustainable
     # rate. An unthrottled producer measures backlog growth and node starvation,
     # not HPA behavior.
-    [ValidateRange(1, 10000)] [int] $KafkaEventsPerSecond = 300,
+    [ValidateRange(1, 10000)] [int] $KafkaEventsPerSecond = 50,
     [ValidateRange(1, 10000)] [int] $KafkaBurstEventsPerSecond = 500,
-    [ValidateRange(1, 3600)] [int] $KafkaBurstDurationSeconds = 60,
+    [ValidateRange(1, 3600)] [int] $KafkaBurstDurationSeconds = 45,
     # How long to keep the load running. The scale-up policies allow one step per
     # 60s, so this needs to span several steps to show more than a single jump.
     [ValidateRange(1, 2147483647)] [int] $LoadDurationSeconds = 240,
