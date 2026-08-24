@@ -91,4 +91,23 @@ Assert-Equal `
     -Actual (Get-AutoscalingHeartbeatCountFromLogs -Logs "pulsestream-autoscaling-load heartbeat kafka $largeCounter") `
     -Description "heartbeat counters do not overflow the 32-bit range"
 
+$observedAt = [datetime] "2026-08-24T00:00:00Z"
+$largeState = New-AutoscalingHeartbeatState -InitialCount $largeCounter -ObservedAt $observedAt
+Assert-Equal `
+    -Expected $largeCounter `
+    -Actual $largeState.First `
+    -Description "heartbeat state preserves a 64-bit initial counter"
+Assert-Equal `
+    -Expected $largeCounter `
+    -Actual $largeState.Last `
+    -Description "heartbeat state preserves a 64-bit latest counter"
+Assert-Equal `
+    -Expected "System.Int64" `
+    -Actual $largeState.First.GetType().FullName `
+    -Description "heartbeat state does not narrow the initial counter to Int32"
+Assert-Equal `
+    -Expected $observedAt `
+    -Actual $largeState.LastAdvancedAt `
+    -Description "heartbeat state records the supplied observation time"
+
 Write-Host "[ok] autoscaling load helpers behave consistently on $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
