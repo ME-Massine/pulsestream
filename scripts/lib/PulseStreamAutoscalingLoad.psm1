@@ -165,6 +165,19 @@ function Get-AutoscalingHeartbeatCountFromLogs {
     return $highest
 }
 
+function New-AutoscalingHeartbeatState {
+    param(
+        [Parameter(Mandatory)] [long] $InitialCount,
+        [datetime] $ObservedAt = (Get-Date)
+    )
+
+    return @{
+        First          = [long] $InitialCount
+        Last           = [long] $InitialCount
+        LastAdvancedAt = $ObservedAt
+    }
+}
+
 function Get-AutoscalingLoadPodHeartbeatCount {
     param(
         [Parameter(Mandatory)] [string] $Namespace,
@@ -242,6 +255,7 @@ Export-ModuleMember -Function `
     Stop-AutoscalingLoadPods, `
     Confirm-AutoscalingLoadPodRunning, `
     Get-AutoscalingHeartbeatCountFromLogs, `
+    New-AutoscalingHeartbeatState, `
     Get-AutoscalingLoadPodHeartbeatCount, `
     Confirm-AutoscalingLoadPodTraffic, `
     Assert-AutoscalingLoadPodHeartbeatAdvancing

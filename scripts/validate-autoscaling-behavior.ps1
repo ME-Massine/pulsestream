@@ -421,11 +421,7 @@ try {
     Start-Sleep -Seconds ([math]::Min(15, $SampleIntervalSeconds))
     foreach ($loadPodName in $loadPodNames) {
         $firstCount = Confirm-AutoscalingLoadPodTraffic -Namespace $Namespace -PodName $loadPodName
-        $heartbeats[$loadPodName] = @{
-            First          = [int] $firstCount
-            Last           = [int] $firstCount
-            LastAdvancedAt = Get-Date
-        }
+        $heartbeats[$loadPodName] = New-AutoscalingHeartbeatState -InitialCount $firstCount
     }
 
     # A pod that has not moved its counter for this long has stopped generating
