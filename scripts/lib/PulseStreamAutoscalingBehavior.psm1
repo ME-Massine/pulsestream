@@ -223,7 +223,15 @@ function New-AutoscalingSample {
         # autoscaler wants to scale in" and "it does not". Judging the
         # stabilization window on CPU alone, on an HPA that also scales on
         # requests-per-second, measures a window that never started.
-        [object[]] $AdditionalMetrics = @()
+        [object[]] $AdditionalMetrics = @(),
+        # How many Pods of the workload the metrics pipeline actually had a
+        # reading for at this instant, or null when the sampler could not find
+        # out. The HPA averages only the Pods it has a metric for, and reports
+        # that average in status BEFORE the conservative substitutions it makes
+        # for the Pods it does not - so without this count, a status average can
+        # be divided by more Pods than produced it. See
+        # Get-HpaScaleRecommendation.
+        [nullable[int]] $MetricPodCount = $null
     )
 
     $metrics = @(New-AutoscalingMetricReading `
@@ -246,6 +254,7 @@ function New-AutoscalingSample {
         RestartCounts       = $RestartCounts
         ScalingActiveStatus = $ScalingActiveStatus
         Metrics             = $metrics
+        MetricPodCount      = $MetricPodCount
     }
 }
 
@@ -320,10 +329,10 @@ function Get-ScaleEvents {
     return , $events
 }
 
-# The replica count the HPA would compute from one sample, and whether that
-# count is a scale-in.
+# An UPPER BOUND on the replica count the HPA would compute from one sample, and
+# whether even that bound is a scale-in.
 #
-# This is the controller's own arithmetic, not a proxy for it:
+# The naive form of this is the arithmetic everyone quotes:
 #
 #   desiredReplicas = ceil(currentReplicas * currentMetricValue / targetValue)
 #
@@ -334,17 +343,46 @@ function Get-ScaleEvents {
 # change" and proposes the current count.
 #
 # Utilization below the target is NOT the same as a scale-in recommendation, and
-# that gap is the whole reason this function exists. At 6 replicas and 69%
+# that gap is the first reason this function exists. At 6 replicas and 69%
 # against a 70% target the ratio is inside the tolerance and the proposal is
 # still 6; even at 62% it is ceil(6 * 62 / 70) = 6. The first count below 6
 # arrives at 58%. Anchoring the stabilization window to "utilization dropped
 # under target" would start the clock minutes before the HPA had any lower
 # number to stabilize, and accept a window far shorter than the configured one.
 #
+# The second reason is that the naive form is not what the controller runs when
+# some Pods are unready or missing a metric, and `status.currentMetrics` reports
+# the average from BEFORE those adjustments. `replica_calculator.go` averages
+# only the Pods that are ready AND have a metric, publishes exactly that number,
+# and then:
+#
+#   * divides by the number of Pods it averaged (readyPodCount), not by
+#     currentReplicas;
+#   * on the way down, substitutes the full target for every Pod whose metric is
+#     missing, which pulls the ratio back towards 1;
+#   * re-checks the tolerance on the adjusted ratio, and abandons the change
+#     entirely if the adjustment flipped the direction of the scale.
+#
+# Nothing in the HPA's status says which of "unready" or "missing a metric"
+# applies to the Pods the average left out, and the two lead to different
+# numbers. So both worlds are evaluated and the LARGER proposal is taken. The
+# result is an upper bound on the controller's own recommendation, which makes
+# RecommendsDownscale one-sided in the only direction that matters here: it is
+# never true unless the controller would have recommended a scale-in too. An
+# over-eager scale-in recommendation would anchor the stabilization window early
+# and pass a window that never held.
+#
+# Worked example, from the run that prompted this: 4 replicas, 3 of them Ready,
+# CPU 50% against a 70% target. The naive form proposes ceil(4 * 50/70) = 3 and
+# calls it a scale-in. The controller, treating the fourth Pod as missing a
+# metric, computes (0.714*3 + 1)/4 = 0.786 and ceil(0.786 * 4) = 4 - no scale-in
+# at all.
+#
 # Null DesiredReplicas means the HPA had no computable recommendation for this
-# sample - a metric read `<unknown>`, or the workload reported zero replicas.
-# That is deliberately not folded into "recommends a scale-in": a controller
-# that cannot read a metric does not scale down on it.
+# sample - a metric read `<unknown>`, the workload reported zero replicas, or no
+# Pod was both Ready and reporting. That is deliberately not folded into
+# "recommends a scale-in": a controller with nothing to average does not scale
+# down.
 function Get-HpaScaleRecommendation {
     param(
         [Parameter(Mandatory)] $Sample,
@@ -362,6 +400,23 @@ function Get-HpaScaleRecommendation {
         }
     }
 
+    # The most Pods the reported average can have been taken over. The
+    # Deployment's readyReplicas bounds it (the controller drops unready Pods),
+    # and the metrics pipeline's own Pod count bounds it again when the sampler
+    # managed to read one.
+    $measured = [math]::Min([int] $Sample.ReadyReplicas, $current)
+    if ($null -ne $Sample.MetricPodCount) {
+        $measured = [math]::Min($measured, [int] $Sample.MetricPodCount)
+    }
+    if ($measured -le 0) {
+        return [pscustomobject]@{
+            DesiredReplicas     = $null
+            RecommendsDownscale = $false
+            Detail              = "no Pod was both Ready and reporting a metric, so the HPA had nothing to average and computed no desired replica count"
+        }
+    }
+    $unmeasured = $current - $measured
+
     $desired = $null
     $details = @()
     foreach ($metric in @($Sample.Metrics)) {
@@ -374,13 +429,46 @@ function Get-HpaScaleRecommendation {
         }
 
         $ratio = [double] $metric.CurrentValue / [double] $metric.TargetValue
+
+        # World one: every unmeasured Pod is unready. The controller drops them
+        # from the average and from the divisor alike, so the proposal is the
+        # published ratio applied to the Pods that reported.
         if ([math]::Abs($ratio - 1.0) -le $Tolerance) {
             # Inside the tolerance band the controller skips scaling entirely,
             # so this metric asks for exactly what is already running.
-            $proposal = $current
+            $unreadyWorld = $current
         } else {
-            $proposal = [int] [math]::Ceiling($current * $ratio)
+            $unreadyWorld = [int] [math]::Ceiling($ratio * $measured)
         }
+
+        # World two: every unmeasured Pod is missing its metric. The controller
+        # fills each one in - at the target on the way down, at zero on the way
+        # up - and then divides by the whole Pod set.
+        if ($unmeasured -eq 0) {
+            $missingWorld = $unreadyWorld
+        } else {
+            $substitute = 0.0
+            if ($ratio -lt 1.0) {
+                $substitute = 1.0
+            }
+            $adjusted = (($ratio * $measured) + ($substitute * $unmeasured)) / $current
+
+            $flipped = ($ratio -lt 1.0 -and $adjusted -gt 1.0) -or ($ratio -gt 1.0 -and $adjusted -lt 1.0)
+            if ([math]::Abs($adjusted - 1.0) -le $Tolerance -or $flipped) {
+                # The substitution either erased the change or reversed its
+                # direction; the controller then keeps what is running.
+                $missingWorld = $current
+            } else {
+                $missingWorld = [int] [math]::Ceiling($adjusted * $current)
+                if (($adjusted -lt 1.0 -and $missingWorld -gt $current) -or ($adjusted -gt 1.0 -and $missingWorld -lt $current)) {
+                    $missingWorld = $current
+                }
+            }
+        }
+
+        # The upper bound across the two worlds. Under-reading the controller
+        # here would invent a scale-in recommendation it never made.
+        $proposal = [math]::Max($unreadyWorld, $missingWorld)
 
         $details += "$($metric.Name) $($metric.CurrentValue)/$($metric.TargetValue) -> $proposal"
         if ($null -eq $desired -or $proposal -gt $desired) {
@@ -403,7 +491,7 @@ function Get-HpaScaleRecommendation {
     return [pscustomobject]@{
         DesiredReplicas     = $desired
         RecommendsDownscale = ($desired -lt $current)
-        Detail              = "$current replicas, $($details -join '; '), clamped to [$MinReplicas, $MaxReplicas] -> $desired"
+        Detail              = "$current replicas ($measured of them measured), $($details -join '; '), clamped to [$MinReplicas, $MaxReplicas] -> $desired"
     }
 }
 
@@ -495,6 +583,19 @@ function Get-AutoscalingTimeline {
     # than MinReplicas pods serving has broken it regardless of replica count.
     $minReadyObserved = ($ordered | Measure-Object -Property ReadyReplicas -Minimum).Minimum
 
+    # The most capacity that was ever actually serving at one instant. Capped at
+    # the sample's own replica count so a Pod that is still Ready while it
+    # terminates cannot make a scale-up look larger than it was. Compared
+    # against PeakReplicas, this is what separates "the autoscaler added four
+    # Pods" from "the autoscaler asked for four Pods and the cluster ran three".
+    $peakReadyObserved = 0
+    foreach ($sample in $ordered) {
+        $serving = [math]::Min([int] $sample.ReadyReplicas, [int] $sample.Replicas)
+        if ($serving -gt $peakReadyObserved) {
+            $peakReadyObserved = $serving
+        }
+    }
+
     # A `<unknown>` metric in the first sample is expected and not counted: the
     # HPA needs one metrics-server scrape interval after it is created before it
     # can report anything.
@@ -521,6 +622,7 @@ function Get-AutoscalingTimeline {
     $downscaleRecommendedFrom = $null
     $downscaleRecommendationDetail = $null
     $observedScaleDownDelaySeconds = $null
+    $downscaleRecommendationGapSeconds = $null
     if ($null -ne $firstScaleDown) {
         $downscaleRecommendedFrom = Get-DownscaleRecommendationStart `
             -Samples $ordered `
@@ -535,6 +637,24 @@ function Get-AutoscalingTimeline {
                     -MaxReplicas $MaxReplicas `
                     -Tolerance $Tolerance).Detail
             $observedScaleDownDelaySeconds = [int] [math]::Round(($firstScaleDown.At - $downscaleRecommendedFrom.Timestamp).TotalSeconds)
+
+            # The one interval the observed delay is genuinely uncertain over:
+            # the recommendation turned over somewhere between the sample before
+            # the anchor and the anchor itself, so the true window can be up to
+            # that gap LONGER than what was measured. Zero when the anchor is
+            # the first sample of the run, where there is no earlier sample the
+            # recommendation could have turned over in.
+            #
+            # Gaps anywhere else in the timeline are not uncertainty about this
+            # measurement. See Get-ScaleDownSamplingGrace.
+            $downscaleRecommendationGapSeconds = 0
+            for ($i = 1; $i -lt $ordered.Count; $i++) {
+                if ($ordered[$i].Timestamp -eq $downscaleRecommendedFrom.Timestamp) {
+                    $downscaleRecommendationGapSeconds = [int] [math]::Ceiling(
+                        ($ordered[$i].Timestamp - $ordered[$i - 1].Timestamp).TotalSeconds)
+                    break
+                }
+            }
         }
     }
 
@@ -548,6 +668,7 @@ function Get-AutoscalingTimeline {
         PeakReplicas                  = $peak
         FinalReplicas                 = $ordered[-1].Replicas
         MinReadyObserved              = $minReadyObserved
+        PeakReadyReplicas             = $peakReadyObserved
         ScaleEvents                   = $scaleEvents
         ScaleUpCount                  = $scaleUps.Count
         ScaleDownCount                = $scaleDowns.Count
@@ -560,9 +681,64 @@ function Get-AutoscalingTimeline {
         ObservedScaleDownDelaySeconds = $observedScaleDownDelaySeconds
         DownscaleRecommendedAt        = $(if ($null -ne $downscaleRecommendedFrom) { $downscaleRecommendedFrom.Timestamp } else { $null })
         DownscaleRecommendationDetail = $downscaleRecommendationDetail
+        DownscaleRecommendationGapSeconds = $downscaleRecommendationGapSeconds
         FirstScaleDownAt              = $(if ($null -ne $firstScaleDown) { $firstScaleDown.At } else { $null })
         Tolerance                     = $Tolerance
         Samples                       = $ordered
+    }
+}
+
+# How much of the configured stabilization window the verdict is allowed to
+# forgive, given how this particular run was sampled.
+#
+# The observed delay runs from the anchor sample to the scale-in sample, and is
+# uncertain in exactly one direction: the recommendation turned over somewhere
+# inside the gap that ENDS at the anchor, so the real window can be up to that
+# gap longer than the measurement. Everything else about the sampling is either
+# irrelevant to this measurement or biases it the other way (the scale-in
+# happened at or before the sample that first saw it, which makes the observed
+# delay too LONG, and is not forgiven).
+#
+# That is why the widest gap anywhere in the timeline is the wrong number. A run
+# that stalled for 299s between two idle post-load samples, and then scaled in
+# 60s after the recommendation turned over, has told us nothing about the 300s
+# window - but a grace taken from the widest gap would forgive the entire window
+# and pass it.
+#
+# The ceiling is the second guard. A grace worth more than half the window means
+# the sampler was too coarse to say whether the window held at all, which is a
+# run to reject rather than to pass on a technicality; the caller turns
+# ExceedsCeiling into that rejection, and GraceSeconds stays capped either way so
+# the value handed to Confirm-AutoscalingBehavior is always a legal one.
+function Get-ScaleDownSamplingGrace {
+    param(
+        [Parameter(Mandatory)] $Timeline,
+        # Grace the caller wants regardless of what the run did, normally
+        # derived from the requested sampling interval.
+        [Parameter(Mandatory)] [int] $RequestedGraceSeconds,
+        [Parameter(Mandatory)] [int] $ExpectedScaleDownWindowSeconds
+    )
+
+    if ($ExpectedScaleDownWindowSeconds -le 0) {
+        throw "ExpectedScaleDownWindowSeconds must be positive; got $ExpectedScaleDownWindowSeconds."
+    }
+    if ($RequestedGraceSeconds -lt 0) {
+        throw "RequestedGraceSeconds must be non-negative; got $RequestedGraceSeconds."
+    }
+
+    $ceiling = [int] [math]::Floor($ExpectedScaleDownWindowSeconds / 2)
+    $anchorGap = 0
+    if ($null -ne $Timeline.DownscaleRecommendationGapSeconds) {
+        $anchorGap = [int] $Timeline.DownscaleRecommendationGapSeconds
+    }
+
+    $uncapped = [math]::Max($RequestedGraceSeconds, $anchorGap)
+    return [pscustomobject]@{
+        GraceSeconds         = [math]::Min($uncapped, $ceiling)
+        UncappedGraceSeconds = $uncapped
+        AnchorGapSeconds     = $anchorGap
+        CeilingSeconds       = $ceiling
+        ExceedsCeiling       = ($uncapped -gt $ceiling)
     }
 }
 
@@ -572,7 +748,8 @@ function Get-AutoscalingTimeline {
 # observed delay: a pod removed 299s after the load stopped, seen by a sampler
 # running every 15s, is the 300s window working. The grace is subtracted from
 # the expected window, never added to it, so a window that is genuinely too
-# short still fails.
+# short still fails. Get-ScaleDownSamplingGrace derives the value a run is
+# entitled to.
 function Confirm-AutoscalingBehavior {
     param(
         [Parameter(Mandatory)] $Timeline,
@@ -609,6 +786,16 @@ function Confirm-AutoscalingBehavior {
         -Condition ($Timeline.PeakReplicas -gt $Timeline.BaselineReplicas) `
         -SuccessMessage "replicas rose under load, from $($Timeline.BaselineReplicas) to a peak of $($Timeline.PeakReplicas)" `
         -FailureMessage "replicas never rose above the baseline of $($Timeline.BaselineReplicas). Either the load did not push utilization past the target (peak observed: $($Timeline.PeakUtilizationPercent)%) or the autoscaler did not act on it"
+
+    # A replica count is a request, not capacity. Pods that stay Pending for
+    # want of a node, or that never pass their readiness probe, are counted by
+    # `spec.replicas` and serve nothing - so a run that "scaled" 2 -> 6 while
+    # Ready stayed at 2 has proved the HPA can write a number and nothing about
+    # the platform's ability to absorb load.
+    Confirm-Condition `
+        -Condition ($Timeline.PeakReadyReplicas -ge $Timeline.PeakReplicas) `
+        -SuccessMessage "all $($Timeline.PeakReplicas) replicas of the peak became Ready, so the capacity the autoscaler asked for was capacity the cluster actually served with" `
+        -FailureMessage "the workload reached $($Timeline.PeakReplicas) replicas but never had more than $($Timeline.PeakReadyReplicas) of them Ready at once. Scaled-up Pods that stay Pending or fail readiness carry no traffic, so this is a scale-up the cluster did not deliver rather than one the autoscaler got right - check node CPU/memory headroom for $($Timeline.PeakReplicas) times the pod's requests, and the readiness probe, before reading anything else in this run"
 
     Confirm-Condition `
         -Condition ($Timeline.PeakReplicas -le $Timeline.MaxReplicas) `
@@ -702,4 +889,4 @@ function Format-AutoscalingTimeline {
     return ($lines -join [Environment]::NewLine)
 }
 
-Export-ModuleMember -Function ConvertFrom-KubernetesQuantity, New-AutoscalingMetricReading, Get-HpaMetricReadings, New-AutoscalingSample, Get-ScaleEvents, Get-HpaScaleRecommendation, Get-DownscaleRecommendationStart, Get-AutoscalingTimeline, Confirm-AutoscalingBehavior, Format-AutoscalingTimeline
+Export-ModuleMember -Function ConvertFrom-KubernetesQuantity, New-AutoscalingMetricReading, Get-HpaMetricReadings, New-AutoscalingSample, Get-ScaleEvents, Get-HpaScaleRecommendation, Get-DownscaleRecommendationStart, Get-AutoscalingTimeline, Get-ScaleDownSamplingGrace, Confirm-AutoscalingBehavior, Format-AutoscalingTimeline

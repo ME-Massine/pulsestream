@@ -190,9 +190,33 @@ done | {{BIN}}/kafka-console-producer.sh \
 '@
 
 # --- Sampling ----------------------------------------------------------------
-# Three reads per sample rather than one: the HPA carries the metric, the
-# Deployment carries the authoritative ready count, and the pods carry restart
-# counts. They are read back to back and stamped with a single timestamp.
+# Four reads per sample rather than one: the HPA carries the metric, the
+# Deployment carries the authoritative ready count, the pods carry restart
+# counts, and `kubectl top` says how many pods the metrics pipeline actually had
+# a reading for. They are read back to back and stamped with a single timestamp.
+
+# How many pods of the workload metrics-server currently has a value for.
+#
+# The HPA averages only the pods it has a metric for and publishes that average
+# in status; a validator that divides it back out by the full replica count is
+# computing something the controller never did. This is the count that bounds
+# the divisor - see Get-HpaScaleRecommendation.
+#
+# Null, not zero, when the read fails. A failed `kubectl top` is an absence of
+# information, and Get-HpaScaleRecommendation falls back to the Deployment's
+# ready count for its bound rather than concluding the workload has no metrics.
+function Get-MetricPodCount {
+    $top = Invoke-Kubectl -KubectlArgs @(
+        "top", "pods", "--namespace", $Namespace, "--selector", $podSelector, "--no-headers"
+    )
+    if ($top.ExitCode -ne 0) {
+        return $null
+    }
+
+    $lines = @(($top.Output -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    return $lines.Count
+}
+
 function Get-Sample {
     param([Parameter(Mandatory)] [int] $TargetPercent)
 
@@ -209,6 +233,8 @@ function Get-Sample {
     $pods = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "pods", "--namespace", $Namespace, "--selector", $podSelector, "-o", "json") `
             -ErrorContext "Could not list pods for '$Service'"
+
+    $metricPodCount = Get-MetricPodCount
 
     # Left null when the HPA has no reading yet or reports <unknown>. See
     # New-AutoscalingSample for why this must not become 0.
@@ -272,7 +298,8 @@ function Get-Sample {
         -UtilizationPercent $utilization `
         -RestartCounts $restartCounts `
         -ScalingActiveStatus $scalingActive `
-        -AdditionalMetrics $additionalMetrics
+        -AdditionalMetrics $additionalMetrics `
+        -MetricPodCount $metricPodCount
 }
 
 function Write-SampleLine {
@@ -349,8 +376,9 @@ if ($LoadDurationSeconds -lt $timingRequirements.MinimumLoadDurationSeconds) {
 }
 
 $scaleDownGraceSeconds = [math]::Max(30, $SampleIntervalSeconds * 2)
-if ($scaleDownGraceSeconds -ge $scaleDownWindow) {
-    throw "SampleIntervalSeconds ($SampleIntervalSeconds) produces ${scaleDownGraceSeconds}s of sampling grace, which must be smaller than the configured ${scaleDownWindow}s stabilization window. Reduce SampleIntervalSeconds or increase the HPA window."
+$scaleDownGraceCeilingSeconds = [int] [math]::Floor($scaleDownWindow / 2)
+if ($scaleDownGraceSeconds -gt $scaleDownGraceCeilingSeconds) {
+    throw "SampleIntervalSeconds ($SampleIntervalSeconds) produces ${scaleDownGraceSeconds}s of sampling grace, more than half of the configured ${scaleDownWindow}s stabilization window (${scaleDownGraceCeilingSeconds}s). A verdict that forgives that much of the window cannot say whether it held. Reduce SampleIntervalSeconds or increase the HPA window."
 }
 if ($IncludeScaleDown -and $ScaleDownTimeoutSeconds -lt $timingRequirements.MinimumScaleDownTimeoutSeconds) {
     throw "ScaleDownTimeoutSeconds ($ScaleDownTimeoutSeconds) is too short for this HPA. It must be at least $($timingRequirements.MinimumScaleDownTimeoutSeconds)s to cover the ${scaleDownWindow}s stabilization window, every possible $($timingRequirements.ScaleDownPolicyPeriodSeconds)s scale-down step, and a final sample at the floor."
@@ -548,15 +576,16 @@ $rendered = Format-AutoscalingTimeline -Timeline $timeline -Markers $markers
 Write-Host $rendered
 Write-Host ""
 
-# The grace is a tolerance for observation quantization, and what quantizes the
-# measurement is the cadence the sampler achieved, not the one it was asked for.
-# Each sample costs several kubectl round trips, and on a node the load has
-# saturated those are slow, so the real gap between samples can be well above
-# -SampleIntervalSeconds. Judging a 300s window with a tolerance derived from an
-# interval that was never achieved fails runs whose window in fact held.
+# The grace is a tolerance for observation quantization, and the only quantum
+# that can make the measured window too SHORT is the gap the recommendation
+# turned over inside - the one ending at the anchor sample. Widening the grace
+# to the largest gap anywhere in the timeline would let an unrelated stall in a
+# quiet stretch of the run forgive most of the window; see
+# Get-ScaleDownSamplingGrace, which owns this rule so that
+# test-autoscaling-behavior-analysis.ps1 can hold it to it offline.
 #
-# It is still only ever subtracted from the expected window, and a sampler too
-# slow to say anything about the window fails the run rather than passing it.
+# The widest gap is still computed, but only to be reported: it describes how
+# the run was sampled, not how much of the window the verdict may forgive.
 $observedGapSeconds = 0
 for ($i = 1; $i -lt $timeline.Samples.Count; $i++) {
     $gap = ($timeline.Samples[$i].Timestamp - $timeline.Samples[$i - 1].Timestamp).TotalSeconds
@@ -564,12 +593,17 @@ for ($i = 1; $i -lt $timeline.Samples.Count; $i++) {
         $observedGapSeconds = $gap
     }
 }
-$effectiveGraceSeconds = [math]::Max($scaleDownGraceSeconds, [int] [math]::Ceiling($observedGapSeconds))
-if ($IncludeScaleDown -and $effectiveGraceSeconds -ge $scaleDownWindow) {
-    throw "The widest gap between samples was $([int] $observedGapSeconds)s, which is not smaller than the configured ${scaleDownWindow}s stabilization window. This run cannot say whether the window held; sample a workload the cluster can serve while still answering API reads promptly."
+
+$graceDecision = Get-ScaleDownSamplingGrace `
+    -Timeline $timeline `
+    -RequestedGraceSeconds $scaleDownGraceSeconds `
+    -ExpectedScaleDownWindowSeconds $scaleDownWindow
+$effectiveGraceSeconds = $graceDecision.GraceSeconds
+if ($IncludeScaleDown -and $graceDecision.ExceedsCeiling) {
+    throw "The sample before the first scale-in recommendation was $($graceDecision.AnchorGapSeconds)s earlier, so the observed window is uncertain by more than half of the configured ${scaleDownWindow}s stabilization window ($($graceDecision.CeilingSeconds)s). This run cannot say whether the window held; sample a workload the cluster can serve while still answering API reads promptly."
 }
 if ($effectiveGraceSeconds -gt $scaleDownGraceSeconds) {
-    Write-Host "[note] Sampling ran at up to $([int] $observedGapSeconds)s between samples, above the requested ${SampleIntervalSeconds}s, so the scale-down window is judged with ${effectiveGraceSeconds}s of grace rather than ${scaleDownGraceSeconds}s."
+    Write-Host "[note] The sample before the first scale-in recommendation was $($graceDecision.AnchorGapSeconds)s earlier, above the requested ${SampleIntervalSeconds}s, so the scale-down window is judged with ${effectiveGraceSeconds}s of grace rather than ${scaleDownGraceSeconds}s."
 }
 
 Confirm-AutoscalingBehavior `
@@ -624,13 +658,13 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "| Tested revision | ``$revision`` |",
         "| HPA bounds | ``[$minReplicas, $maxReplicas]`` at a $targetPercent% CPU target |",
         "| Scale-down window | ``${scaleDownWindow}s`` (read from the applied HPA) |",
-        "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of grace |",
+        "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, gap before the scale-in recommendation ``$($graceDecision.AnchorGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of grace (ceiling ``$($graceDecision.CeilingSeconds)s``) |",
         "| Load | $effectiveLoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, $KafkaBurstEventsPerSecond events/s for ${KafkaBurstDurationSeconds}s then $KafkaEventsPerSecond events/s per pod" }) |",
         "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first |",
         "| HPA metrics | $($metricSummary) (desired replicas = max across metrics, tolerance ``$HpaTolerance``) |",
         $scaleDownAnchorRow,
         "| Peak utilization | $($timeline.PeakUtilizationPercent)% |",
-        "| Peak replicas | $($timeline.PeakReplicas) |",
+        "| Peak replicas | $($timeline.PeakReplicas), all Ready at the peak (highest Ready count observed: $($timeline.PeakReadyReplicas)) |",
         "| Container restarts | $($timeline.RestartDelta) |",
         "| Load-pod cleanup | Confirmed: no run-labelled pods remain |",
         "",
