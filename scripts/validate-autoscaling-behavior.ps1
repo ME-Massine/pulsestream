@@ -37,8 +37,8 @@ param(
     [ValidateSet("ingestion-service", "telemetry-processor")]
     [string] $Service = "ingestion-service",
     # Concurrent load pods, and parallel request loops inside each one. Zero
-    # selects the service-safe default: three lightweight curl pods for
-    # ingestion, or one JVM-based Kafka producer for telemetry.
+    # selects the service-safe default of one generator pod. Increase it when
+    # one pod cannot move the applied HPA past its target.
     [ValidateRange(0, 2147483647)] [int] $LoadPodCount = 0,
     [ValidateRange(1, 2147483647)] [int] $LoadConcurrency = 16,
     # The telemetry generator uses a short scale-up burst, then a sustainable
@@ -89,13 +89,7 @@ $structuralValidators = @{
     "telemetry-processor" = "scripts/validate-telemetry-processor-hpa.ps1"
 }
 $structuralValidator = $structuralValidators[$Service]
-$effectiveLoadPodCount = if ($LoadPodCount -gt 0) {
-    $LoadPodCount
-} elseif ($Service -eq "ingestion-service") {
-    3
-} else {
-    1
-}
+$effectiveLoadPodCount = if ($LoadPodCount -gt 0) { $LoadPodCount } else { 1 }
 
 # --- Load generators ---------------------------------------------------------
 # Both templates loop forever. The pod is deleted to stop the load, which is why
@@ -105,8 +99,8 @@ $effectiveLoadPodCount = if ($LoadPodCount -gt 0) {
 
 #
 # eventId carries {{POD}} as well as {{RUN}}: every load pod runs the same
-# template with the same counters, so without the pod ordinal the default
-# 3-pod run posts each id three times. The platform would then be exercising
+# template with the same counters, so without the pod ordinal a multi-pod run
+# posts each id more than once. The platform would then be exercising
 # its persistence de-duplication path instead of carrying representative
 # traffic, and what the HPA sees is the cost of rejecting duplicates.
 #
