@@ -17,7 +17,7 @@ A structural check passing tells you nothing about whether the autoscaler works.
 
 ## What the behavioral run asserts
 
-`scripts/validate-autoscaling-behavior.ps1` records a timeline of samples — replica count, ready count, CPU utilization against target, and container restarts — across three phases (idle, under load, after load), then applies these rules. They live in `scripts/lib/PulseStreamAutoscalingBehavior.psm1` as pure functions, so `scripts/tests/test-autoscaling-behavior-analysis.ps1` exercises each of them against synthetic timelines with no cluster involved.
+`scripts/validate-autoscaling-behavior.ps1` records a timeline of samples — replica count, ready count, CPU utilization against target, every other metric the HPA is configured with, and container restarts — across three phases (idle, under load, after load), then applies these rules. They live in `scripts/lib/PulseStreamAutoscalingBehavior.psm1` as pure functions, so `scripts/tests/test-autoscaling-behavior-analysis.ps1` exercises each of them against synthetic timelines with no cluster involved.
 
 | Assertion | Why it is a failure |
 | :--- | :--- |
@@ -27,9 +27,36 @@ A structural check passing tells you nothing about whether the autoscaler works.
 | Replicas never exceeded `maxReplicas` | The ceiling encodes downstream capacity — 3 topic partitions for the processor, node and partition capacity for ingestion — not a soft preference |
 | At least `minReplicas` pods were `Ready` in every sample | "Services remain healthy during scale events", measured as *ready* pods rather than scheduled ones. A new pod that is `Running` but not `Ready` is not serving |
 | No container restarted during the run | A restart under load means the scale event did not keep the existing pods healthy. Only the containers present in the *first* sample carry a historical baseline, since those Pods predate the run and their counts have nothing to do with it. A Pod the autoscaler creates mid-run starts from zero — otherwise a new replica that crash-looped before it was first sampled would be baselined at its own restart count and reported as a clean run |
-| *(scale-down runs only)* The workload returned to `minReplicas`, and the first scale-in came no earlier than the configured stabilization window | The stabilization window is the one part of `spec.behavior` a structural check cannot prove. A window that does not hold turns a GC or JIT dip into a scale-in, and for the processor every scale-in is a consumer group rebalance |
+| *(scale-down runs only)* The workload returned to `minReplicas`, and the first scale-in came no earlier than the configured stabilization window *after the HPA first recommended fewer replicas* | The stabilization window is the one part of `spec.behavior` a structural check cannot prove. A window that does not hold turns a GC or JIT dip into a scale-in, and for the processor every scale-in is a consumer group rebalance. What the window is measured **from** decides the verdict — see [Where the stabilization window starts](#where-the-stabilization-window-starts) |
 
 The scale-down assertions are opt-in (`-IncludeScaleDown`) because they cost the full 300-second window plus one step per replica. The window is read from the applied HPA rather than hardcoded, so the assertion tracks the manifest instead of drifting from it.
+
+### Where the stabilization window starts
+
+Kubernetes stabilizes *recommendations*, not metrics: the controller computes a desired replica count each cycle and, on the way down, holds the workload at the maximum recommendation inside the window. So the window can only be measured from the moment the HPA first recommends fewer replicas than are running — which is not the moment utilization drops below target, and the two can be minutes apart.
+
+The desired count is the controller's own arithmetic, reproduced in `Get-HpaScaleRecommendation`:
+
+```text
+desiredReplicas = ceil(currentReplicas * currentMetricValue / targetValue)   per metric
+                  maximum across all configured metrics
+                  clamped into [minReplicas, maxReplicas]
+                  no change at all while |ratio - 1| <= tolerance   (default 0.1)
+```
+
+Each step of that keeps a workload at its current size while the metric sits under target:
+
+| At 6 replicas, 70% target | Desired | Scale-in recommended? |
+| :--- | :--- | :--- |
+| 69% | 6 | No — inside the 0.1 tolerance, so the controller proposes no change |
+| 62% | 6 | No — outside the tolerance, but `ceil(6 × 62 / 70) = 6` |
+| 58% | 5 | Yes — the first reading that produces a smaller count |
+| 5%, with a second metric at its target | 6 | No — the desired count is the **maximum** across metrics |
+| 5%, with a second metric reading `<unknown>` | — | No — a controller that cannot read a metric does not scale in on it |
+
+Anchoring on "utilization last at or above target" instead would credit a run with the whole sub-target stretch. A workload idling at 69% for 150 seconds, collapsing to 10%, and scaling in 60 seconds later would be scored as a 270-second window and accepted against the configured 300-second one. `scripts/tests/test-autoscaling-behavior-analysis.ps1` carries that exact timeline as a regression case, along with a recommendation that dips and recovers (which restarts the window, since the controller stabilizes on the maximum) and a scale-in that no recommendation preceded at all (which is rejected outright rather than credited to the window).
+
+Every metric the applied HPA carries is sampled, not just CPU: `Get-HpaMetricReadings` pairs each `spec.metrics` entry with its `status.currentMetrics` reading, converting Kubernetes quantities (`100m`, `512Mi`) to a common base first. `-HpaTolerance` overrides the assumed 0.1 for a cluster whose `kube-controller-manager` runs a different `--horizontal-pod-autoscaler-tolerance`.
 
 ### Sampling grace
 
