@@ -36,15 +36,14 @@ param(
     # label selector.
     [ValidateSet("ingestion-service", "telemetry-processor")]
     [string] $Service = "ingestion-service",
-    # Concurrent load pods, and parallel request loops inside each one. The
-    # defaults push a 250m-request pod well past its 70% target on a laptop-class
-    # node; raise them if the peak utilization reported at the end never crosses
-    # the target.
-    [ValidateRange(1, 2147483647)] [int] $LoadPodCount = 3,
+    # Concurrent load pods, and parallel request loops inside each one. Zero
+    # selects the service-safe default: three lightweight curl pods for
+    # ingestion, or one JVM-based Kafka producer for telemetry.
+    [ValidateRange(0, 2147483647)] [int] $LoadPodCount = 0,
     [ValidateRange(1, 2147483647)] [int] $LoadConcurrency = 16,
     # The telemetry generator is intentionally bounded. An unthrottled Kafka
     # producer measures backlog growth and node starvation, not HPA behavior.
-    [ValidateRange(1, 10000)] [int] $KafkaEventsPerSecond = 100,
+    [ValidateRange(1, 10000)] [int] $KafkaEventsPerSecond = 300,
     # How long to keep the load running. The scale-up policies allow one step per
     # 60s, so this needs to span several steps to show more than a single jump.
     [ValidateRange(1, 2147483647)] [int] $LoadDurationSeconds = 240,
@@ -87,6 +86,13 @@ $structuralValidators = @{
     "telemetry-processor" = "scripts/validate-telemetry-processor-hpa.ps1"
 }
 $structuralValidator = $structuralValidators[$Service]
+$effectiveLoadPodCount = if ($LoadPodCount -gt 0) {
+    $LoadPodCount
+} elseif ($Service -eq "ingestion-service") {
+    3
+} else {
+    1
+}
 
 # --- Load generators ---------------------------------------------------------
 # Both templates loop forever. The pod is deleted to stop the load, which is why
@@ -391,10 +397,10 @@ try {
         }
     }
 
-    Write-Host "Starting $LoadPodCount load pod(s) against '$Service'..."
+    Write-Host "Starting $effectiveLoadPodCount load pod(s) against '$Service'..."
     $loadPodNames = @()
     $heartbeats = @{}
-    for ($i = 1; $i -le $LoadPodCount; $i++) {
+    for ($i = 1; $i -le $effectiveLoadPodCount; $i++) {
         $loadPodName = "autoscaling-load-$runId-$i"
         # Rendered per pod: POD is what keeps the generated eventId values
         # distinct across the pods of one run.
@@ -594,7 +600,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "| HPA bounds | ``[$minReplicas, $maxReplicas]`` at a $targetPercent% CPU target |",
         "| Scale-down window | ``${scaleDownWindow}s`` (read from the applied HPA) |",
         "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of grace |",
-        "| Load | $LoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, capped at $KafkaEventsPerSecond events/s per pod" }) |",
+        "| Load | $effectiveLoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, capped at $KafkaEventsPerSecond events/s per pod" }) |",
         "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first |",
         "| Peak utilization | $($timeline.PeakUtilizationPercent)% |",
         "| Peak replicas | $($timeline.PeakReplicas) |",
