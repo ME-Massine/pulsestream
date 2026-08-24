@@ -274,6 +274,47 @@ Assert-BehaviorRejects `
     -ExpectedMessage "only 1 pods were Ready at the worst sample" `
     -Description "a scale event that took the service below the availability floor was rejected"
 
+# The #290 review's first finding. A replica count is a request; capacity is
+# what became Ready. A run whose scaled-up pods stay Pending for want of node
+# memory looks identical to a working scale-up in `spec.replicas` alone, and the
+# floor assertion above cannot catch it - two Ready pods still clear a floor of
+# two.
+Assert-BehaviorRejects `
+    -Timeline (New-Timeline -Steps @(
+        @{ Offset = 0; Replicas = 2; Cpu = 3 },
+        @{ Offset = 30; Replicas = 6; Ready = 2; Cpu = 300 },
+        @{ Offset = 60; Replicas = 6; Ready = 2; Cpu = 280 }
+    )) `
+    -ExpectedMessage "reached 6 replicas but never had more than 2 of them Ready" `
+    -Description "a scale-up whose new pods never became Ready was rejected"
+
+# The same rule at the smaller margin the committed ingestion run hit: four
+# replicas asked for, three ever Ready.
+Assert-BehaviorRejects `
+    -Timeline (New-Timeline -Steps @(
+        @{ Offset = 0; Replicas = 2; Cpu = 3 },
+        @{ Offset = 30; Replicas = 4; Ready = 3; Cpu = 190 },
+        @{ Offset = 60; Replicas = 4; Ready = 3; Cpu = 160 }
+    )) `
+    -ExpectedMessage "reached 4 replicas but never had more than 3 of them Ready" `
+    -Description "a scale-up one pod short of the capacity it asked for was rejected"
+
+# Ready lagging the replica count DURING a scale-up is normal; only capacity
+# that never arrives is a failure. The healthy timeline scales 2 -> 4 -> 6 with
+# Ready trailing at each step and still passes.
+Assert-Equal -Expected 6 -Actual $healthy.PeakReadyReplicas `
+    -Description "the peak Ready count is the most capacity that ever served at once"
+
+# A pod that is still Ready while it terminates must not make a scale-up look
+# larger than the replica count it reached.
+$readyAheadOfReplicas = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 4; Ready = 4; Cpu = 190 },
+    @{ Offset = 60; Replicas = 3; Ready = 4; Cpu = 60 }
+)
+Assert-Equal -Expected 4 -Actual $readyAheadOfReplicas.PeakReadyReplicas `
+    -Description "the peak Ready count is capped by each sample's own replica count"
+
 Assert-BehaviorRejects `
     -Timeline (New-Timeline -Steps @(
         @{ Offset = 0; Replicas = 2; Cpu = 3; Restarts = 4 },
@@ -396,8 +437,17 @@ function New-RecommendationSample {
         [Parameter(Mandatory)] [int] $Replicas,
         [nullable[int]] $Cpu,
         [int] $TargetPercent = 70,
-        [object[]] $Metrics = @()
+        [object[]] $Metrics = @(),
+        # Default to a fully Ready, fully measured workload so only the tests
+        # that are about the controller's conservative adjustments mention it.
+        [nullable[int]] $Ready = $null,
+        [nullable[int]] $MetricPodCount = $null
     )
+
+    $readyReplicas = $Replicas
+    if ($null -ne $Ready) {
+        $readyReplicas = [int] $Ready
+    }
 
     $additional = @($Metrics | ForEach-Object {
             $current = $null
@@ -410,11 +460,12 @@ function New-RecommendationSample {
     return New-AutoscalingSample `
         -Timestamp $script:Origin `
         -Replicas $Replicas `
-        -ReadyReplicas $Replicas `
+        -ReadyReplicas $readyReplicas `
         -TargetPercent $TargetPercent `
         -UtilizationPercent $Cpu `
         -ScalingActiveStatus "True" `
-        -AdditionalMetrics $additional
+        -AdditionalMetrics $additional `
+        -MetricPodCount $MetricPodCount
 }
 
 function Get-Recommendation {
@@ -464,6 +515,58 @@ $unknownMetric = Get-Recommendation -Sample (New-RecommendationSample -Replicas 
     ))
 Assert-Null -Actual $unknownMetric.DesiredReplicas -Description "an <unknown> metric leaves the desired replica count uncomputable"
 Assert-Equal -Expected $false -Actual $unknownMetric.RecommendsDownscale -Description "an <unknown> metric is not treated as a scale-in recommendation"
+
+# --- Unready and unmeasured pods ---------------------------------------------
+# The #290 review's second finding. `status.currentMetrics` is the average over
+# the pods the controller could read, published BEFORE the substitutions it
+# makes for the pods it could not, so dividing it back out by the full replica
+# count computes something the controller never did.
+#
+# The exact sample from the committed ingestion run: 4 replicas, 3 Ready, CPU
+# 50% of a 70% target. Naively ceil(4 * 50/70) = 3, a scale-in. Treating the
+# fourth pod as missing its metric - the world the controller is most
+# conservative in - gives (0.714*3 + 1)/4 = 0.786 and ceil(0.786 * 4) = 4.
+$oneUnready = Get-Recommendation -Sample (New-RecommendationSample -Replicas 4 -Ready 3 -Cpu 50)
+Assert-Equal -Expected 4 -Actual $oneUnready.DesiredReplicas `
+    -Description "4 replicas with 1 unready at 50% of a 70% target still desires 4"
+Assert-Equal -Expected $false -Actual $oneUnready.RecommendsDownscale `
+    -Description "a status average taken over fewer pods than are running is not a scale-in recommendation on its own"
+
+# Far enough below target and even the conservative world scales in:
+# (0.143*3 + 1)/4 = 0.357, ceil(0.357 * 4) = 2.
+$deeplyIdleUnready = Get-Recommendation -Sample (New-RecommendationSample -Replicas 4 -Ready 3 -Cpu 10)
+Assert-Equal -Expected 2 -Actual $deeplyIdleUnready.DesiredReplicas `
+    -Description "an unready pod does not hold the desired count up once the measured pods are far under target"
+Assert-Equal -Expected $true -Actual $deeplyIdleUnready.RecommendsDownscale `
+    -Description "a genuine scale-in is still recognised while a pod is unready"
+
+# The same 4/3/50% shape, but metrics-server reports only two pods: the divisor
+# the controller used is smaller still, and more of the replica set is filled in
+# at target. (0.714*2 + 2)/4 = 0.857 is inside neither the tolerance nor a
+# direction flip, and ceil(0.857 * 4) = 4.
+$metricsBehindReadiness = Get-Recommendation -Sample (New-RecommendationSample -Replicas 4 -Ready 3 -Cpu 50 -MetricPodCount 2)
+Assert-Equal -Expected 4 -Actual $metricsBehindReadiness.DesiredReplicas `
+    -Description "a pod that is Ready but has no metric yet is treated as unmeasured, not as idle"
+Assert-Equal -Expected $false -Actual $metricsBehindReadiness.RecommendsDownscale `
+    -Description "missing metrics on a Ready pod do not produce a scale-in recommendation"
+
+# The substitution can pull the ratio back inside the tolerance, which is where
+# the controller abandons the change outright: 6 replicas, 5 measured, 58% of
+# 70% gives (0.829*5 + 1)/6 = 0.857 - but with only one replica unmeasured out
+# of six the arithmetic still lands on ceil(0.857*6) = 6, not the 5 that the
+# same reading produces when every pod reports.
+$fullyMeasured = Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Cpu 58)
+$partlyMeasured = Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Ready 5 -Cpu 58)
+Assert-Equal -Expected 5 -Actual $fullyMeasured.DesiredReplicas -Description "58% across six measured pods desires 5"
+Assert-Equal -Expected 6 -Actual $partlyMeasured.DesiredReplicas -Description "the same 58% with one pod unmeasured desires 6"
+
+# A workload with nothing Ready has no average behind its published metric at
+# all, so no recommendation can be attributed to the sample.
+$noneReady = Get-Recommendation -Sample (New-RecommendationSample -Replicas 4 -Ready 0 -Cpu 5)
+Assert-Null -Actual $noneReady.DesiredReplicas `
+    -Description "a sample with no Ready pod leaves the desired replica count uncomputable"
+Assert-Equal -Expected $false -Actual $noneReady.RecommendsDownscale `
+    -Description "a workload with nothing Ready is not treated as recommending a scale-in"
 
 # --- Quantity parsing ---------------------------------------------------------
 # Non-utilization targets arrive as Kubernetes quantities, and their ratio is
@@ -603,6 +706,79 @@ try {
     }
     Write-Host "[ok] sampling grace equal to the stabilization window is rejected"
 }
+
+# --- Where the sampling grace comes from --------------------------------------
+# The #290 review's third finding. The grace used to be widened to the widest
+# gap ANYWHERE in the timeline, so an unrelated 299s stall in the idle stretch
+# after the load bought a 60s scale-in a pass against a 300s window. Only the
+# gap the recommendation could have turned over inside - the one ending at the
+# anchor sample - makes the measurement too short, so only that gap is forgiven.
+$unrelatedStall = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 60; Replicas = 6; Cpu = 300 },
+    # 299s with the recommendation still at the ceiling: a long gap that says
+    # nothing at all about when the recommendation later turned over.
+    @{ Offset = 359; Replicas = 6; Cpu = 300 },
+    @{ Offset = 374; Replicas = 6; Cpu = 10 },
+    @{ Offset = 434; Replicas = 5; Cpu = 8 },
+    @{ Offset = 494; Replicas = 4; Cpu = 6 },
+    @{ Offset = 554; Replicas = 3; Cpu = 5 },
+    @{ Offset = 614; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected 60 -Actual $unrelatedStall.ObservedScaleDownDelaySeconds `
+    -Description "the observed window is measured from the anchor regardless of gaps elsewhere in the run"
+Assert-Equal -Expected 15 -Actual $unrelatedStall.DownscaleRecommendationGapSeconds `
+    -Description "the reported anchor gap is the interval ending at the first scale-in recommendation"
+
+$stallGrace = Get-ScaleDownSamplingGrace -Timeline $unrelatedStall -RequestedGraceSeconds 30 -ExpectedScaleDownWindowSeconds 300
+Assert-Equal -Expected 30 -Actual $stallGrace.GraceSeconds `
+    -Description "a 299s gap elsewhere in the timeline does not widen the sampling grace"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $unrelatedStall `
+    -ExpectedMessage "short of the configured 300s stabilization window" `
+    -Description "a 60s scale-down preceded by an unrelated 299s sampling gap was rejected"
+
+# The gap that IS the measurement's uncertainty still widens the grace, since a
+# recommendation seen 58s late makes the observed window up to 58s too short.
+$slowAnchor = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 90; Replicas = 6; Cpu = 300 },
+    @{ Offset = 148; Replicas = 6; Cpu = 10 },
+    @{ Offset = 400; Replicas = 5; Cpu = 8 },
+    @{ Offset = 460; Replicas = 4; Cpu = 6 },
+    @{ Offset = 520; Replicas = 3; Cpu = 5 },
+    @{ Offset = 580; Replicas = 2; Cpu = 4 }
+)
+$slowAnchorGrace = Get-ScaleDownSamplingGrace -Timeline $slowAnchor -RequestedGraceSeconds 30 -ExpectedScaleDownWindowSeconds 300
+Assert-Equal -Expected 58 -Actual $slowAnchorGrace.GraceSeconds `
+    -Description "the gap ending at the anchor widens the grace beyond the requested minimum"
+Confirm-AutoscalingBehavior `
+    -Timeline $slowAnchor `
+    -ExpectedScaleDownWindowSeconds 300 `
+    -ScaleDownGraceSeconds $slowAnchorGrace.GraceSeconds `
+    -RequireReturnToFloor
+Write-Host "[ok] a 252s observed window is accepted against a 300s one when the anchor itself was sampled 58s late"
+
+# Past half the window the run has stopped being evidence about the window, so
+# the grace is capped and the caller is told to reject rather than to pass on a
+# grace that forgives most of what it is measuring.
+$blindAnchor = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 230; Replicas = 6; Cpu = 10 },
+    @{ Offset = 500; Replicas = 5; Cpu = 8 },
+    @{ Offset = 560; Replicas = 4; Cpu = 6 },
+    @{ Offset = 620; Replicas = 3; Cpu = 5 },
+    @{ Offset = 680; Replicas = 2; Cpu = 4 }
+)
+$blindGrace = Get-ScaleDownSamplingGrace -Timeline $blindAnchor -RequestedGraceSeconds 30 -ExpectedScaleDownWindowSeconds 300
+Assert-Equal -Expected $true -Actual $blindGrace.ExceedsCeiling `
+    -Description "an anchor gap above half the window is reported as beyond what a verdict may forgive"
+Assert-Equal -Expected 150 -Actual $blindGrace.GraceSeconds `
+    -Description "the grace handed to the verdict is capped at half the stabilization window"
 
 # --- Rendering ---------------------------------------------------------------
 # The report is the deliverable of #153, so the renderer is asserted too: an

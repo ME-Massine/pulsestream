@@ -24,6 +24,7 @@ A structural check passing tells you nothing about whether the autoscaler works.
 | Every sample after the first carries a CPU reading | `<unknown>` means the HPA is blind. Nothing else in the run means anything, and the symptom is indistinguishable from an idle service |
 | Every sample after the first reports `ScalingActive=True` on the HPA | A CPU reading and a changing replica count show that the Deployment was resized, not who resized it. A rollout, a `kubectl scale`, or another controller produces the same timeline. `ScalingActive` is the autoscaler stating that it computed the desired count from the metric and wrote it to the scale subresource, so it is what attributes the replica changes to the HPA. The status is recorded on every line of the run report, not just summarised in the verdict |
 | Replicas rose above the baseline | The point of the run. If they did not, either the load never crossed the target or the autoscaler did not act |
+| Every replica of the peak became `Ready` | A replica count is a request; capacity is what became `Ready`. Scaled-up Pods that stay `Pending` for want of node memory, or that never pass their readiness probe, are counted by `spec.replicas` and carry no traffic — so a run that "scaled" 2 → 6 while `Ready` stayed at 2 has proved that the HPA can write a number and nothing about the platform's ability to absorb load. `Ready` lagging the replica count *during* a scale-up is normal and does not fail the run; capacity that never arrives does |
 | Replicas never exceeded `maxReplicas` | The ceiling encodes downstream capacity — 3 topic partitions for the processor, node and partition capacity for ingestion — not a soft preference |
 | At least `minReplicas` pods were `Ready` in every sample | "Services remain healthy during scale events", measured as *ready* pods rather than scheduled ones. A new pod that is `Running` but not `Ready` is not serving |
 | No container restarted during the run | A restart under load means the scale event did not keep the existing pods healthy. Only the containers present in the *first* sample carry a historical baseline, since those Pods predate the run and their counts have nothing to do with it. A Pod the autoscaler creates mid-run starts from zero — otherwise a new replica that crash-looped before it was first sampled would be baselined at its own restart count and reported as a clean run |
@@ -38,7 +39,7 @@ Kubernetes stabilizes *recommendations*, not metrics: the controller computes a 
 The desired count is the controller's own arithmetic, reproduced in `Get-HpaScaleRecommendation`:
 
 ```text
-desiredReplicas = ceil(currentReplicas * currentMetricValue / targetValue)   per metric
+desiredReplicas = ceil(measuredPods * currentMetricValue / targetValue)   per metric
                   maximum across all configured metrics
                   clamped into [minReplicas, maxReplicas]
                   no change at all while |ratio - 1| <= tolerance   (default 0.1)
@@ -58,9 +59,28 @@ Anchoring on "utilization last at or above target" instead would credit a run wi
 
 Every metric the applied HPA carries is sampled, not just CPU: `Get-HpaMetricReadings` pairs each `spec.metrics` entry with its `status.currentMetrics` reading, converting Kubernetes quantities (`100m`, `512Mi`) to a common base first. `-HpaTolerance` overrides the assumed 0.1 for a cluster whose `kube-controller-manager` runs a different `--horizontal-pod-autoscaler-tolerance`.
 
+#### Why the divisor is not the replica count
+
+`measuredPods`, not `currentReplicas`, is the divisor because that is the number the controller uses — and the difference decides the verdict on a cluster that cannot schedule every replica it is asked for.
+
+`replica_calculator.go` averages only the Pods that are `Ready` **and** have a metric, publishes exactly that average to `status.currentMetrics`, and *then* makes two adjustments the status never shows:
+
+- it divides by the number of Pods it averaged, not by `currentReplicas`;
+- on the way down it substitutes the full target for every Pod whose metric is missing, pulling the ratio back towards 1, re-checks the tolerance on the adjusted ratio, and abandons the change outright if the adjustment reversed its direction.
+
+Reading `status.currentMetrics` back out against `currentReplicas` therefore computes something the controller never did, and it errs in the dangerous direction: it invents scale-in recommendations, which anchor the stabilization window early and pass a window that never held. At 4 replicas with 3 `Ready` and CPU at 50% of a 70% target, the naive form proposes `ceil(4 × 50/70) = 3` and calls it a scale-in; the controller, filling the fourth Pod in at target, computes `(0.714×3 + 1)/4 = 0.786` and `ceil(0.786 × 4) = 4` — no scale-in at all.
+
+Nothing in the HPA's status says whether the Pods left out of the average were unready or merely missing a metric, and the two produce different numbers, so `Get-HpaScaleRecommendation` evaluates both worlds and takes the **larger** proposal. The result is an upper bound on the controller's own recommendation, which makes the scale-in verdict one-sided in the only direction that matters: it is never true unless the controller would have recommended a scale-in too. The sampler bounds `measuredPods` from the Deployment's `readyReplicas` and from `kubectl top pods`, so a Pod that is `Ready` but whose metric has not landed yet is treated as unmeasured rather than as idle.
+
 ### Sampling grace
 
-The observed scale-down delay is quantized by the sampling interval: a pod removed 299 seconds after the load stopped, seen by a sampler running every 15 seconds, is the 300-second window working correctly. The harness subtracts a grace period from the expected window before comparing — twice the requested sampling interval (minimum 30s), widened to the *widest gap the sampler actually achieved* if that was larger. Each sample costs several `kubectl` round trips, and on a node the load has saturated those are slow, so a run asked for 15-second sampling can land 50 seconds apart; judging the window against an interval that was never achieved fails runs whose window in fact held. The grace is only ever subtracted, never added, so a window that is genuinely too short still fails, and a sampler so slow that its gap reaches the window itself fails the run instead of passing it. Every run report records the requested interval, the widest observed gap, and the grace the verdict used.
+The observed scale-down delay is quantized by sampling: a pod removed 299 seconds after the recommendation turned over, seen by a sampler running every 15 seconds, is the 300-second window working correctly. The harness subtracts a grace period from the expected window before comparing — twice the requested sampling interval (minimum 30s).
+
+That grace is widened by exactly one thing: **the gap that ends at the anchor sample**. The recommendation turned over somewhere inside that gap, so the real window can be up to that much longer than what was measured. Every other property of the sampling either says nothing about this measurement or biases it the other way — the scale-in happened at or before the sample that first saw it, which makes the observed delay too *long*, and is not forgiven.
+
+The widest gap *anywhere* in the timeline is the wrong number, and the reason is concrete: a run that stalled for 299 seconds between two idle post-load samples and then scaled in 60 seconds after the recommendation turned over has said nothing about the 300-second window, but a grace taken from the widest gap would forgive the whole window and pass it. `Get-ScaleDownSamplingGrace` owns this rule so that `scripts/tests/test-autoscaling-behavior-analysis.ps1` can hold it to it offline, and that exact timeline is one of its regression cases.
+
+The grace is capped at half the stabilization window. Past that the run has stopped being evidence about the window at all, so it is rejected rather than passed on a grace that forgives most of what it is measuring; the same ceiling is applied to the requested grace in preflight, before load starts. Every run report records the requested interval, the widest observed gap, the gap before the scale-in recommendation, and the grace the verdict used.
 
 Preflight also derives minimum phase lengths from the applied HPA policies. The load phase must span the slowest scale-up policy interval plus two observations; an opted-in scale-down timeout must cover the stabilization window, one conservative policy interval for every possible replica step, and a final observation at the floor. A short run therefore fails before load starts instead of producing a misleading "did not scale" verdict.
 
@@ -95,7 +115,7 @@ Prerequisites, in order — each one fails the run with a specific message rathe
 
 1. **`metrics-server` installed and `Available`.** On kind and Docker Desktop it also needs `--kubelet-insecure-tls`, because their kubelets serve self-signed certificates. Confirm with `kubectl top nodes` before anything else.
 2. **The workload and its HPA applied**, and the corresponding structural validator already passing. This script assumes the shape is correct and only measures behavior.
-3. **Cluster capacity for the extra replicas.** Each replica requests `512Mi`; a single-node cluster near its memory ceiling will leave scaled-up pods `Pending`, which the run correctly reports as a readiness failure rather than an autoscaler failure. See the capacity caveat in the recorded `ingestion-service` run below.
+3. **Cluster capacity for the extra replicas.** Each replica requests `512Mi`; a single-node cluster near its memory ceiling will leave scaled-up pods `Pending`, and the run fails on the Ready-capacity assertion rather than reporting a scale-up the cluster never delivered. Check the node's free requests (`kubectl describe node`) against `maxReplicas × 512Mi` before starting, and free capacity — or lower the load so the HPA settles at a count the node can run — if there is not enough.
 
 ```powershell
 # Scale-up only (~5 minutes)
