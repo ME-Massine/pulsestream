@@ -782,6 +782,55 @@ Assert-BehaviorRejects `
     -ExpectedMessage "without a single preceding sample in which the HPA's desired replica count was below the running one" `
     -Description "a scale-in that no recommendation preceded was rejected instead of being credited to the window"
 
+# --- An unmeasurable window is not an unexplained scale-in --------------------
+# Both reach the verdict with no anchor, and the harness used to report them
+# identically: "check whether something other than the autoscaler resized the
+# Deployment". That is right for the case above and wrong here, where the
+# autoscaler is fine and the harness simply never sampled the metric's Pod
+# coverage. The applied custom-metrics HPA (#152) carries exactly such a metric,
+# so this is the message an operator running -IncludeScaleDown against it gets.
+$uncoveredMetric = @{ Name = "pods/http_requests_per_second"; Target = 50; Current = 1; MetricPodCount = $null }
+
+$uncoveredRecommendation = Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Cpu 5 -Metrics @($uncoveredMetric))
+Assert-Null -Actual $uncoveredRecommendation.DesiredReplicas `
+    -Description "a metric with unsampled Pod coverage yields no desired replica count"
+Assert-Equal -Expected $false -Actual $uncoveredRecommendation.RecommendsDownscale `
+    -Description "unknown coverage never counts as a scale-in recommendation, however idle the other metrics read"
+Assert-Equal -Expected "pods/http_requests_per_second" -Actual $uncoveredRecommendation.UncoveredMetric `
+    -Description "the recommendation names the metric whose coverage blocked it"
+Assert-Null -Actual (Get-Recommendation -Sample (New-RecommendationSample -Replicas 6 -Cpu 5)).UncoveredMetric `
+    -Description "a fully measured CPU-only sample reports no uncovered metric"
+
+$uncoveredTimeline = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3; Metrics = @($uncoveredMetric) },
+    @{ Offset = 60; Replicas = 6; Cpu = 300; Metrics = @($uncoveredMetric) },
+    @{ Offset = 420; Replicas = 6; Cpu = 2; Metrics = @($uncoveredMetric) },
+    @{ Offset = 480; Replicas = 2; Cpu = 2; Metrics = @($uncoveredMetric) }
+)
+Assert-Null -Actual $uncoveredTimeline.ObservedScaleDownDelaySeconds `
+    -Description "no window is measured when every sample was blocked by an uncovered metric"
+Assert-Equal -Expected "pods/http_requests_per_second" -Actual $uncoveredTimeline.DownscaleAnchorBlockedByMetric `
+    -Description "the timeline records which metric prevented the window from being anchored"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $uncoveredTimeline `
+    -ExpectedMessage "whose Pod coverage this run never sampled" `
+    -Description "an unmeasurable scale-down window was rejected as a limit of the run"
+
+# The two causes must not blur back together: the genuinely unexplained scale-in
+# above carries no blocked metric, and neither failure may borrow the other's
+# advice.
+Assert-Null -Actual $unexplainedScaleIn.DownscaleAnchorBlockedByMetric `
+    -Description "a scale-in the HPA never recommended is not attributed to an uncovered metric"
+try {
+    Confirm-AutoscalingBehavior -Timeline $uncoveredTimeline -ExpectedScaleDownWindowSeconds 300 -RequireReturnToFloor
+    throw "The behavior validator accepted an unmeasurable scale-down window."
+} catch {
+    if ($_.Exception.Message -match "something other than the autoscaler resized the Deployment") {
+        throw "An uncovered metric was reported as an unexplained scale-in: $($_.Exception.Message)"
+    }
+    Write-Host "[ok] an uncovered metric is not reported as something else resizing the Deployment"
+}
 # The sampling grace is a tolerance for observation quantization, never an
 # alternative stabilization window. A grace equal to the window used to make
 # the threshold zero and let any early scale-in pass.

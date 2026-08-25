@@ -405,6 +405,14 @@ function Get-ScaleEvents {
 # Pod was both Ready and reporting. That is deliberately not folded into
 # "recommends a scale-in": a controller with nothing to average does not scale
 # down.
+#
+# UncoveredMetric names the metric when the reason was specifically that its
+# per-Pod coverage was never sampled. That reason is a limit of this harness and
+# not an observation about the cluster - the sampler obtains coverage for CPU
+# alone - and it has to be told apart from the others, because it produces an
+# identical timeline and needs completely different advice.
+# Get-AutoscalingTimeline carries the name up so the verdict can say which of
+# the two happened.
 function Get-HpaScaleRecommendation {
     param(
         [Parameter(Mandatory)] $Sample,
@@ -419,6 +427,7 @@ function Get-HpaScaleRecommendation {
             DesiredReplicas     = $null
             RecommendsDownscale = $false
             Detail              = "the workload reported 0 replicas, so the HPA had nothing to scale"
+            UncoveredMetric     = $null
         }
     }
 
@@ -430,6 +439,7 @@ function Get-HpaScaleRecommendation {
                 DesiredReplicas     = $null
                 RecommendsDownscale = $false
                 Detail              = "metric '$($metric.Name)' read <unknown>, so the HPA computed no desired replica count"
+                UncoveredMetric     = $null
             }
         }
 
@@ -444,6 +454,7 @@ function Get-HpaScaleRecommendation {
                     DesiredReplicas     = $null
                     RecommendsDownscale = $false
                     Detail              = "metric '$($metric.Name)' has unknown Pod coverage, so it cannot establish a downscale recommendation"
+                    UncoveredMetric     = $metric.Name
                 }
             }
             $measured = [math]::Min([int] $Sample.ReadyReplicas, $current)
@@ -453,6 +464,7 @@ function Get-HpaScaleRecommendation {
                     DesiredReplicas     = $null
                     RecommendsDownscale = $false
                     Detail              = "no Pod was both Ready and reporting metric '$($metric.Name)', so the HPA had nothing to average"
+                    UncoveredMetric     = $null
                 }
             }
         } else {
@@ -514,6 +526,7 @@ function Get-HpaScaleRecommendation {
             DesiredReplicas     = $null
             RecommendsDownscale = $false
             Detail              = "the sample carried no metric readings"
+            UncoveredMetric     = $null
         }
     }
 
@@ -525,6 +538,7 @@ function Get-HpaScaleRecommendation {
         DesiredReplicas     = $desired
         RecommendsDownscale = ($desired -lt $current)
         Detail              = "$current replicas, $($details -join '; '), clamped to [$MinReplicas, $MaxReplicas] -> $desired"
+        UncoveredMetric     = $null
     }
 }
 
@@ -656,6 +670,7 @@ function Get-AutoscalingTimeline {
     $downscaleRecommendationDetail = $null
     $observedScaleDownDelaySeconds = $null
     $downscaleRecommendationGapSeconds = $null
+    $downscaleAnchorBlockedByMetric = $null
     if ($null -ne $firstScaleDown) {
         $downscaleRecommendedFrom = Get-DownscaleRecommendationStart `
             -Samples $ordered `
@@ -688,6 +703,30 @@ function Get-AutoscalingTimeline {
                     break
                 }
             }
+        } else {
+            # No anchor at all, which has two causes that produce the same
+            # timeline and need opposite advice. Either the HPA genuinely never
+            # recommended fewer replicas before the scale-in - something other
+            # than the autoscaler resized the workload - or this harness could
+            # not compute the recommendation because a configured per-Pod
+            # metric's coverage was never sampled, which blocks every sample and
+            # says nothing at all about the autoscaler. Recording which one it
+            # was costs a second pass over a timeline that has already failed.
+            foreach ($sample in $ordered) {
+                if ($sample.Timestamp -ge $firstScaleDown.At) {
+                    break
+                }
+
+                $blocked = Get-HpaScaleRecommendation `
+                    -Sample $sample `
+                    -MinReplicas $MinReplicas `
+                    -MaxReplicas $MaxReplicas `
+                    -Tolerance $Tolerance
+                if ($null -ne $blocked.UncoveredMetric) {
+                    $downscaleAnchorBlockedByMetric = $blocked.UncoveredMetric
+                    break
+                }
+            }
         }
     }
 
@@ -715,6 +754,7 @@ function Get-AutoscalingTimeline {
         DownscaleRecommendedAt        = $(if ($null -ne $downscaleRecommendedFrom) { $downscaleRecommendedFrom.Timestamp } else { $null })
         DownscaleRecommendationDetail = $downscaleRecommendationDetail
         DownscaleRecommendationGapSeconds = $downscaleRecommendationGapSeconds
+        DownscaleAnchorBlockedByMetric = $downscaleAnchorBlockedByMetric
         FirstScaleDownAt              = $(if ($null -ne $firstScaleDown) { $firstScaleDown.At } else { $null })
         Tolerance                     = $Tolerance
         Samples                       = $ordered
@@ -863,6 +903,12 @@ function Confirm-AutoscalingBehavior {
     if ($null -eq $Timeline.ObservedScaleDownDelaySeconds) {
         if ($null -eq $Timeline.FirstScaleDownAt) {
             $scaleDownDelayFailureMessage = "no scale-down delay could be computed because no scale-down occurred during the run. Either the run ended before the ${ExpectedScaleDownWindowSeconds}s stabilization window elapsed, or the HPA never recommended fewer replicas"
+        } elseif ($null -ne $Timeline.DownscaleAnchorBlockedByMetric) {
+            # Distinguished from the message below on purpose. Both arrive with
+            # no anchor, but this one is a gap in the harness rather than a
+            # finding about the autoscaler, and sending the reader to look for a
+            # second controller resizing the Deployment would waste the search.
+            $scaleDownDelayFailureMessage = "the scale-down window could not be measured: the applied HPA carries the per-Pod metric '$($Timeline.DownscaleAnchorBlockedByMetric)', whose Pod coverage this run never sampled, so no sample could produce the HPA's desired replica count and nothing could anchor the window. This harness samples Pod coverage for CPU alone, from 'kubectl top', and never lends that count to another metric, because metrics-server and a custom-metrics adapter can see different Pods. That is a limit of this run rather than a result about the autoscaler: judge scale-down against a CPU-only HPA, or sample this metric's coverage independently. Every assertion above this one is unaffected"
         } else {
             $scaleDownDelayFailureMessage = "the workload scaled in at $($Timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) without a single preceding sample in which the HPA's desired replica count was below the running one. No stabilization window explains that scale-in; check whether something other than the autoscaler resized the Deployment, or whether the sampling interval is coarse enough to have missed the recommendation entirely"
         }
