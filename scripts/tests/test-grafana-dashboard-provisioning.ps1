@@ -5,6 +5,13 @@
 # dashboard whose datasource UID, label selector or provider path is wrong does
 # not error anywhere - Grafana starts, the dashboard opens, and every panel is
 # empty. Each assertion below is one of the ways that happens.
+#
+# The last section is different in kind: it exercises
+# Compare-GrafanaDashboardModel, the function ../validate-grafana-kubernetes.ps1
+# uses to decide whether the dashboard Grafana has loaded is the dashboard this
+# repository committed. Those cases (a stale model, a renamed panel, a query
+# that never got reloaded) cannot be produced on demand against a live Grafana,
+# so they are covered here against synthetic models instead.
 
 [CmdletBinding()]
 param()
@@ -15,6 +22,8 @@ $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 $grafanaRoot = Join-Path $repositoryRoot "infrastructure/kubernetes/monitoring/grafana"
 $composeDashboardRoot = Join-Path $repositoryRoot "observability/grafana/dashboards"
+# #154. Present once this branch is rebased onto it; see section 5.
+$prometheusValuesPath = Join-Path $repositoryRoot "infrastructure/kubernetes/monitoring/prometheus-values.yaml"
 
 # Where dashboards-configmap.yaml has to be mounted for the provider in
 # dashboard-provider-configmap.yaml to find it. The two files are applied
@@ -23,6 +32,23 @@ $dashboardMountPath = "/etc/grafana/dashboards"
 
 # The Service #154 publishes Prometheus on, spelled as a datasource URL.
 $prometheusServiceUrl = "http://prometheus-server.monitoring.svc:80"
+
+# The labels #154 puts on every platform series, when prometheus-values.yaml is
+# not on disk to be read (i.e. before this branch is rebased onto it):
+#
+#   job, instance   written by Prometheus for every target, in every job
+#   namespace, pod  relabelled from the pod's discovery meta labels
+#   node            relabelled from the pod's node name
+#
+# There is deliberately no `service` here. #154 scrapes one job per workload and
+# relabels three meta labels; the workload name is `job`.
+$defaultClusterLabels = @("job", "instance", "namespace", "pod", "node")
+
+# Labels that come from the application rather than from the scrape config -
+# Micrometer tags on the HTTP server metrics. They are on the series regardless
+# of how it is scraped, which is why they are legitimate in a cluster dashboard
+# and are listed separately from the labels #154 produces.
+$micrometerLabels = @("uri", "outcome", "status", "method", "exception")
 
 $failures = [System.Collections.Generic.List[string]]::new()
 $assertionCount = 0
@@ -49,20 +75,21 @@ function Confirm-That {
 # that shape, and are shared with ../validate-grafana-kubernetes.ps1 so the two
 # cannot disagree about what the manifests contain.
 Import-Module (Join-Path $PSScriptRoot "..\lib\PulseStreamYaml.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "..\lib\PulseStreamGrafanaDashboards.psm1") -Force
 
 # Every PromQL expression in a dashboard, in document order.
 function Get-DashboardExpression {
     param([Parameter(Mandatory)] $Dashboard)
 
-    $expressions = [System.Collections.Generic.List[string]]::new()
+    return @(Get-GrafanaDashboardQuery -Dashboard $Dashboard | ForEach-Object { $_.Expression })
+}
 
-    foreach ($panel in $Dashboard.panels) {
-        foreach ($target in $panel.targets) {
-            $expressions.Add([string] $target.expr) | Out-Null
-        }
-    }
+# A detached copy, so a test case can mutate a dashboard without the next case
+# seeing the mutation.
+function Copy-DashboardModel {
+    param([Parameter(Mandatory)] $Dashboard)
 
-    return $expressions.ToArray()
+    return ($Dashboard | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
 }
 
 Write-Host "Validating Grafana provisioning manifests..."
@@ -190,25 +217,102 @@ foreach ($key in $dashboards.Keys) {
 
 # ---------------------------------------------------------------------------
 Write-Host ""
-Write-Host "5. Queries select on the label the in-cluster Prometheus produces."
+Write-Host "5. Queries select only on labels the in-cluster Prometheus produces."
 #
-# ../configmap.yaml gives every pod-discovered series job="kubernetes-pods" and
-# relabels the workload name into 'service'. A panel that kept the Compose
-# selector job="ingestion-service" matches nothing and draws an empty graph
-# without reporting an error anywhere.
+# #154 scrapes one job per workload and relabels namespace, pod and node onto
+# each series, so a workload is identified by `job` - the same selector the
+# Compose dashboards use. A panel selecting on a label that scrape config never
+# writes (`service`, say) is not an error: it matches nothing and draws an empty
+# graph.
+#
+# The expected label set is READ FROM #154 when that file is on disk, so this
+# test tracks the scrape config instead of restating it. Before this branch is
+# rebased onto #154 the file is absent and the documented set above is used;
+# the assertions are otherwise identical.
+
+$clusterLabels = $defaultClusterLabels
+$scrapeJobNames = @()
+$labelSource = "the documented #154 contract (prometheus-values.yaml is not on this branch yet)"
+
+if (Test-Path -LiteralPath $prometheusValuesPath -PathType Leaf) {
+    $prometheusValues = ConvertFrom-KubernetesYaml -Path $prometheusValuesPath
+
+    $derivedLabels = [System.Collections.Generic.List[string]]::new()
+    # Written by Prometheus itself for every target in every job, so they are
+    # never the output of a relabel rule.
+    $derivedLabels.Add("job") | Out-Null
+    $derivedLabels.Add("instance") | Out-Null
+
+    $derivedJobs = [System.Collections.Generic.List[string]]::new()
+
+    # ConvertFrom-KubernetesYaml returns each mapping as a PSCustomObject, so
+    # the job names are properties rather than dictionary keys.
+    foreach ($scrapeConfigProperty in $prometheusValues.scrapeConfigs.PSObject.Properties) {
+        $jobName = $scrapeConfigProperty.Name
+        $scrapeConfig = $scrapeConfigProperty.Value
+
+        if ($scrapeConfig.enabled -ne $true) {
+            continue
+        }
+
+        $derivedJobs.Add([string] $jobName) | Out-Null
+
+        foreach ($rule in $scrapeConfig.relabel_configs) {
+            $targetLabel = [string] $rule.target_label
+
+            # `__address__`, `__metrics_path__` and friends are consumed by
+            # Prometheus and dropped before storage; they never reach a query.
+            if ([string]::IsNullOrWhiteSpace($targetLabel) -or $targetLabel.StartsWith("__")) {
+                continue
+            }
+
+            if (-not $derivedLabels.Contains($targetLabel)) {
+                $derivedLabels.Add($targetLabel) | Out-Null
+            }
+        }
+    }
+
+    $clusterLabels = $derivedLabels.ToArray()
+    $scrapeJobNames = $derivedJobs.ToArray()
+    $labelSource = "infrastructure/kubernetes/monitoring/prometheus-values.yaml (#154)"
+}
+
+Write-Host "  (label contract read from $labelSource)"
+Write-Host "  (labels: $([string]::Join(', ', $clusterLabels)))"
+
+$allowedLabels = @($clusterLabels) + $micrometerLabels
 
 foreach ($key in $dashboards.Keys) {
     foreach ($expression in (Get-DashboardExpression -Dashboard $dashboards[$key])) {
-        Confirm-That -Condition ($expression -notmatch 'job\s*=') `
-            -Description "'$key' does not select on the 'job' label: $expression"
+        $selectors = Get-GrafanaExpressionSelectorLabel -Expression $expression
+        $unknown = @($selectors | Where-Object { $allowedLabels -notcontains $_ })
 
-        Confirm-That -Condition ($expression -match 'service\s*=~?') `
-            -Description "'$key' selects on the 'service' label: $expression"
+        Confirm-That -Condition ($unknown.Count -eq 0) `
+            -Description ("'$key' selects only on labels the cluster produces" +
+                $(if ($unknown.Count -gt 0) { " (unknown: $([string]::Join(', ', $unknown)))" } else { "" }) +
+                ": $expression")
+
+        # The specific regression this PR was reviewed for: the dashboards were
+        # written against a `service` label no scrape config in #154 creates.
+        Confirm-That -Condition ($selectors -notcontains "service") `
+            -Description "'$key' does not select on a 'service' label: $expression"
+
+        # A literal job= selector has to name a job #154 actually defines, when
+        # #154 is on disk to be checked against.
+        if ($scrapeJobNames.Count -gt 0) {
+            foreach ($jobValue in (Get-GrafanaExpressionLabelValue -Expression $expression -Label "job")) {
+                Confirm-That -Condition ($scrapeJobNames -contains $jobValue) `
+                    -Description "'$key' selects job=`"$jobValue`", which is a scrape job in prometheus-values.yaml"
+            }
+        }
     }
 
     foreach ($variable in $dashboards[$key].templating.list) {
-        Confirm-That -Condition ([string] $variable.query -notmatch ',\s*job\s*\)') `
-            -Description "'$key' variable '$($variable.name)' enumerates a label the cluster has: $($variable.query)"
+        $query = [string] $variable.query
+        $enumerated = [regex]::Match($query, 'label_values\(\s*(?:.+?,)?\s*(?<label>[A-Za-z_][A-Za-z0-9_]*)\s*\)')
+
+        Confirm-That -Condition ($enumerated.Success -and $clusterLabels -contains $enumerated.Groups['label'].Value) `
+            -Description "'$key' variable '$($variable.name)' enumerates a label the cluster has: $query"
     }
 }
 
@@ -216,9 +320,11 @@ foreach ($key in $dashboards.Keys) {
 Write-Host ""
 Write-Host "6. The cluster set and the Compose set describe the same dashboards."
 #
-# The queries differ by design (see the header of dashboards-configmap.yaml).
-# The structure must not: a panel added to one and not the other is how the two
-# environments start showing different things under the same dashboard name.
+# Both deployments identify a workload by `job`, so most expressions are now
+# identical across the two sets; what still differs is the per-pod breakdown in
+# Service Health, which has no meaning in Compose. The structure must not
+# differ: a panel added to one and not the other is how the two environments
+# start showing different things under the same dashboard name.
 
 foreach ($key in $dashboards.Keys) {
     $composePath = Join-Path $composeDashboardRoot $key
@@ -258,6 +364,158 @@ foreach ($key in $dashboards.Keys) {
         Confirm-That -Condition (@($clusterPanel.targets).Count -eq @($composePanel.targets).Count) `
             -Description "'$key' panel $($composePanel.id) has the same number of queries as the Compose copy"
     }
+}
+
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Host "7. A stale or edited dashboard in Grafana is detected as stale."
+#
+# ../validate-grafana-kubernetes.ps1 fetches each dashboard from
+# /api/dashboards/uid/<uid> and compares the served model with the committed
+# JSON, because identity does not prove content: a dashboard loaded before a
+# change to dashboards-configmap.yaml keeps its uid, title and folder, so
+# /api/search cannot tell it apart from a current one. These cases pin down what
+# that comparison catches - and, as importantly, what it must not flag, since a
+# false positive there would fail every run against a healthy cluster.
+
+$reference = $dashboards["service-health.json"]
+
+Confirm-That -Condition ($null -ne $reference) `
+    -Description "the comparison cases have a dashboard to work from (service-health.json)"
+
+if ($null -ne $reference) {
+    # --- must not flag ----------------------------------------------------
+    $identical = Copy-DashboardModel -Dashboard $reference
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $identical
+
+    Confirm-That -Condition ($differences.Count -eq 0) `
+        -Description "an unchanged dashboard reports no differences (got: $([string]::Join('; ', $differences)))"
+
+    # What Grafana actually serves back: it stamps id/version onto the model,
+    # fills in refId and a datasource on every target, and normalises
+    # whitespace-insignificant formatting. None of that is a difference.
+    $normalized = Copy-DashboardModel -Dashboard $reference
+    $normalized | Add-Member -NotePropertyName "id" -NotePropertyValue 42 -Force
+    $normalized | Add-Member -NotePropertyName "version" -NotePropertyValue 7 -Force
+    $refIds = @("A", "B", "C")
+    $refIdIndex = 0
+    foreach ($panel in $normalized.panels) {
+        foreach ($target in $panel.targets) {
+            $target | Add-Member -NotePropertyName "refId" -NotePropertyValue $refIds[$refIdIndex % $refIds.Count] -Force
+            $target | Add-Member -NotePropertyName "datasource" `
+                -NotePropertyValue ([pscustomobject]@{ type = "prometheus"; uid = "prometheus" }) -Force
+            $target.expr = "  " + ($target.expr -replace ' by \(', "  by  (") + " "
+            $refIdIndex++
+        }
+    }
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $normalized
+
+    Confirm-That -Condition ($differences.Count -eq 0) `
+        -Description "Grafana's own additions (id, version, refId, datasource, whitespace) are not differences (got: $([string]::Join('; ', $differences)))"
+
+    # A viewer selecting a value in a template variable changes `current`, and
+    # that is not staleness.
+    $viewed = Copy-DashboardModel -Dashboard $reference
+    $viewed.templating.list[0].current = [pscustomobject]@{ text = "ingestion-service"; value = "ingestion-service" }
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $viewed
+
+    Confirm-That -Condition ($differences.Count -eq 0) `
+        -Description "a variable left on a different selected value is not a difference (got: $([string]::Join('; ', $differences)))"
+
+    # --- must flag --------------------------------------------------------
+    # The exact regression this PR was reviewed for: a dashboard loaded before
+    # the label contract was corrected. Same uid, same title, same folder, same
+    # panel ids - and every panel empty.
+    $stale = Copy-DashboardModel -Dashboard $reference
+    foreach ($panel in $stale.panels) {
+        foreach ($target in $panel.targets) {
+            $target.expr = $target.expr.Replace('job=~"$job"', 'service=~"$service"')
+        }
+    }
+    $stale.templating.list[0].name = "service"
+    $stale.templating.list[0].query = "label_values(process_uptime_seconds, service)"
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $stale
+
+    Confirm-That -Condition ($differences.Count -gt 0) `
+        -Description "a dashboard still carrying the old 'service' selector is reported as stale"
+
+    Confirm-That -Condition (@($differences | Where-Object { $_ -match "service=~" }).Count -gt 0) `
+        -Description "the report names the query that drifted (got: $([string]::Join('; ', $differences)))"
+
+    Confirm-That -Condition (@($differences | Where-Object { $_ -match "template variable" }).Count -gt 0) `
+        -Description "the report names the template variable that drifted"
+
+    # One panel silently reverted to an older query, the rest current: the
+    # partial case a whole-document equality check would catch but a
+    # per-dashboard checksum in the ConfigMap would not explain.
+    $onePanelStale = Copy-DashboardModel -Dashboard $reference
+    $onePanelStale.panels[0].targets[0].expr = 'sum(jvm_memory_used_bytes{job=~"$job"}) by (job)'
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $onePanelStale
+
+    Confirm-That -Condition (@($differences | Where-Object { $_ -match "panel $($reference.panels[0].id)" }).Count -eq 1) `
+        -Description "a single drifted query is reported once, against its own panel (got: $([string]::Join('; ', $differences)))"
+
+    # A dashboard someone edited and saved through the UI under the same uid.
+    $renamed = Copy-DashboardModel -Dashboard $reference
+    $renamed.panels[1].title = "CPU"
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $renamed
+
+    Confirm-That -Condition (@($differences | Where-Object { $_ -match "is titled 'CPU'" }).Count -eq 1) `
+        -Description "a renamed panel is reported (got: $([string]::Join('; ', $differences)))"
+
+    # A dashboard loaded from a ConfigMap that predates a panel being added.
+    $missingPanel = Copy-DashboardModel -Dashboard $reference
+    $droppedId = [int] $missingPanel.panels[-1].id
+    $missingPanel.panels = @($missingPanel.panels | Select-Object -SkipLast 1)
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $missingPanel
+
+    Confirm-That -Condition (@($differences | Where-Object { $_ -match "missing panel\(s\) $droppedId" }).Count -eq 1) `
+        -Description "a panel missing from the loaded dashboard is reported (got: $([string]::Join('; ', $differences)))"
+
+    # A panel added in the UI, or left behind by an older ConfigMap.
+    $extraPanel = Copy-DashboardModel -Dashboard $reference
+    $extraPanel.panels = @($extraPanel.panels) + @([pscustomobject]@{
+        id      = 99
+        title   = "Scratch"
+        targets = @([pscustomobject]@{ expr = "up" })
+    })
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $extraPanel
+
+    Confirm-That -Condition (@($differences | Where-Object { $_ -match "panel\(s\) 99 that are not committed" }).Count -eq 1) `
+        -Description "an uncommitted panel in the loaded dashboard is reported"
+
+    # An extra query added to an existing panel: same panel id, same title.
+    $extraQuery = Copy-DashboardModel -Dashboard $reference
+    $extraQuery.panels[0].targets = @($extraQuery.panels[0].targets) + @([pscustomobject]@{ expr = "up" })
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $extraQuery
+
+    Confirm-That -Condition (@($differences | Where-Object { $_ -match "quer\(y/ies\) loaded" }).Count -eq 1) `
+        -Description "an added query on an unchanged panel is reported"
+
+    # A different dashboard served under the requested uid - what a UID
+    # collision between two provisioning sources looks like.
+    $wrongDashboard = Copy-DashboardModel -Dashboard $dashboards["ingestion-metrics.json"]
+    $wrongDashboard.uid = $reference.uid
+
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $wrongDashboard
+
+    Confirm-That -Condition (@($differences | Where-Object { $_ -match "loaded title is" }).Count -eq 1) `
+        -Description "a different dashboard served under the committed uid is reported"
+
+    # The source prefix is what makes a failure message point at one dashboard
+    # when both are being checked in the same run.
+    $differences = Compare-GrafanaDashboardModel -Committed $reference -Loaded $renamed -Source "loaded dashboard 'x'"
+
+    Confirm-That -Condition (@($differences | Where-Object { $_.StartsWith("loaded dashboard 'x': ") }).Count -eq $differences.Count) `
+        -Description "every difference is prefixed with the source it was found in"
 }
 
 # ---------------------------------------------------------------------------

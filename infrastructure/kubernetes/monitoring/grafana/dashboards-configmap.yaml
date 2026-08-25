@@ -1,31 +1,37 @@
 # The platform dashboards, as Grafana loads them in the cluster (#156).
 #
-# WHY THESE ARE NOT observability/grafana/dashboards/*.json VERBATIM.
-# The two Prometheus deployments label the same Micrometer series differently,
-# so one dashboard cannot serve both:
+# THE LABEL CONTRACT THESE QUERIES SELECT ON.
+# #154 scrapes the platform with one job per workload - `ingestion-service` and
+# `query-service` - discovered by role: pod, and relabels `namespace`, `pod` and
+# `node` onto every series. The workload name is therefore carried by `job`, the
+# same label the Compose deployment uses for it:
 #
 #   Compose      static target, one job per service   ->  job="ingestion-service"
-#   Kubernetes   pod discovery, one job for all pods  ->  job="kubernetes-pods"
-#                                                         service="ingestion-service"
+#   Kubernetes   pod discovery, one job per workload  ->  job="ingestion-service"
+#                                                         + namespace, pod, node
 #
-# ../configmap.yaml relabels `app.kubernetes.io/name` into a `service` label
-# precisely so a query has something stable to select on; `job` is the same
-# constant for every scraped pod there and selecting on it matches everything or
-# nothing. A panel copied across unchanged does not error - it draws an empty
-# graph, which is the failure this file exists to avoid.
+# There is no `service` label in the cluster: ../prometheus-values.yaml relabels
+# three meta labels and that is not one of them. Selecting on a label Prometheus
+# does not produce is not an error - the panel draws an empty graph - so
+# scripts/tests/test-grafana-dashboard-provisioning.ps1 holds every expression
+# here to the labels #154 actually writes.
 #
-# Beyond the label swap the panels are the same dashboards: same UIDs, same
-# titles, same panel IDs, same expressions. The differences are all consequences
-# of pods being plural where a Compose container is singular - per-pod series are
-# broken out by `pod` instead of being summed into one line. Which panels differ
-# and why is spelled out in observability/grafana/dashboards/README.md, and
-# scripts/tests/test-grafana-dashboard-provisioning.ps1 fails if a panel is added
-# to one set and not the other.
+# WHY A SEPARATE SET AT ALL, now that the selector is shared. Two reasons, both
+# consequences of pods being plural where a Compose container is singular: the
+# per-pod panels in Service Health break their series out by `pod`, and the tags
+# carry `kubernetes`. `ingestion-metrics.json` has no per-pod panel and is the
+# Compose dashboard apart from that tag; it stays in this file because Grafana
+# in the cluster loads dashboards from a ConfigMap and cannot read
+# observability/grafana/dashboards/ off the host.
 #
-# THE JSON IS INLINE, not generated from those files, because it is not a copy
-# of them. Keeping a second set of .json files on disk and rendering them into a
-# ConfigMap would add a build step and a generated artefact without removing the
-# fact that the queries genuinely differ.
+# Everything else is shared - same UIDs, same titles, same panel IDs - and the
+# structural test fails if a panel is added to one set and not the other. Which
+# panels differ and why is spelled out in
+# observability/grafana/dashboards/README.md.
+#
+# THE JSON IS INLINE rather than generated from those files, because a build
+# step and a generated artefact would not remove the per-pod differences that
+# make the two sets two sets.
 #
 # Kept small on purpose: a ConfigMap cannot exceed 1 MiB, which is roughly a
 # dozen dashboards of this size. Past that, dashboards move to one ConfigMap
@@ -54,10 +60,10 @@ data:
       "templating": {
         "list": [
           {
-            "name": "service",
+            "name": "job",
             "type": "query",
             "datasource": { "type": "prometheus", "uid": "prometheus" },
-            "query": "label_values(process_uptime_seconds, service)",
+            "query": "label_values(process_uptime_seconds, job)",
             "refresh": 2,
             "includeAll": true,
             "multi": true,
@@ -78,8 +84,8 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(jvm_memory_used_bytes{service=~\"$service\"}) by (service, pod)",
-              "legendFormat": "{{service}}/{{pod}}"
+              "expr": "sum(jvm_memory_used_bytes{job=~\"$job\"}) by (job, pod)",
+              "legendFormat": "{{job}}/{{pod}}"
             }
           ]
         },
@@ -95,12 +101,12 @@ data:
           },
           "targets": [
             {
-              "expr": "process_cpu_usage{service=~\"$service\"}",
-              "legendFormat": "{{service}}/{{pod}} process"
+              "expr": "process_cpu_usage{job=~\"$job\"}",
+              "legendFormat": "{{job}}/{{pod}} process"
             },
             {
-              "expr": "system_cpu_usage{service=~\"$service\"}",
-              "legendFormat": "{{service}}/{{pod}} system"
+              "expr": "system_cpu_usage{job=~\"$job\"}",
+              "legendFormat": "{{job}}/{{pod}} system"
             }
           ]
         },
@@ -116,8 +122,8 @@ data:
           },
           "targets": [
             {
-              "expr": "process_uptime_seconds{service=~\"$service\"}",
-              "legendFormat": "{{service}}/{{pod}}"
+              "expr": "process_uptime_seconds{job=~\"$job\"}",
+              "legendFormat": "{{job}}/{{pod}}"
             }
           ]
         },
@@ -133,8 +139,8 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(rate(http_server_requests_seconds_count{service=~\"$service\"}[1m])) by (service)",
-              "legendFormat": "{{service}}"
+              "expr": "sum(rate(http_server_requests_seconds_count{job=~\"$job\"}[1m])) by (job)",
+              "legendFormat": "{{job}}"
             }
           ]
         }
@@ -162,7 +168,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(rate(http_server_requests_seconds_count{service=\"ingestion-service\", uri=\"/api/v1/events\"}[1m]))",
+              "expr": "sum(rate(http_server_requests_seconds_count{job=\"ingestion-service\", uri=\"/api/v1/events\"}[1m]))",
               "legendFormat": "requests/s"
             }
           ]
@@ -179,7 +185,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(increase(http_server_requests_seconds_count{service=\"ingestion-service\", uri=\"/api/v1/events\"}[$__range])) by (outcome)",
+              "expr": "sum(increase(http_server_requests_seconds_count{job=\"ingestion-service\", uri=\"/api/v1/events\"}[$__range])) by (outcome)",
               "legendFormat": "{{outcome}} count"
             }
           ]
@@ -196,7 +202,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(rate(http_server_requests_seconds_sum{service=\"ingestion-service\", uri=\"/api/v1/events\"}[1m])) / sum(rate(http_server_requests_seconds_count{service=\"ingestion-service\", uri=\"/api/v1/events\"}[1m]))",
+              "expr": "sum(rate(http_server_requests_seconds_sum{job=\"ingestion-service\", uri=\"/api/v1/events\"}[1m])) / sum(rate(http_server_requests_seconds_count{job=\"ingestion-service\", uri=\"/api/v1/events\"}[1m]))",
               "legendFormat": "avg latency"
             }
           ]

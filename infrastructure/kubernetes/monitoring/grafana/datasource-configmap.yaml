@@ -15,11 +15,12 @@
 # longer exists, and the panels fail with "Datasource prometheus was not found"
 # rather than with an empty graph.
 #
-# THE URL IS THE #154 SERVICE, spelled exactly as
-# ../service.yaml declares it: Service `prometheus-server`, namespace
-# `monitoring`, port 80 forwarding to container port 9090. The fully-qualified
+# THE URL IS THE #154 SERVICE. ../prometheus-values.yaml installs the
+# prometheus-community chart as release `prometheus` in namespace `monitoring`,
+# which publishes Service `prometheus-server` on port 80. The fully-qualified
 # name is used rather than the short `prometheus-server` so this file keeps
-# working if Grafana is later moved out of the `monitoring` namespace.
+# working if Grafana is later moved out of the `monitoring` namespace. Renaming
+# that release or namespace changes this URL.
 #
 # Grafana does not watch this ConfigMap. A kubelet refreshes the mounted file
 # within a minute or so of an edit, but Grafana only re-reads provisioning at
@@ -64,7 +65,8 @@ data:
         # one that refuses up front.
         editable: false
         jsonData:
-          # Matches `global.scrape_interval` in ../configmap.yaml. Grafana uses
+          # Matches `server.global.scrape_interval` in
+          # ../prometheus-values.yaml (15s). Grafana uses
           # this as the floor for $__interval and $__rate_interval, so a value
           # below the real scrape interval makes range queries ask for a
           # resolution Prometheus never stored and draws gaps between points.

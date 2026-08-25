@@ -5,17 +5,28 @@
 #   1. Grafana connects to Prometheus  -> the datasource is provisioned and its
 #                                         health check reaches the #154 Service.
 #   2. Dashboards load                 -> both dashboards are in the PulseStream
-#                                         folder under the UIDs the JSON declares.
-#   3. Queries return expected data    -> every expression committed in
-#                                         dashboards-configmap.yaml is executed
+#                                         folder under the UIDs the JSON declares,
+#                                         AND the model Grafana serves for each
+#                                         UID is the model this repository
+#                                         committed.
+#   3. Queries return expected data    -> every expression in the dashboard
+#                                         Grafana actually has loaded is executed
 #                                         through the datasource and must return
 #                                         at least one series.
 #
+# WHY THE LOADED MODEL AND NOT THE MANIFEST. Identity is not content: a
+# dashboard that was loaded before a change to dashboards-configmap.yaml keeps
+# its UID, its title and its folder, so /api/search cannot tell it apart from a
+# current one. Executing expressions read from the local manifest against that
+# Grafana proves the queries are good and says nothing about the panels a user
+# opens. So every dashboard is fetched with /api/dashboards/uid/<uid>, compared
+# against the committed JSON panel by panel (Compare-GrafanaDashboardModel), and
+# it is the fetched model's own expressions that are executed below.
+#
 # Step 3 runs the real expressions rather than a stand-in like `up`, because the
 # way this feature breaks is a query that is valid, returns 200, and matches
-# nothing: the Compose dashboards select on `job`, the in-cluster Prometheus
-# labels the same series with `service`, and a panel that has the wrong one just
-# draws an empty graph.
+# nothing: #154 labels the platform series with job/namespace/pod/node, and a
+# panel selecting on any other label just draws an empty graph.
 #
 # Prerequisites: #154 (Prometheus in the cluster) and #155 (Grafana in the
 # cluster, mounting the three ConfigMaps - see
@@ -50,6 +61,10 @@ Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
 # tests/test-grafana-dashboard-provisioning.ps1 so the cluster path and the
 # no-cluster path cannot disagree about what the manifest contains.
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamYaml.psm1") -Force
+# Compare-GrafanaDashboardModel and the expression helpers. Shared with the same
+# test, which exercises the comparison against synthetic stale models - the
+# cases that cannot be produced against a live Grafana on demand.
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamGrafanaDashboards.psm1") -Force
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $grafanaRoot = Join-Path $repositoryRoot "infrastructure/kubernetes/monitoring/grafana"
@@ -60,69 +75,16 @@ $authHeader = @{
         [Text.Encoding]::ASCII.GetBytes("${GrafanaUser}:${GrafanaPassword}"))
 }
 
-# Grafana interpolates dashboard variables before sending PromQL to Prometheus,
-# so the committed expressions are not valid PromQL as written. The
-# substitutions are derived from each dashboard rather than hard-coded, and
-# anything left unresolved afterwards is a hard failure (see below) - a
-# validator that quietly skipped an expression it could not interpolate would
-# report success over a panel nobody had checked.
-function Get-DashboardVariableSubstitution {
-    param([Parameter(Mandatory)] $Dashboard)
-
-    $substitutions = [ordered]@{}
-
-    foreach ($variable in $Dashboard.templating.list) {
-        $value = [string] $variable.current.value
-
-        # A multi-value variable sitting on "All" is sent as a match-anything
-        # regex; anything else is sent as its selected value.
-        if ($value -eq '$__all' -or [string]::IsNullOrWhiteSpace($value)) {
-            $value = '.+'
-        }
-
-        $substitutions['$' + $variable.name] = $value
-    }
-
-    # $__range is the dashboard's own time range, which both dashboards declare
-    # as `now-<range>`.
-    $from = [string] $Dashboard.time.from
-    if ($from -match '^now-(?<range>\d+[smhdwy])$') {
-        $substitutions['$__range'] = $Matches['range']
-    }
-
-    return $substitutions
-}
-
-function Resolve-DashboardExpression {
+function Invoke-PrometheusResource {
     param(
-        [Parameter(Mandatory)] [string] $Expression,
-        [Parameter(Mandatory)] $Substitutions
+        [Parameter(Mandatory)] [string] $BaseUrl,
+        [Parameter(Mandatory)] [string] $Path
     )
 
-    $resolved = $Expression
-    foreach ($variable in $Substitutions.Keys) {
-        $resolved = $resolved.Replace($variable, [string] $Substitutions[$variable])
-    }
-
-    # Grafana has more built-ins than the two these dashboards use
-    # ($__interval, $__rate_interval, $__to, ...). Rather than guess at a value
-    # for one that appears later, refuse: an un-substituted variable would be
-    # sent to Prometheus as a syntax error and reported as "the panel is broken"
-    # instead of "this validator does not know that variable yet".
-    #
-    # Raised through Confirm-Condition rather than as a bare throw, because
-    # PermanentValidationError is declared inside PulseStreamValidation.psm1 and
-    # a PowerShell class does not leave its module for a plain Import-Module.
-    # Constructing it here would fail with "unable to find type" - and only on
-    # the path that was supposed to report the problem.
-    $unresolved = [regex]::Match($resolved, '\$(?<variable>[A-Za-z_][A-Za-z0-9_]*)')
-    if ($unresolved.Success) {
-        Confirm-Condition -Permanent -Condition $false -FailureMessage (
-            "Expression uses the variable '`$$($unresolved.Groups['variable'].Value)', which this validator " +
-            "cannot interpolate. Add it to Get-DashboardVariableSubstitution. Expression: $Expression")
-    }
-
-    return $resolved
+    # The datasource resources API proxies to Prometheus through Grafana, so a
+    # result here proves the whole path the browser uses - not just that
+    # Prometheus happens to be reachable from wherever this script runs.
+    return Invoke-JsonGet "$BaseUrl/api/datasources/uid/$DatasourceUid/resources/$Path" -Headers $authHeader
 }
 
 function Invoke-PrometheusQuery {
@@ -131,20 +93,42 @@ function Invoke-PrometheusQuery {
         [Parameter(Mandatory)] [string] $Expression
     )
 
-    # The datasource resources API proxies to Prometheus through Grafana, so a
-    # result here proves the whole path the browser uses - not just that
-    # Prometheus happens to be reachable from wherever this script runs.
-    $uri = "$BaseUrl/api/datasources/uid/$DatasourceUid/resources/api/v1/query" +
-        "?query=$([uri]::EscapeDataString($Expression))"
+    return Invoke-PrometheusResource -BaseUrl $BaseUrl `
+        -Path "api/v1/query?query=$([uri]::EscapeDataString($Expression))"
+}
 
-    return Invoke-JsonGet $uri -Headers $authHeader
+# Interpolation failure is reported through Confirm-Condition rather than a bare
+# throw, because PermanentValidationError is declared inside
+# PulseStreamValidation.psm1 and a PowerShell class does not leave its module for
+# a plain Import-Module. Constructing it here would fail with "unable to find
+# type" - and only on the path that was supposed to report the problem.
+function Resolve-ExpressionOrFail {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Expression,
+        [Parameter(Mandatory)] $Substitutions
+    )
+
+    $unresolved = ""
+    $resolved = Resolve-GrafanaExpression `
+        -Expression $Expression `
+        -Substitutions $Substitutions `
+        -UnresolvedVariable ([ref] $unresolved)
+
+    if ($null -eq $resolved) {
+        Confirm-Condition -Permanent -Condition $false -FailureMessage (
+            "Expression uses the variable '$unresolved', which this validator cannot interpolate. " +
+            "Add it to Get-GrafanaVariableSubstitution in lib/PulseStreamGrafanaDashboards.psm1. " +
+            "Expression: $Expression")
+    }
+
+    return $resolved
 }
 
 Write-Host "Validating the in-cluster Grafana provisioning..."
 
 # ---------------------------------------------------------------------------
 Write-Host ""
-Write-Host "1. The provisioning ConfigMaps are applied."
+Write-Host "1. The provisioning ConfigMaps are applied, and carry what is committed."
 
 $expectedConfigMaps = @(
     @{ Name = "grafana-datasource";         Key = "prometheus.yaml" },
@@ -163,15 +147,42 @@ foreach ($configMap in $expectedConfigMaps) {
 }
 
 $dashboardKeys = Get-ConfigMapDataKey -Path $dashboardsManifest
-$appliedDashboards = Get-KubectlJsonPath `
-    -KubectlArgs @("get", "configmap", "grafana-dashboards", "-n", $Namespace, "-o", "jsonpath={.data}") `
-    -ErrorContext "ConfigMap 'grafana-dashboards' was not found in namespace '$Namespace'"
+
+# Read as JSON rather than through jsonpath: a key containing a dot
+# ('service-health.json') has to be escaped in a jsonpath expression, and the
+# whole object is needed anyway to compare the applied content.
+$appliedDashboards = (Get-KubectlJsonPath `
+    -KubectlArgs @("get", "configmap", "grafana-dashboards", "-n", $Namespace, "-o", "json") `
+    -ErrorContext "ConfigMap 'grafana-dashboards' was not found in namespace '$Namespace'" | ConvertFrom-Json).data
+
+$committedDashboards = [ordered]@{}
 
 foreach ($key in $dashboardKeys) {
+    $committed = Get-ConfigMapDataValue -Path $dashboardsManifest -Key $key | ConvertFrom-Json
+    $committedDashboards[$key] = $committed
+
+    $applied = $appliedDashboards.$key
+
     Confirm-Condition -Permanent `
-        -Condition ($appliedDashboards -match [regex]::Escape($key)) `
+        -Condition (-not [string]::IsNullOrWhiteSpace([string] $applied)) `
         -SuccessMessage "ConfigMap 'grafana-dashboards' carries '$key'" `
         -FailureMessage "ConfigMap 'grafana-dashboards' has no '$key' entry - the applied ConfigMap is older than the committed manifest"
+
+    # The applied ConfigMap and the loaded dashboard are two different kinds of
+    # stale, and they are separated here so the report says which: a difference
+    # at this step means `kubectl apply` was not re-run, a difference at step 5
+    # means it was but Grafana has not picked it up.
+    $differences = Compare-GrafanaDashboardModel `
+        -Committed $committedDashboards[$key] `
+        -Loaded ($applied | ConvertFrom-Json) `
+        -Source "applied ConfigMap entry '$key'"
+
+    Confirm-Condition -Permanent `
+        -Condition ($differences.Count -eq 0) `
+        -SuccessMessage "ConfigMap entry '$key' matches the committed manifest" `
+        -FailureMessage ("The applied ConfigMap entry '$key' differs from the committed manifest - re-run " +
+            "``kubectl apply -f infrastructure/kubernetes/monitoring/grafana/``:" +
+            [Environment]::NewLine + "  " + [string]::Join([Environment]::NewLine + "  ", $differences))
 }
 
 # ---------------------------------------------------------------------------
@@ -279,7 +290,7 @@ try {
 
     # -----------------------------------------------------------------------
     Write-Host ""
-    Write-Host "5. The dashboards are loaded (acceptance criterion 2)."
+    Write-Host "5. The dashboards are loaded, and are the committed ones (acceptance criterion 2)."
 
     $search = Invoke-WithRetry `
         -TimeoutSeconds $TimeoutSeconds `
@@ -295,77 +306,139 @@ try {
             $found
         }
 
+    # The models Grafana serves, keyed by ConfigMap entry. Step 6 executes the
+    # expressions found in these, not the ones in the manifest.
+    $loadedDashboards = [ordered]@{}
+
     foreach ($key in $dashboardKeys) {
-        $committed = Get-ConfigMapDataValue -Path $dashboardsManifest -Key $key | ConvertFrom-Json
-        $loaded = @($search | Where-Object { $_.uid -eq $committed.uid })[0]
+        $committed = $committedDashboards[$key]
+
+        # Search first, for the error message: "the dashboard is not loaded" and
+        # "the dashboard is loaded but GET by uid failed" are different problems
+        # and the second one is rare enough to be worth naming.
+        $listed = @($search | Where-Object { $_.uid -eq $committed.uid })[0]
 
         Confirm-Condition -Permanent `
-            -Condition ($null -ne $loaded) `
+            -Condition ($null -ne $listed) `
             -SuccessMessage "Dashboard '$($committed.title)' is loaded (uid $($committed.uid))" `
             -FailureMessage "Dashboard uid '$($committed.uid)' from '$key' is not loaded in Grafana"
 
-        Confirm-Condition -Permanent `
-            -Condition ($loaded.title -eq $committed.title) `
-            -SuccessMessage "Dashboard '$($committed.uid)' has the committed title" `
-            -FailureMessage "Dashboard '$($committed.uid)' is titled '$($loaded.title)', expected '$($committed.title)'"
+        $fetched = Invoke-WithRetry `
+            -TimeoutSeconds $TimeoutSeconds `
+            -FailureMessage "Grafana did not serve dashboard uid '$($committed.uid)' within $TimeoutSeconds seconds." `
+            -Operation {
+                Invoke-JsonGet "$GrafanaBaseUrl/api/dashboards/uid/$($committed.uid)" -Headers $authHeader
+            }
+
+        $loaded = $fetched.dashboard
 
         Confirm-Condition -Permanent `
-            -Condition ($loaded.folderTitle -eq "PulseStream") `
+            -Condition ($null -ne $loaded) `
+            -SuccessMessage "Grafana served the dashboard model for uid '$($committed.uid)'" `
+            -FailureMessage "Grafana returned no dashboard model for uid '$($committed.uid)'"
+
+        Confirm-Condition -Permanent `
+            -Condition ($fetched.meta.folderTitle -eq "PulseStream") `
             -SuccessMessage "Dashboard '$($committed.uid)' is in the PulseStream folder" `
-            -FailureMessage "Dashboard '$($committed.uid)' is in folder '$($loaded.folderTitle)', expected 'PulseStream'"
+            -FailureMessage "Dashboard '$($committed.uid)' is in folder '$($fetched.meta.folderTitle)', expected 'PulseStream'"
+
+        # provisioned=false means the dashboard in front of us was imported or
+        # saved through the UI and lives in Grafana's database, where nothing in
+        # this repository updates it.
+        Confirm-Condition -Permanent `
+            -Condition ($fetched.meta.provisioned -eq $true) `
+            -SuccessMessage "Dashboard '$($committed.uid)' is file-provisioned" `
+            -FailureMessage "Dashboard '$($committed.uid)' is not file-provisioned (meta.provisioned=$($fetched.meta.provisioned)) - it came from Grafana's database, not the ConfigMap"
+
+        # The check /api/search cannot make. Identity is unchanged by every
+        # interesting kind of staleness; content is not.
+        $differences = Compare-GrafanaDashboardModel `
+            -Committed $committed `
+            -Loaded $loaded `
+            -Source "loaded dashboard '$($committed.uid)'"
+
+        Confirm-Condition -Permanent `
+            -Condition ($differences.Count -eq 0) `
+            -SuccessMessage "Dashboard '$($committed.uid)' matches the committed model ($(@(Get-GrafanaDashboardQuery -Dashboard $loaded).Count) quer(y/ies) over $(@($loaded.panels).Count) panel(s))" `
+            -FailureMessage ("Dashboard '$($committed.uid)' is loaded, but is not the committed dashboard. Grafana " +
+                "re-reads the provisioning directory every 30s; if this persists, the mounted ConfigMap is stale or " +
+                "the dashboard was overwritten through the UI:" +
+                [Environment]::NewLine + "  " + [string]::Join([Environment]::NewLine + "  ", $differences))
+
+        $loadedDashboards[$key] = $loaded
     }
 
     # -----------------------------------------------------------------------
     Write-Host ""
-    Write-Host "6. The panel queries return data (acceptance criterion 3)."
+    Write-Host "6. The loaded panel queries return data (acceptance criterion 3)."
 
-    # Checked first and separately: if the relabel rule in ../configmap.yaml is
-    # missing, every expression below fails identically and the reason is not
-    # visible in any of them.
+    # Checked first and separately: if the scrape jobs the dashboards name are
+    # not in Prometheus, every expression that pins one fails identically and
+    # the reason is not visible in any of them. The job names come from the
+    # dashboards themselves rather than a hard-coded list, so this follows a
+    # panel that starts selecting a new workload.
+    $requiredJobs = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($key in $dashboardKeys) {
+        foreach ($query in (Get-GrafanaDashboardQuery -Dashboard $loadedDashboards[$key])) {
+            foreach ($value in (Get-GrafanaExpressionLabelValue -Expression $query.Expression -Label "job")) {
+                if (-not $requiredJobs.Contains($value)) {
+                    $requiredJobs.Add($value) | Out-Null
+                }
+            }
+        }
+    }
+
     Invoke-WithRetry `
         -TimeoutSeconds $TimeoutSeconds `
-        -FailureMessage "Prometheus has no 'service' label values within $TimeoutSeconds seconds. The dashboards select on it; it comes from the relabel rule in infrastructure/kubernetes/monitoring/configmap.yaml." `
+        -FailureMessage "Prometheus did not report the expected scrape jobs within $TimeoutSeconds seconds." `
         -Operation {
-            $labelValues = Invoke-JsonGet `
-                "$GrafanaBaseUrl/api/datasources/uid/$DatasourceUid/resources/api/v1/label/service/values" `
-                -Headers $authHeader
+            $labelValues = Invoke-PrometheusResource -BaseUrl $GrafanaBaseUrl -Path "api/v1/label/job/values"
+            $jobs = @($labelValues.data)
 
             Confirm-Condition `
-                -Condition (@($labelValues.data).Count -gt 0) `
-                -SuccessMessage "Prometheus knows these 'service' label values: $([string]::Join(', ', @($labelValues.data)))" `
-                -FailureMessage "Prometheus has no series carrying a 'service' label"
+                -Condition ($jobs.Count -gt 0) `
+                -SuccessMessage "Prometheus knows these 'job' label values: $([string]::Join(', ', $jobs))" `
+                -FailureMessage "Prometheus has no series carrying a 'job' label"
+
+            $missingJobs = @($requiredJobs | Where-Object { $jobs -notcontains $_ })
+
+            Confirm-Condition `
+                -Condition ($missingJobs.Count -eq 0) `
+                -SuccessMessage "Every job the dashboards select on is being scraped: $([string]::Join(', ', $requiredJobs))" `
+                -FailureMessage ("Prometheus has no series for job(s) $([string]::Join(', ', $missingJobs)). Those are " +
+                    "scrape jobs in infrastructure/kubernetes/monitoring/prometheus-values.yaml (#154); check the " +
+                    "targets there before blaming a panel.")
         }
 
     foreach ($key in $dashboardKeys) {
-        $dashboard = Get-ConfigMapDataValue -Path $dashboardsManifest -Key $key | ConvertFrom-Json
-        $substitutions = Get-DashboardVariableSubstitution -Dashboard $dashboard
+        $dashboard = $loadedDashboards[$key]
+        $substitutions = Get-GrafanaVariableSubstitution -Dashboard $dashboard
 
-        foreach ($panel in $dashboard.panels) {
-            foreach ($target in $panel.targets) {
-                $expression = Resolve-DashboardExpression `
-                    -Expression ([string] $target.expr) `
-                    -Substitutions $substitutions
+        foreach ($query in (Get-GrafanaDashboardQuery -Dashboard $dashboard)) {
+            $expression = Resolve-ExpressionOrFail `
+                -Expression $query.Expression `
+                -Substitutions $substitutions
 
-                Invoke-WithRetry `
-                    -TimeoutSeconds $TimeoutSeconds `
-                    -FailureMessage "'$($dashboard.title)' panel $($panel.id) ('$($panel.title)') returned no data within $TimeoutSeconds seconds. Query: $expression" `
-                    -Operation {
-                        $result = Invoke-PrometheusQuery -BaseUrl $GrafanaBaseUrl -Expression $expression
+            Invoke-WithRetry `
+                -TimeoutSeconds $TimeoutSeconds `
+                -FailureMessage "'$($dashboard.title)' panel $($query.PanelId) ('$($query.PanelTitle)') returned no data within $TimeoutSeconds seconds. Query: $expression" `
+                -Operation {
+                    $result = Invoke-PrometheusQuery -BaseUrl $GrafanaBaseUrl -Expression $expression
 
-                        # A malformed query is a permanent failure; an empty
-                        # result is not, because a freshly started service has
-                        # not been scraped yet.
-                        Confirm-Condition -Permanent `
-                            -Condition ($result.status -eq "success") `
-                            -SuccessMessage "'$($dashboard.title)' panel $($panel.id) query is valid PromQL" `
-                            -FailureMessage "'$($dashboard.title)' panel $($panel.id) query failed: $($result.error). Query: $expression"
+                    # A malformed query is a permanent failure; an empty
+                    # result is not, because a freshly started service has
+                    # not been scraped yet.
+                    Confirm-Condition -Permanent `
+                        -Condition ($result.status -eq "success") `
+                        -SuccessMessage "'$($dashboard.title)' panel $($query.PanelId) query is valid PromQL" `
+                        -FailureMessage "'$($dashboard.title)' panel $($query.PanelId) query failed: $($result.error). Query: $expression"
 
-                        Confirm-Condition `
-                            -Condition (@($result.data.result).Count -gt 0) `
-                            -SuccessMessage "'$($dashboard.title)' panel $($panel.id) ('$($panel.title)') returned $(@($result.data.result).Count) series" `
-                            -FailureMessage "'$($dashboard.title)' panel $($panel.id) ('$($panel.title)') returned no series"
-                    }
-            }
+                    Confirm-Condition `
+                        -Condition (@($result.data.result).Count -gt 0) `
+                        -SuccessMessage "'$($dashboard.title)' panel $($query.PanelId) ('$($query.PanelTitle)') returned $(@($result.data.result).Count) series" `
+                        -FailureMessage "'$($dashboard.title)' panel $($query.PanelId) ('$($query.PanelTitle)') returned no series"
+                }
         }
     }
 } finally {

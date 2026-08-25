@@ -77,7 +77,18 @@ Enable `sidecar.datasources.enabled` and `sidecar.dashboards.enabled` in the cha
 ./scripts/validate-grafana-kubernetes.ps1
 ```
 
-The script opens its own `kubectl port-forward` (pass `-GrafanaBaseUrl` to reuse one) and walks the three acceptance criteria in the order they fail: the ConfigMaps are applied, the datasource is provisioned and its health check reaches Prometheus, both dashboards are loaded in the `PulseStream` folder, and every expression committed in `dashboards-configmap.yaml` returns at least one series.
+The script opens its own `kubectl port-forward` (pass `-GrafanaBaseUrl` to reuse one) and walks the three acceptance criteria in the order they fail: the ConfigMaps are applied and carry what is committed, the datasource is provisioned and its health check reaches Prometheus, both dashboards are loaded in the `PulseStream` folder, and every panel query returns at least one series.
+
+**It validates the dashboards Grafana serves, not the files on disk.** Each dashboard is fetched with `/api/dashboards/uid/<uid>` and compared with the committed JSON panel by panel — titles, query counts, expressions, template variables — and it is the fetched model's own expressions that are executed against Prometheus. Identity does not prove content: a dashboard loaded before a change to `dashboards-configmap.yaml` keeps its UID, its title and its folder, so `/api/search` cannot tell it apart from a current one, and executing the local manifest's expressions against it would report success over panels nobody had checked. A difference is reported as a diff:
+
+```
+Dashboard 'pulsestream-service-health' is loaded, but is not the committed dashboard...
+  loaded dashboard 'pulsestream-service-health': panel 1 ('JVM Memory Used') query 1 is loaded as
+  'sum(jvm_memory_used_bytes{service=~"$service"}) by (job, pod)', committed as
+  'sum(jvm_memory_used_bytes{job=~"$job"}) by (job, pod)'
+```
+
+The applied ConfigMap is checked the same way, one step earlier, so the report separates the two kinds of stale: a difference there means `kubectl apply` was not re-run; a difference against the loaded model means it was, and Grafana has not picked it up (or the dashboard was overwritten through the UI). `scripts/tests/test-grafana-dashboard-provisioning.ps1` covers the comparison itself against synthetic stale models — no cluster needed.
 
 **The query checks need traffic.** `Request Rate`, `Success vs Failure Count` and `Average Ingestion Latency` are all rates over `/api/v1/events`; with no requests in the window they correctly return nothing, and the script reports them as failures. Send some ingestion traffic first — see [`../../ingestion-service/README.md`](../../ingestion-service/README.md) for the NodePort address.
 
@@ -99,20 +110,24 @@ curl -s -u "$GRAFANA_AUTH" "http://localhost:3000/api/search?type=dash-db"
 
 Then open `http://localhost:3000` and look under `Dashboards > PulseStream`.
 
-## Why these dashboards are not the Compose ones
+## The label contract these queries select on
 
-The same Micrometer series are labelled differently by the two Prometheus deployments, so one dashboard cannot serve both:
+The panels here select on the labels [`../prometheus-values.yaml`](../prometheus-values.yaml) (#154) actually produces:
 
-| | Discovery | Selector that identifies a workload |
-| --- | --- | --- |
-| Compose (`infrastructure/docker/prometheus/prometheus.yml`) | one static job per service | `job="ingestion-service"` |
-| Kubernetes ([`../configmap.yaml`](../configmap.yaml)) | pod discovery, one job for every pod | `service="ingestion-service"` |
+| | Discovery | Identifies a workload | Also carries |
+| --- | --- | --- | --- |
+| Compose (`infrastructure/docker/prometheus/prometheus.yml`) | one static target per service | `job="ingestion-service"` | — |
+| Kubernetes ([`../prometheus-values.yaml`](../prometheus-values.yaml)) | `role: pod`, one job per workload | `job="ingestion-service"` | `namespace`, `pod`, `node` |
 
-In the cluster, `job` is the constant `kubernetes-pods` for every scraped pod, and the workload name is relabelled into `service`. A panel copied across unchanged does not error — it draws an empty graph. The dashboards here are the Compose dashboards with that selector swapped, plus a `pod` breakdown on the per-pod panels, since a Deployment has replicas where a Compose service has one container.
+`job` is the workload name in both, because #154 defines one scrape job per service rather than a single pod-discovery job. There is **no `service` label** in the cluster: that scrape config relabels three meta labels and that is not one of them. Selecting on a label Prometheus does not write is not an error — the panel draws an empty graph — so `scripts/tests/test-grafana-dashboard-provisioning.ps1` holds every expression here to the label set it reads out of `../prometheus-values.yaml`, and fails a query that names a job that file does not define.
 
-`scripts/tests/test-grafana-dashboard-provisioning.ps1` holds the two sets to the same structure — same UIDs, titles, panel IDs, query counts — so a panel added to one and forgotten in the other fails without a cluster.
+### So why a separate set at all
 
-**Only annotated pods appear.** `ingestion-service` and `query-service` are scraped; `telemetry-processor` is not, because its actuator surface is bound to `127.0.0.1` on its management port and is unreachable over the pod network. It is therefore absent from the `service` variable in `Service Health`, and that is a property of the scrape config, not of these dashboards.
+Two differences remain, both consequences of pods being plural where a Compose container is singular: the per-pod panels in `Service Health` break their series out by `pod`, and the tags carry `kubernetes`. `ingestion-metrics.json` has no per-pod panel and is the Compose dashboard apart from that tag; it lives in the ConfigMap because Grafana in the cluster loads dashboards from a ConfigMap and cannot read `observability/grafana/dashboards/` off the host.
+
+The same test holds the two sets to the same structure — same UIDs, titles, panel IDs, query counts — so a panel added to one and forgotten in the other fails without a cluster.
+
+**Only the scraped jobs appear.** `ingestion-service` and `query-service` are scraped; `telemetry-processor` is not, because its actuator surface is bound to `127.0.0.1` on its management port and is unreachable over the pod network. It is therefore absent from the `job` variable in `Service Health`, and that is a property of the scrape config, not of these dashboards.
 
 ## Editing a dashboard
 
@@ -120,7 +135,7 @@ The ConfigMap is the source of truth, and `allowUiUpdates: false` makes Grafana 
 
 1. Edit the panel in the UI and use `Export > Save to file` (leave **Export for sharing externally** off — it rewrites the datasource into a `${DS_...}` input and breaks the stable `prometheus` UID).
 2. Paste the JSON back into `dashboards-configmap.yaml` under its existing key, indented to match.
-3. Make the matching change in `observability/grafana/dashboards/` with the Compose selector, or the structural test fails.
+3. Make the matching change in `observability/grafana/dashboards/`, dropping any `pod` breakdown (Compose has no `pod` label), or the structural test fails.
 4. `kubectl apply -f infrastructure/kubernetes/monitoring/grafana/dashboards-configmap.yaml`.
 
 ## Troubleshooting
@@ -128,7 +143,8 @@ The ConfigMap is the source of truth, and `allowUiUpdates: false` makes Grafana 
 | Symptom | Cause |
 | --- | --- |
 | `Datasource prometheus was not found` on every panel | The datasource ConfigMap is not mounted, or Grafana was not restarted after it was applied. |
-| Panels render but are empty, no error | The queries match nothing. Check the `service` label exists: `curl -s -u "$GRAFANA_AUTH" http://localhost:3000/api/datasources/uid/prometheus/resources/api/v1/label/service/values`. An empty list means the relabel rule in [`../configmap.yaml`](../configmap.yaml) is missing or no pod carries `prometheus.io/scrape`. |
+| Panels render but are empty, no error | The queries match nothing. Check the jobs Prometheus knows: `curl -s -u "$GRAFANA_AUTH" http://localhost:3000/api/datasources/uid/prometheus/resources/api/v1/label/job/values`. A list without `ingestion-service` means the scrape job in [`../prometheus-values.yaml`](../prometheus-values.yaml) has no targets — check `Status > Targets` in Prometheus. |
+| A panel is empty but the same query works in the expression browser | The loaded dashboard is not the committed one. `./scripts/validate-grafana-kubernetes.ps1` diffs the served model against the ConfigMap and names the panel. |
 | Datasource health says `dial tcp: lookup prometheus-server...` | Prometheus (#154) is not deployed, or is not in the `monitoring` namespace the URL names. |
 | The `PulseStream` folder is empty | The dashboards ConfigMap is not mounted at the provider's `options.path`, or its keys are not named `*.json`. |
 | A UI edit disappears after a minute | Expected. The provider re-reads the ConfigMap and overwrites; export the JSON and commit it instead. |
