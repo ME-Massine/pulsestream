@@ -172,10 +172,10 @@ Events are routed through Kafka topics.
 
 | Topic                        | Purpose                     |
 |-----------------------------|-----------------------------|
-| `telemetry.events.raw`      | Raw telemetry events        |
+| `telemetry.events.raw`      | Raw telemetry events; also the target of dead-letter replay |
 | `telemetry.events.processed`| Normalized telemetry events |
 | `telemetry.events.anomalies`| Detected anomalies          |
-| `telemetry.events.dlq`      | Failed events               |
+| `telemetry.events.dlq`      | Failed events from both services, wrapped with error metadata |
 
 ### Event Versioning
 
@@ -196,7 +196,9 @@ Future improvements may include:
 *   Schema Registry integration
 *   Avro or Protobuf event serialization
 
-For the MVP, events will use JSON encoding.
+For the MVP, events use JSON encoding.
+
+**Current limitation:** the `version` field is carried on the envelope but nothing enforces it. There is no schema registry, no compatibility check in CI, and no consumer-side version handling. Versioned contracts with automated compatibility validation are tracked by [#268](https://github.com/ME-Massine/pulsestream/issues/268).
 
 ### Event Validation
 
@@ -208,7 +210,9 @@ Events received by the ingestion service must pass basic validation checks:
 
 Metric-specific bounds are handled by the telemetry processor anomaly detection rules rather than by the ingestion API.
 
-Invalid HTTP ingestion requests are rejected by the ingestion service validation layer. The dead-letter topic is provisioned for failed asynchronous processing, but explicit DLQ routing is not implemented yet.
+Invalid HTTP ingestion requests are rejected synchronously by the ingestion service validation layer and never reach Kafka.
+
+**Dead-letter routing is implemented** for asynchronous failures. The ingestion service routes a failed publish to `telemetry.events.raw` into `telemetry.events.dlq`, and the telemetry processor routes a failed processing attempt into the same topic. In both cases the dead-letter record wraps the original event with error metadata identifying the source service and the failure. Dead-lettered events can be replayed selectively back onto `telemetry.events.raw`; see [`event-replay-strategy.md`](event-replay-strategy.md).
 
 ## Summary
 

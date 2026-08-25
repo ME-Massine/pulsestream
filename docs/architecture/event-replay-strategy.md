@@ -150,7 +150,7 @@ when the classification is unchanged.
 message key preserves partition affinity but does **not** deduplicate messages: every replay execution
 emits a fresh message to `telemetry.events.processed` and, for anomalies,
 `telemetry.events.anomalies`. Consumers of those topics (today only `processed_telemetry` persistence;
-`query-service` is planned) therefore see the same `eventId` more than once and must define how they
+`query-service` exists as a scaffold and consumes nothing) therefore see the same `eventId` more than once and must define how they
 converge — e.g. upsert-by-`event_id` for the persistence consumer, and an equivalent contract for
 `query-service` when it is built. Establishing that consumer-side dedup contract is **out of scope for
 this strategy doc** and is tracked in the replay safeguards follow-up (#126); this document only
