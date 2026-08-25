@@ -77,6 +77,11 @@ $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
+# The checks whose failure paths cannot be produced against a live cluster:
+# rollout completeness, per-pod coverage, the log sweep's own failure, the
+# port-forward cleanup and the post-stimulus comparison. Driven without a
+# cluster by scripts/tests/test-observability-stack-checks.ps1.
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamObservability.psm1") -Force
 
 $prometheusServer = "$PrometheusRelease-server"
 $prometheusProxy = "/api/v1/namespaces/$MonitoringNamespace/services/$($prometheusServer):80/proxy"
@@ -181,7 +186,7 @@ function Get-SpansWithTag {
     })
 }
 
-# Pods of one workload whose Ready condition is True.
+# Pods matching a label selector whose Ready condition is True.
 #
 # Deliberately local rather than shared: #154 adds an equivalent
 # Get-ReadyPodNames to PulseStreamKubernetes.psm1, and adding a second copy of
@@ -190,12 +195,12 @@ function Get-SpansWithTag {
 function Get-ReadyPodName {
     param(
         [Parameter(Mandatory)] [string] $Namespace,
-        [Parameter(Mandatory)] [string] $AppName
+        [Parameter(Mandatory)] [string] $Selector
     )
 
     $podsJson = Invoke-KubectlChecked `
-        -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$AppName", "-o", "json") `
-        -ErrorContext "Could not list '$AppName' pods in namespace '$Namespace'"
+        -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", $Selector, "-o", "json") `
+        -ErrorContext "Could not list pods matching '$Selector' in namespace '$Namespace'"
 
     return @(($podsJson | ConvertFrom-Json).items | Where-Object {
         $readyCondition = @($_.status.conditions | Where-Object { $_.type -eq 'Ready' }) | Select-Object -First 1
@@ -203,23 +208,43 @@ function Get-ReadyPodName {
     } | ForEach-Object { $_.metadata.name })
 }
 
-function Get-ReadyReplicaCount {
+function Get-Deployment {
     param(
         [Parameter(Mandatory)] [string] $Namespace,
         [Parameter(Mandatory)] [string] $Deployment,
         [Parameter(Mandatory)] [string] $DeployedBy
     )
 
-    $ready = Get-KubectlJsonPath `
-        -KubectlArgs @("get", "deployment", $Deployment, "-n", $Namespace, "-o", "jsonpath={.status.readyReplicas}") `
+    $json = Invoke-KubectlChecked `
+        -KubectlArgs @("get", "deployment", $Deployment, "-n", $Namespace, "-o", "json") `
         -ErrorContext "Deployment '$Deployment' was not found in namespace '$Namespace'. It is deployed by $DeployedBy"
 
-    return [int] ("0" + $ready)
+    return $json | ConvertFrom-Json
+}
+
+# The Deployment's own selector, as a kubectl `-l` argument. Used instead of a
+# guessed `app.kubernetes.io/name=` so the pods this script reasons about are
+# exactly the pods that Deployment owns, whatever it labels them.
+function Get-DeploymentSelector {
+    param([Parameter(Mandatory)] $Deployment)
+
+    $matchLabels = $Deployment.spec.selector.matchLabels
+
+    if ($null -eq $matchLabels) {
+        throw "Deployment '$($Deployment.metadata.name)' has no spec.selector.matchLabels; this script cannot identify its pods."
+    }
+
+    return [string]::Join(",", @($matchLabels.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }))
 }
 
 # A port-forward this script owns. Returned so the finally block can stop it
 # even when an assertion in between throws - a leaked port-forward holds the
 # local port and the next run fails to bind it.
+#
+# The readiness poll can fail too (the port is already bound, the Service has no
+# endpoints, kubectl exits at once), and on that path the caller never gets a
+# handle to put in its `finally`. Start-ManagedPortForward stops the process
+# before re-throwing, so the failing run does not leave the port held either.
 function Start-OwnedPortForward {
     param(
         [Parameter(Mandatory)] [string] $Namespace,
@@ -231,29 +256,52 @@ function Start-OwnedPortForward {
 
     $log = Join-Path ([System.IO.Path]::GetTempPath()) "pulsestream-stack-$Service-port-forward.log"
 
-    $process = Start-Process `
-        -FilePath "kubectl" `
-        -ArgumentList @("port-forward", "-n", $Namespace, "svc/$Service", "${LocalPort}:${RemotePort}") `
-        -PassThru -NoNewWindow `
-        -RedirectStandardOutput $log `
-        -RedirectStandardError "$log.err"
-
-    $baseUrl = "http://localhost:$LocalPort"
+    # GetNewClosure() on each block: they are invoked from inside
+    # PulseStreamObservability.psm1, and a plain scriptblock would resolve
+    # $Service, $log and the ports against the module's scope, where they do not
+    # exist. The closure captures this function's values instead.
+    $launcher = {
+        Start-Process `
+            -FilePath "kubectl" `
+            -ArgumentList @("port-forward", "-n", $Namespace, "svc/$Service", "${LocalPort}:${RemotePort}") `
+            -PassThru -NoNewWindow `
+            -RedirectStandardOutput $log `
+            -RedirectStandardError "$log.err"
+    }.GetNewClosure()
 
     # kubectl reports the forward as established before the listener always
     # accepts, so the tunnel is polled rather than slept on.
-    Invoke-WithRetry `
-        -TimeoutSeconds 30 `
-        -FailureMessage "The port-forward to svc/$Service in namespace '$Namespace' did not start listening on port $LocalPort. Log: $log" `
-        -Operation {
-            $status = Invoke-HttpStatus "$baseUrl$ReadyPath"
-            Confirm-Condition `
-                -Condition ($status -ge 200 -and $status -lt 500) `
-                -SuccessMessage "port-forward to svc/$Service is listening on $baseUrl" `
-                -FailureMessage "port-forward to svc/$Service is not answering on $baseUrl yet"
-        }
+    $readyProbe = {
+        param([string] $BaseUrl)
 
-    return [pscustomobject]@{ Process = $process; BaseUrl = $baseUrl; Log = $log }
+        Invoke-WithRetry `
+            -TimeoutSeconds 30 `
+            -FailureMessage "svc/$Service did not answer on $BaseUrl$ReadyPath within 30 seconds." `
+            -Operation {
+                $status = Invoke-HttpStatus "$BaseUrl$ReadyPath"
+                Confirm-Condition `
+                    -Condition ($status -ge 200 -and $status -lt 500) `
+                    -SuccessMessage "port-forward to svc/$Service is listening on $BaseUrl" `
+                    -FailureMessage "port-forward to svc/$Service is not answering on $BaseUrl yet"
+            }
+    }.GetNewClosure()
+
+    $stopper = {
+        param($Process)
+
+        if ($null -ne $Process -and -not $Process.HasExited) {
+            Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "[ok] the failed port-forward (pid $($Process.Id)) was stopped, so it does not hold port $LocalPort"
+        }
+    }.GetNewClosure()
+
+    return Start-ManagedPortForward `
+        -BaseUrl "http://localhost:$LocalPort" `
+        -Description "port-forward to svc/$Service in namespace '$Namespace' (local port $LocalPort)" `
+        -Log $log `
+        -Launcher $launcher `
+        -ReadyProbe $readyProbe `
+        -Stopper $stopper
 }
 
 function Stop-OwnedPortForward {
@@ -278,6 +326,7 @@ function Get-ComponentErrorLines {
         [Parameter(Mandatory)] [string] $Namespace,
         [Parameter(Mandatory)] [string] $Selector,
         [Parameter(Mandatory)] [string] $Pattern,
+        [Parameter(Mandatory)] [string] $Component,
         [string] $Since = "10m"
     )
 
@@ -285,13 +334,11 @@ function Get-ComponentErrorLines {
         "logs", "-n", $Namespace, "-l", $Selector, "--since", $Since, "--tail", "2000", "--prefix"
     )
 
-    # A workload that has not logged anything yet, or a selector that matches
-    # nothing, is not an error here - step 1 already established that every
-    # component is Ready, so an empty result means no error lines, not a
-    # missing component.
-    if ($logs.ExitCode -ne 0) { return @() }
-
-    return @($logs.Output -split "`r?`n" | Where-Object { $_ -match $Pattern })
+    # Select-ComponentErrorLine throws when kubectl failed. An empty result is
+    # only ever "this component logged nothing matching the pattern"; a denied
+    # RBAC rule, a wrong namespace or a container whose log has rotated away is
+    # a step that could not run, and it must not read as a clean sweep.
+    return @(Select-ComponentErrorLine -LogResult $logs -Pattern $Pattern -Component $Component)
 }
 
 Write-Host "Validating the observability stack end to end..."
@@ -321,17 +368,46 @@ $components = @(
     @{ Namespace = $WorkloadNamespace;      Deployment = $QueryService;          DeployedBy = "infrastructure/kubernetes/query-service/" }
 )
 
+# The Ready pods of each component, keyed '<namespace>/<deployment>', taken from
+# the Deployment's own selector. Step 3 requires one Prometheus target and one
+# sample per name in here, and step 7 requires its log selector to match exactly
+# these pods.
+$readyPodsByDeployment = @{}
+
 foreach ($component in $components) {
-    Invoke-WithRetry `
+    # `readyReplicas >= 1` would pass here on a Deployment that is half-way
+    # through a rolling update, or one scaled to zero and reporting nothing at
+    # all. Every replica the spec asks for has to be updated, Ready and
+    # available before the assertions below describe the fleet the manifests
+    # declare rather than whichever pod happens to be up.
+    $deployment = Invoke-WithRetry `
         -TimeoutSeconds $TimeoutSeconds `
-        -FailureMessage "Deployment '$($component.Deployment)' in namespace '$($component.Namespace)' had no ready replica within $TimeoutSeconds seconds." `
+        -FailureMessage "Deployment '$($component.Deployment)' in namespace '$($component.Namespace)' did not finish rolling out within $TimeoutSeconds seconds." `
         -Operation {
-            $ready = Get-ReadyReplicaCount -Namespace $component.Namespace -Deployment $component.Deployment -DeployedBy $component.DeployedBy
+            $object = Get-Deployment -Namespace $component.Namespace -Deployment $component.Deployment -DeployedBy $component.DeployedBy
+            $rollout = Get-DeploymentRolloutState -Deployment $object
+
             Confirm-Condition `
-                -Condition ($ready -ge 1) `
-                -SuccessMessage "$($component.Deployment) is Ready ($ready replica(s)) in '$($component.Namespace)'" `
-                -FailureMessage "$($component.Deployment) has no ready replica in '$($component.Namespace)'"
+                -Condition $rollout.IsComplete `
+                -SuccessMessage "$($component.Deployment) is fully rolled out in '$($component.Namespace)': $($rollout.Ready)/$($rollout.Desired) Ready, updated and available" `
+                -FailureMessage "$($component.Deployment) in '$($component.Namespace)' is not fully rolled out: $($rollout.Reason)"
+
+            $object
         }
+
+    $rolloutState = Get-DeploymentRolloutState -Deployment $deployment
+    $selector = Get-DeploymentSelector -Deployment $deployment
+    $pods = @(Get-ReadyPodName -Namespace $component.Namespace -Selector $selector)
+
+    # The Deployment reports counts; this is the list of names those counts
+    # stand for, and the two can disagree while a terminating pod is still
+    # Ready. Everything downstream matches against the names.
+    Confirm-Condition `
+        -Condition ($pods.Count -eq $rolloutState.Desired) `
+        -SuccessMessage "$($component.Deployment) has $($pods.Count) Ready pod(s): $($pods -join ', ')" `
+        -FailureMessage "$($component.Deployment) wants $($rolloutState.Desired) replica(s) but selector '$selector' matches $($pods.Count) Ready pod(s)"
+
+    $readyPodsByDeployment["$($component.Namespace)/$($component.Deployment)"] = $pods
 }
 
 # ---------------------------------------------------------------------------
@@ -351,7 +427,10 @@ $expectedMetricFamilies = @("jvm_info", "process_uptime_seconds", "application_r
 $readyPodsByService = @{}
 
 foreach ($service in $scrapedServices) {
-    $pods = @(Get-ReadyPodName -Namespace $WorkloadNamespace -AppName $service.Name)
+    # Taken from step 1 rather than re-listed: those are the pods of a
+    # Deployment that was proved fully rolled out, so a replica that is Ready
+    # but belongs to the previous revision cannot slip in here.
+    $pods = @($readyPodsByDeployment["$WorkloadNamespace/$($service.Name)"])
     $readyPodsByService[$service.Name] = $pods
 
     Confirm-Condition `
@@ -423,29 +502,61 @@ Invoke-WithRetry `
                 -FailureMessage "target $($target.scrapeUrl) (job $($target.labels.job)) is '$($target.health)': $($target.lastError)"
         }
 
-        # One target per ready pod. Pod discovery produces a target per replica,
-        # so a count that is merely non-zero hides the case where discovery
-        # found one replica of two - the dashboards still draw a line and the
-        # missing pod is invisible.
+        # One target per ready pod, matched BY NAME. Counting is not enough:
+        # two targets for one pod and none for its replica is the same count as
+        # one each, which is the shape a stale discovery entry takes after a
+        # rollout - the dashboards keep drawing a line and the unscraped replica
+        # is invisible.
         foreach ($service in $scrapedServices) {
-            $expected = @($readyPodsByService[$service.Name]).Count
+            $expectedPods = @($readyPodsByService[$service.Name])
             $found = @($targets | Where-Object { $_.labels.job -eq $service.Name })
+            $targetPods = @(Get-PrometheusTargetLabel -Targets $found -Label "pod")
+
+            $problems = @(Compare-PodCoverage `
+                -Expected $expectedPods -Observed $targetPods `
+                -Subject "job '$($service.Name)'")
 
             Confirm-Condition `
-                -Condition ($found.Count -eq $expected) `
-                -SuccessMessage "job '$($service.Name)' has one target per ready pod ($($found.Count)/$expected)" `
-                -FailureMessage "job '$($service.Name)' has $($found.Count) target(s) for $expected ready pod(s); pod discovery is not seeing every replica"
+                -Condition ($problems.Count -eq 0) `
+                -SuccessMessage "job '$($service.Name)' has exactly one target per Ready pod ($($targetPods -join ', '))" `
+                -FailureMessage "job '$($service.Name)' does not cover its Ready pods one-to-one: $($problems -join '; ')"
         }
     }
 
+# `up` and one application metric, matched to the same pods. A target that
+# discovery lists is not necessarily a target Prometheus stores a series for:
+# a scrape that fails on every attempt still yields up=0, and a relabel rule
+# that drops the `pod` label leaves the series unattributable to a replica even
+# though the fleet looks complete in the target list.
 foreach ($service in $scrapedServices) {
-    $up = @(Invoke-PrometheusQuery -Query "up{job=""$($service.Name)""}")
-    $values = @($up | ForEach-Object { $_.value[1] })
+    $expectedPods = @($readyPodsByService[$service.Name])
 
-    Confirm-Condition `
-        -Condition ($values.Count -gt 0 -and @($values | Where-Object { $_ -ne "1" }).Count -eq 0) `
-        -SuccessMessage "up{job=""$($service.Name)""} = 1 on every target" `
-        -FailureMessage "up{job=""$($service.Name)""} is not 1 on every target (values: $($values -join ', '))"
+    $perPodQueries = @(
+        @{ Query = "up{job=""$($service.Name)""}";                     Kind = "up";                 Predicate = { param($value) $value -eq "1" };            Requirement = "1" },
+        @{ Query = "process_uptime_seconds{job=""$($service.Name)""}"; Kind = "an application metric"; Predicate = { param($value) [double] $value -gt 0 }; Requirement = "greater than 0" }
+    )
+
+    foreach ($perPod in $perPodQueries) {
+        $series = @(Invoke-PrometheusQuery -Query $perPod.Query)
+        $seriesPods = @(Get-PrometheusSeriesLabel -Series $series -Label "pod")
+
+        $problems = @(Compare-PodCoverage `
+            -Expected $expectedPods -Observed $seriesPods `
+            -Subject "$($perPod.Query)")
+
+        Confirm-Condition `
+            -Condition ($problems.Count -eq 0) `
+            -SuccessMessage "$($perPod.Query) has exactly one series per Ready pod" `
+            -FailureMessage "$($perPod.Query) does not cover the Ready pods of '$($service.Name)' one-to-one: $($problems -join '; ')"
+
+        $samples = @(Get-PrometheusSampleValue -Series $series -Label "pod")
+        $wrong = @($samples | Where-Object { -not (& $perPod.Predicate $_.Value) })
+
+        Confirm-Condition `
+            -Condition ($wrong.Count -eq 0) `
+            -SuccessMessage "$($perPod.Query) is $($perPod.Requirement) on every Ready pod" `
+            -FailureMessage "$($perPod.Query) is not $($perPod.Requirement) on: $(@($wrong | ForEach-Object { "$($_.Pod)=$($_.Value)" }) -join ', ')"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -500,15 +611,19 @@ Write-Host "[ok] generated one telemetry event (eventId: $eventId)"
 # The scrape interval, not the request, sets how long this takes: the counter
 # only moves in Prometheus once the pod that served the request is scraped
 # again.
-Invoke-WithRetry `
+# Kept: step 6 requires Grafana to answer with at least this value, which is
+# what makes its answer this run's rather than any historical one.
+$acceptedAfter = Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
     -FailureMessage "Prometheus did not observe the generated request within $TimeoutSeconds seconds. The service counted it locally (the POST returned 202), so the break is between the pod and Prometheus." `
     -Operation {
-        $acceptedAfter = Get-PrometheusScalar -Query $acceptedEventsQuery
+        $observed = Get-PrometheusScalar -Query $acceptedEventsQuery
         Confirm-Condition `
-            -Condition ($acceptedAfter -gt $acceptedBefore) `
-            -SuccessMessage "Prometheus counted the request: $acceptedEventsQuery went $acceptedBefore -> $acceptedAfter" `
-            -FailureMessage "Prometheus still reports $acceptedEventsQuery = $acceptedAfter, unchanged from the baseline"
+            -Condition ($observed -gt $acceptedBefore) `
+            -SuccessMessage "Prometheus counted the request: $acceptedEventsQuery went $acceptedBefore -> $observed" `
+            -FailureMessage "Prometheus still reports $acceptedEventsQuery = $observed, unchanged from the baseline"
+
+        $observed
     }
 
 # ---------------------------------------------------------------------------
@@ -638,15 +753,29 @@ Confirm-Condition `
 # scripts/validate-grafana-kubernetes.ps1 (#156). What is being proved here is
 # that the request this run generated is visible at the far end of the metrics
 # pipeline, from the tool an operator opens.
-$grafanaQuery = Invoke-JsonGet `
-    ("$GrafanaBaseUrl/api/datasources/uid/$DatasourceUid/resources/api/v1/query" +
-     "?query=$([uri]::EscapeDataString($acceptedEventsQuery))") `
-    -Headers $grafanaAuthHeader
+#
+# "Grafana returned something" would not be that proof. The counter is non-zero
+# for as long as the pod lives, so a Grafana wired to a different Prometheus, or
+# answering from before the stimulus, comes back non-empty and passes. The value
+# has to be at least the $acceptedAfter that Prometheus reported once it had
+# counted this run's request.
+Invoke-WithRetry `
+    -TimeoutSeconds $TimeoutSeconds `
+    -FailureMessage "Grafana did not serve this run's value for $acceptedEventsQuery within $TimeoutSeconds seconds." `
+    -Operation {
+        $grafanaQuery = Invoke-JsonGet `
+            ("$GrafanaBaseUrl/api/datasources/uid/$DatasourceUid/resources/api/v1/query" +
+             "?query=$([uri]::EscapeDataString($acceptedEventsQuery))") `
+            -Headers $grafanaAuthHeader
 
-Confirm-Condition `
-    -Condition ($grafanaQuery.status -eq "success" -and @($grafanaQuery.data.result).Count -gt 0) `
-    -SuccessMessage "Grafana returns the generated request through its datasource ($acceptedEventsQuery = $(@($grafanaQuery.data.result)[0].value[1]))" `
-    -FailureMessage "Grafana returned no data for $acceptedEventsQuery, although Prometheus does"
+        $verdict = Test-PostStimulusMetric `
+            -Response $grafanaQuery -Minimum $acceptedAfter -Query $acceptedEventsQuery
+
+        Confirm-Condition `
+            -Condition $verdict.Ok `
+            -SuccessMessage "Grafana serves this run's value through its datasource ($acceptedEventsQuery = $($verdict.Value), at least the $acceptedAfter Prometheus reported after the stimulus)" `
+            -FailureMessage "Grafana is not serving this run's data for $($acceptedEventsQuery): $($verdict.Reason)"
+    }
 
 # ---------------------------------------------------------------------------
 Write-Host ""
@@ -658,6 +787,7 @@ $errorSources = @(
     @{
         Component = "otel-collector"
         Namespace = $ObservabilityNamespace
+        Deployment = $CollectorDeployment
         Selector  = "app.kubernetes.io/name=$CollectorDeployment"
         # The collector logs its level as a bare tab-separated field.
         Pattern   = '(?m)\s(error|fatal|dpanic|panic)\s'
@@ -665,26 +795,51 @@ $errorSources = @(
     @{
         Component = "jaeger"
         Namespace = $ObservabilityNamespace
+        Deployment = $JaegerService
         Selector  = "app.kubernetes.io/name=$JaegerService"
         Pattern   = '(?m)"level"\s*:\s*"(error|fatal|dpanic|panic)"'
     },
     @{
         Component = "prometheus"
         Namespace = $MonitoringNamespace
+        Deployment = $prometheusServer
         Selector  = "app.kubernetes.io/instance=$PrometheusRelease"
         Pattern   = '(?m)level=(error|fatal)'
     },
     @{
         Component = "grafana"
         Namespace = $MonitoringNamespace
+        Deployment = $GrafanaService
         Selector  = "app.kubernetes.io/name=$GrafanaService"
         Pattern   = '(?m)level=(error|eror|crit)'
     }
 )
 
 foreach ($source in $errorSources) {
+    # The selector is verified before the sweep runs, because a selector that
+    # matches nothing produces the same empty output as a component that logged
+    # no errors. `kubectl logs -l` exits 0 on a selector matching no pods, so
+    # the quietest possible result here is also the least trustworthy one: this
+    # requires the selector to resolve to exactly the Ready pods step 1 found
+    # for that Deployment.
+    $expectedPods = @($readyPodsByDeployment["$($source.Namespace)/$($source.Deployment)"])
+    $selectedPods = @(Get-ReadyPodName -Namespace $source.Namespace -Selector $source.Selector)
+
+    $coverage = @(Compare-PodCoverage `
+        -Expected $expectedPods -Observed $selectedPods `
+        -Subject "the $($source.Component) log selector '$($source.Selector)'")
+
+    Confirm-Condition `
+        -Condition ($coverage.Count -eq 0) `
+        -SuccessMessage "the $($source.Component) log selector matches its $($selectedPods.Count) Ready pod(s)" `
+        -FailureMessage "the $($source.Component) log sweep would not have read the component it names: $($coverage -join '; ')"
+
+    # Throws when kubectl could not read the logs - RBAC, a wrong namespace, a
+    # rotated container log. A sweep that returns "no errors" because it read
+    # nothing is the failure mode this step exists to avoid.
     $errorLines = @(Get-ComponentErrorLines `
-        -Namespace $source.Namespace -Selector $source.Selector -Pattern $source.Pattern)
+        -Namespace $source.Namespace -Selector $source.Selector `
+        -Pattern $source.Pattern -Component $source.Component)
 
     if ($errorLines.Count -gt 0) {
         foreach ($line in @($errorLines | Select-Object -First 5)) {
