@@ -33,7 +33,17 @@ function New-AutoscalingMetricReading {
     param(
         [Parameter(Mandatory)] [string] $Name,
         [Parameter(Mandatory)] [double] $TargetValue,
-        [nullable[double]] $CurrentValue = $null
+        [nullable[double]] $CurrentValue = $null,
+        # Resource, container-resource, and Pods averages are calculated from
+        # individual Pod readings. Their coverage is metric-specific: a CPU
+        # scrape says nothing about which Pods a custom-metrics adapter saw.
+        [bool] $RequiresPodMetricCoverage = $false,
+        [nullable[int]] $MetricPodCount = $null,
+        # Normalized value assigned to a Pod whose metric is missing during a
+        # downscale calculation. Most per-Pod metrics use the target (1.0).
+        # Resource utilization is special: Kubernetes uses max(100%, target)
+        # of the Pod request, which is max(100, target)/target after normalizing.
+        [double] $MissingPodFallbackRatio = 1.0
     )
 
     if ($TargetValue -le 0) {
@@ -41,9 +51,12 @@ function New-AutoscalingMetricReading {
     }
 
     return [pscustomobject]@{
-        Name         = $Name
-        TargetValue  = $TargetValue
-        CurrentValue = $CurrentValue
+        Name                      = $Name
+        TargetValue               = $TargetValue
+        CurrentValue              = $CurrentValue
+        RequiresPodMetricCoverage = $RequiresPodMetricCoverage
+        MetricPodCount            = $MetricPodCount
+        MissingPodFallbackRatio   = $MissingPodFallbackRatio
     }
 }
 
@@ -178,10 +191,18 @@ function Get-HpaMetricReadings {
             $currentValue = if ($field -eq "averageUtilization") { [double] $current } else { ConvertFrom-KubernetesQuantity -Quantity ([string] $current) }
         }
 
+        $requiresPodMetricCoverage = $type -in @("Resource", "ContainerResource", "Pods")
+        $missingPodFallbackRatio = 1.0
+        if ($requiresPodMetricCoverage -and $field -eq "averageUtilization") {
+            $missingPodFallbackRatio = [math]::Max(100.0, $targetValue) / $targetValue
+        }
+
         $readings += New-AutoscalingMetricReading `
             -Name "$($type.ToLowerInvariant())/$name ($field)" `
             -TargetValue $targetValue `
-            -CurrentValue $currentValue
+            -CurrentValue $currentValue `
+            -RequiresPodMetricCoverage $requiresPodMetricCoverage `
+            -MissingPodFallbackRatio $missingPodFallbackRatio
     }
 
     return , $readings
@@ -224,20 +245,21 @@ function New-AutoscalingSample {
         # stabilization window on CPU alone, on an HPA that also scales on
         # requests-per-second, measures a window that never started.
         [object[]] $AdditionalMetrics = @(),
-        # How many Pods of the workload the metrics pipeline actually had a
-        # reading for at this instant, or null when the sampler could not find
-        # out. The HPA averages only the Pods it has a metric for, and reports
-        # that average in status BEFORE the conservative substitutions it makes
-        # for the Pods it does not - so without this count, a status average can
-        # be divided by more Pods than produced it. See
-        # Get-HpaScaleRecommendation.
-        [nullable[int]] $MetricPodCount = $null
+        # How many Pods metrics-server had a CPU reading for at this instant, or
+        # null when the sampler could not find out. This count belongs only to
+        # the CPU reading; custom metrics carry their own coverage state. The
+        # HPA reports an average before conservative missing-Pod substitutions,
+        # so unknown coverage cannot safely establish a downscale anchor.
+        [Alias("MetricPodCount")] [nullable[int]] $CpuMetricPodCount = $null
     )
 
     $metrics = @(New-AutoscalingMetricReading `
             -Name "cpu utilization" `
             -TargetValue $TargetPercent `
-            -CurrentValue $UtilizationPercent)
+            -CurrentValue $UtilizationPercent `
+            -RequiresPodMetricCoverage $true `
+            -MetricPodCount $CpuMetricPodCount `
+            -MissingPodFallbackRatio ([math]::Max(100.0, [double] $TargetPercent) / [double] $TargetPercent))
     foreach ($metric in @($AdditionalMetrics)) {
         if ($null -eq $metric) {
             continue
@@ -254,7 +276,6 @@ function New-AutoscalingSample {
         RestartCounts       = $RestartCounts
         ScalingActiveStatus = $ScalingActiveStatus
         Metrics             = $metrics
-        MetricPodCount      = $MetricPodCount
     }
 }
 
@@ -358,8 +379,9 @@ function Get-ScaleEvents {
 #
 #   * divides by the number of Pods it averaged (readyPodCount), not by
 #     currentReplicas;
-#   * on the way down, substitutes the full target for every Pod whose metric is
-#     missing, which pulls the ratio back towards 1;
+#   * on the way down, substitutes the metric-specific fallback for every Pod
+#     whose metric is missing. For CPU utilization that is max(100%, target)
+#     of the Pod request, not merely the target;
 #   * re-checks the tolerance on the adjusted ratio, and abandons the change
 #     entirely if the adjustment flipped the direction of the scale.
 #
@@ -372,11 +394,11 @@ function Get-ScaleEvents {
 # over-eager scale-in recommendation would anchor the stabilization window early
 # and pass a window that never held.
 #
-# Worked example, from the run that prompted this: 4 replicas, 3 of them Ready,
-# CPU 50% against a 70% target. The naive form proposes ceil(4 * 50/70) = 3 and
-# calls it a scale-in. The controller, treating the fourth Pod as missing a
-# metric, computes (0.714*3 + 1)/4 = 0.786 and ceil(0.786 * 4) = 4 - no scale-in
-# at all.
+# Worked example, from the review that prompted this: all 4 replicas are Ready,
+# CPU is 40% against a 70% target, and only 3 Pods reported. The naive form
+# proposes ceil(4 * 40/70) = 3. The controller fills the missing Pod at 100% of
+# its request, or 100/70 of target: (0.571*3 + 1.429)/4 = 0.786, and
+# ceil(0.786 * 4) = 4 - no scale-in at all.
 #
 # Null DesiredReplicas means the HPA had no computable recommendation for this
 # sample - a metric read `<unknown>`, the workload reported zero replicas, or no
@@ -400,23 +422,6 @@ function Get-HpaScaleRecommendation {
         }
     }
 
-    # The most Pods the reported average can have been taken over. The
-    # Deployment's readyReplicas bounds it (the controller drops unready Pods),
-    # and the metrics pipeline's own Pod count bounds it again when the sampler
-    # managed to read one.
-    $measured = [math]::Min([int] $Sample.ReadyReplicas, $current)
-    if ($null -ne $Sample.MetricPodCount) {
-        $measured = [math]::Min($measured, [int] $Sample.MetricPodCount)
-    }
-    if ($measured -le 0) {
-        return [pscustomobject]@{
-            DesiredReplicas     = $null
-            RecommendsDownscale = $false
-            Detail              = "no Pod was both Ready and reporting a metric, so the HPA had nothing to average and computed no desired replica count"
-        }
-    }
-    $unmeasured = $current - $measured
-
     $desired = $null
     $details = @()
     foreach ($metric in @($Sample.Metrics)) {
@@ -427,6 +432,34 @@ function Get-HpaScaleRecommendation {
                 Detail              = "metric '$($metric.Name)' read <unknown>, so the HPA computed no desired replica count"
             }
         }
+
+        # Coverage belongs to this metric, not to the sample as a whole. CPU's
+        # `kubectl top` count cannot be reused for a Pods/custom metric. When a
+        # per-Pod metric's coverage is unknown, there is no safe way to recover
+        # the controller's conservative missing-Pod adjustment from HPA status,
+        # so this sample cannot establish a downscale anchor.
+        if ($metric.RequiresPodMetricCoverage) {
+            if ($null -eq $metric.MetricPodCount) {
+                return [pscustomobject]@{
+                    DesiredReplicas     = $null
+                    RecommendsDownscale = $false
+                    Detail              = "metric '$($metric.Name)' has unknown Pod coverage, so it cannot establish a downscale recommendation"
+                }
+            }
+            $measured = [math]::Min([int] $Sample.ReadyReplicas, $current)
+            $measured = [math]::Min($measured, [int] $metric.MetricPodCount)
+            if ($measured -le 0) {
+                return [pscustomobject]@{
+                    DesiredReplicas     = $null
+                    RecommendsDownscale = $false
+                    Detail              = "no Pod was both Ready and reporting metric '$($metric.Name)', so the HPA had nothing to average"
+                }
+            }
+        } else {
+            # Object/external value metrics are not averages over a set of Pods.
+            $measured = $current
+        }
+        $unmeasured = $current - $measured
 
         $ratio = [double] $metric.CurrentValue / [double] $metric.TargetValue
 
@@ -449,7 +482,7 @@ function Get-HpaScaleRecommendation {
         } else {
             $substitute = 0.0
             if ($ratio -lt 1.0) {
-                $substitute = 1.0
+                $substitute = [double] $metric.MissingPodFallbackRatio
             }
             $adjusted = (($ratio * $measured) + ($substitute * $unmeasured)) / $current
 
@@ -470,7 +503,7 @@ function Get-HpaScaleRecommendation {
         # here would invent a scale-in recommendation it never made.
         $proposal = [math]::Max($unreadyWorld, $missingWorld)
 
-        $details += "$($metric.Name) $($metric.CurrentValue)/$($metric.TargetValue) -> $proposal"
+        $details += "$($metric.Name) $($metric.CurrentValue)/$($metric.TargetValue) ($measured measured) -> $proposal"
         if ($null -eq $desired -or $proposal -gt $desired) {
             $desired = $proposal
         }
@@ -491,7 +524,7 @@ function Get-HpaScaleRecommendation {
     return [pscustomobject]@{
         DesiredReplicas     = $desired
         RecommendsDownscale = ($desired -lt $current)
-        Detail              = "$current replicas ($measured of them measured), $($details -join '; '), clamped to [$MinReplicas, $MaxReplicas] -> $desired"
+        Detail              = "$current replicas, $($details -join '; '), clamped to [$MinReplicas, $MaxReplicas] -> $desired"
     }
 }
 

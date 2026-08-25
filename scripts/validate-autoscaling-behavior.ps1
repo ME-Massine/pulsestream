@@ -192,20 +192,20 @@ done | {{BIN}}/kafka-console-producer.sh \
 # --- Sampling ----------------------------------------------------------------
 # Four reads per sample rather than one: the HPA carries the metric, the
 # Deployment carries the authoritative ready count, the pods carry restart
-# counts, and `kubectl top` says how many pods the metrics pipeline actually had
-# a reading for. They are read back to back and stamped with a single timestamp.
+# counts, and `kubectl top` says how many pods metrics-server had a CPU reading
+# for. They are read back to back and stamped with a single timestamp.
 
-# How many pods of the workload metrics-server currently has a value for.
+# How many pods of the workload metrics-server currently has a CPU value for.
 #
 # The HPA averages only the pods it has a metric for and publishes that average
 # in status; a validator that divides it back out by the full replica count is
-# computing something the controller never did. This is the count that bounds
-# the divisor - see Get-HpaScaleRecommendation.
+# computing something the controller never did. This count is attached only to
+# the CPU reading. A custom-metrics adapter can have different Pod coverage, so
+# its coverage stays unknown unless sampled independently.
 #
 # Null, not zero, when the read fails. A failed `kubectl top` is an absence of
-# information, and Get-HpaScaleRecommendation falls back to the Deployment's
-# ready count for its bound rather than concluding the workload has no metrics.
-function Get-MetricPodCount {
+# information, and an unknown count cannot establish a downscale anchor.
+function Get-CpuMetricPodCount {
     $top = Invoke-Kubectl -KubectlArgs @(
         "top", "pods", "--namespace", $Namespace, "--selector", $podSelector, "--no-headers"
     )
@@ -234,7 +234,7 @@ function Get-Sample {
             -KubectlArgs @("get", "pods", "--namespace", $Namespace, "--selector", $podSelector, "-o", "json") `
             -ErrorContext "Could not list pods for '$Service'"
 
-    $metricPodCount = Get-MetricPodCount
+    $cpuMetricPodCount = Get-CpuMetricPodCount
 
     # Left null when the HPA has no reading yet or reports <unknown>. See
     # New-AutoscalingSample for why this must not become 0.
@@ -299,7 +299,7 @@ function Get-Sample {
         -RestartCounts $restartCounts `
         -ScalingActiveStatus $scalingActive `
         -AdditionalMetrics $additionalMetrics `
-        -MetricPodCount $metricPodCount
+        -CpuMetricPodCount $cpuMetricPodCount
 }
 
 function Write-SampleLine {

@@ -76,8 +76,22 @@ function New-Timeline {
                     if ($_.ContainsKey("Current")) {
                         $current = $_.Current
                     }
-                    New-AutoscalingMetricReading -Name $_.Name -TargetValue $_.Target -CurrentValue $current
+                    $metricPodCount = $ready
+                    if ($_.ContainsKey("MetricPodCount")) {
+                        $metricPodCount = $_.MetricPodCount
+                    }
+                    New-AutoscalingMetricReading `
+                        -Name $_.Name `
+                        -TargetValue $_.Target `
+                        -CurrentValue $current `
+                        -RequiresPodMetricCoverage $true `
+                        -MetricPodCount $metricPodCount
                 })
+        }
+
+        $cpuMetricPodCount = $ready
+        if ($step.ContainsKey("CpuMetricPodCount")) {
+            $cpuMetricPodCount = $step.CpuMetricPodCount
         }
 
         New-AutoscalingSample `
@@ -88,7 +102,8 @@ function New-Timeline {
             -UtilizationPercent $cpu `
             -RestartCounts $restartCounts `
             -ScalingActiveStatus $scalingActive `
-            -AdditionalMetrics $additional
+            -AdditionalMetrics $additional `
+            -CpuMetricPodCount $cpuMetricPodCount
     }
 
     return Get-AutoscalingTimeline -Samples @($samples) -MinReplicas $MinReplicas -MaxReplicas $MaxReplicas
@@ -454,8 +469,22 @@ function New-RecommendationSample {
             if ($_.ContainsKey("Current")) {
                 $current = $_.Current
             }
-            New-AutoscalingMetricReading -Name $_.Name -TargetValue $_.Target -CurrentValue $current
+            $additionalMetricPodCount = $readyReplicas
+            if ($_.ContainsKey("MetricPodCount")) {
+                $additionalMetricPodCount = $_.MetricPodCount
+            }
+            New-AutoscalingMetricReading `
+                -Name $_.Name `
+                -TargetValue $_.Target `
+                -CurrentValue $current `
+                -RequiresPodMetricCoverage $true `
+                -MetricPodCount $additionalMetricPodCount
         })
+
+    $cpuMetricPodCount = $readyReplicas
+    if ($null -ne $MetricPodCount) {
+        $cpuMetricPodCount = [int] $MetricPodCount
+    }
 
     return New-AutoscalingSample `
         -Timestamp $script:Origin `
@@ -465,7 +494,7 @@ function New-RecommendationSample {
         -UtilizationPercent $Cpu `
         -ScalingActiveStatus "True" `
         -AdditionalMetrics $additional `
-        -MetricPodCount $MetricPodCount
+        -CpuMetricPodCount $cpuMetricPodCount
 }
 
 function Get-Recommendation {
@@ -550,6 +579,16 @@ Assert-Equal -Expected 4 -Actual $metricsBehindReadiness.DesiredReplicas `
 Assert-Equal -Expected $false -Actual $metricsBehindReadiness.RecommendsDownscale `
     -Description "missing metrics on a Ready pod do not produce a scale-in recommendation"
 
+# Kubernetes's CPU-utilization fallback is not the target. A missing Pod is
+# assigned max(100, targetUtilization)% of its request, which is 100/70 of the
+# target here. With all 4 Pods Ready but only 3 CPU readings, the old 1.0
+# substitution returned 3; the controller keeps 4.
+$cpuFallback = Get-Recommendation -Sample (New-RecommendationSample -Replicas 4 -Ready 4 -Cpu 40 -MetricPodCount 3)
+Assert-Equal -Expected 4 -Actual $cpuFallback.DesiredReplicas `
+    -Description "CPU missing-Pod fallback uses 100% of request rather than the 70% target"
+Assert-Equal -Expected $false -Actual $cpuFallback.RecommendsDownscale `
+    -Description "4 Ready replicas at 40/70 CPU with only 3 reports do not establish a scale-in recommendation"
+
 # The substitution can pull the ratio back inside the tolerance, which is where
 # the controller abandons the change outright: 6 replicas, 5 measured, 58% of
 # 70% gives (0.829*5 + 1)/6 = 0.857 - but with only one replica unmeasured out
@@ -606,6 +645,10 @@ Assert-Equal -Expected 40 -Actual $readings[0].CurrentValue -Description "a Pods
 Assert-Equal -Expected 536870912 -Actual $readings[1].TargetValue -Description "a memory target written as a binary quantity is converted before it is divided"
 Assert-Null -Actual $readings[1].CurrentValue `
     -Description "a configured metric with no reading in status is kept with a null value rather than dropped"
+Assert-Equal -Expected $true -Actual $readings[0].RequiresPodMetricCoverage `
+    -Description "a Pods custom metric records that its Pod coverage is required"
+Assert-Null -Actual $readings[0].MetricPodCount `
+    -Description "CPU coverage is not reused for a custom metric whose own coverage is unknown"
 
 # --- Scale-down anchoring -----------------------------------------------------
 
@@ -633,6 +676,51 @@ Assert-BehaviorRejects `
     -Timeline $falsePassTimeline `
     -ExpectedMessage "short of the configured 300s stabilization window" `
     -Description "a scale-in 60s after the first genuine scale-in recommendation, preceded by 150s of sub-target-but-not-scale-in utilization, was rejected"
+
+# The review's CPU-coverage adversarial timeline. The three reporting Pods sit
+# at 40% against a 70% target while all four replicas are Ready. Kubernetes's
+# 100%-of-request missing-Pod fallback keeps the desired count at 4, so the
+# genuine recommendation begins only when all Pods report 10% at 240s. The old
+# 1.0 substitution anchored at 30s and reported 270s instead of the real 60s.
+$cpuMissingPodFalsePass = New-Timeline -MaxReplicas 4 -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 200; CpuMetricPodCount = 2 },
+    @{ Offset = 30; Replicas = 4; Cpu = 40; CpuMetricPodCount = 3 },
+    @{ Offset = 90; Replicas = 4; Cpu = 40; CpuMetricPodCount = 3 },
+    @{ Offset = 150; Replicas = 4; Cpu = 40; CpuMetricPodCount = 3 },
+    @{ Offset = 210; Replicas = 4; Cpu = 40; CpuMetricPodCount = 3 },
+    @{ Offset = 240; Replicas = 4; Cpu = 10; CpuMetricPodCount = 4 },
+    @{ Offset = 300; Replicas = 3; Cpu = 8; CpuMetricPodCount = 3 },
+    @{ Offset = 360; Replicas = 2; Cpu = 4; CpuMetricPodCount = 2 }
+)
+Assert-Equal -Expected 60 -Actual $cpuMissingPodFalsePass.ObservedScaleDownDelaySeconds `
+    -Description "CPU missing-Pod fallback prevents a 270s false window from hiding a genuine 60s window"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $cpuMissingPodFalsePass `
+    -ExpectedMessage "short of the configured 300s stabilization window" `
+    -Description "the CPU missing-Pod adversarial timeline is rejected"
+
+# CPU and a custom-metrics adapter can cover different Pods. Unknown custom
+# coverage cannot borrow the known CPU count and therefore cannot anchor the
+# window. Once custom coverage becomes known at 240s, both metrics genuinely
+# recommend downscale; the scale-in 60s later must fail.
+$customCoverageFalsePass = New-Timeline -MaxReplicas 4 -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 200; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 200; MetricPodCount = 2 }) },
+    @{ Offset = 30; Replicas = 4; Cpu = 10; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 10; MetricPodCount = $null }) },
+    @{ Offset = 90; Replicas = 4; Cpu = 10; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 10; MetricPodCount = $null }) },
+    @{ Offset = 150; Replicas = 4; Cpu = 10; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 10; MetricPodCount = $null }) },
+    @{ Offset = 210; Replicas = 4; Cpu = 10; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 10; MetricPodCount = $null }) },
+    @{ Offset = 240; Replicas = 4; Cpu = 10; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 10; MetricPodCount = 4 }) },
+    @{ Offset = 300; Replicas = 3; Cpu = 8; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 8; MetricPodCount = 3 }) },
+    @{ Offset = 360; Replicas = 2; Cpu = 4; Metrics = @(@{ Name = "pods/rps"; Target = 100; Current = 4; MetricPodCount = 2 }) }
+)
+Assert-Equal -Expected 60 -Actual $customCoverageFalsePass.ObservedScaleDownDelaySeconds `
+    -Description "unknown custom-metric coverage cannot borrow CPU coverage to create an early anchor"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $customCoverageFalsePass `
+    -ExpectedMessage "short of the configured 300s stabilization window" `
+    -Description "the per-metric coverage adversarial timeline is rejected"
 
 # The window stabilizes the MAXIMUM recommendation it holds, so a recommendation
 # that recovers restarts it. Measuring from the earlier, interrupted dip would
