@@ -714,7 +714,23 @@ function Get-AutoscalingTimeline {
         # a parameter rather than a constant because a cluster that runs a
         # different tolerance computes different recommendations, and this
         # module's whole claim is that it reproduces the controller's arithmetic.
-        [double] $Tolerance = 0.1
+        [double] $Tolerance = 0.1,
+        # The longest spacing between two consecutive samples that the proven
+        # stabilization stretch may contain.
+        #
+        # A sample proves the HPA's recommendation at the instant it was taken
+        # and says nothing about the interval after it. Two recommending samples
+        # 299 seconds apart therefore do not prove 299 seconds of recommendation:
+        # a load spike between them would have raised the recommendation and
+        # restarted the controller's window, and the run would never have seen
+        # it. The proven stretch is trimmed forward past any spacing wider than
+        # this, so unobserved time is dropped instead of credited.
+        #
+        # The default is twice the 30-second floor the validator puts under its
+        # own sampling grace: the coarsest spacing the harness will sample at,
+        # doubled, is as far apart as two observations may be before the stretch
+        # between them stops being evidence.
+        [int] $MaxObservationGapSeconds = 60
     )
 
     if ($Samples.Count -lt 2) {
@@ -795,6 +811,8 @@ function Get-AutoscalingTimeline {
     $provenScaleDownDelaySeconds = $null
     $downscaleRecommendationGapSeconds = $null
     $downscaleAnchorBlockedByMetric = $null
+    $observedRecommendationFrom = $null
+    $provenStretchGapSeconds = $null
     if ($null -ne $firstScaleDown) {
         $downscaleRecommendedFrom = Get-DownscaleRecommendationStart `
             -Samples $ordered `
@@ -803,6 +821,30 @@ function Get-AutoscalingTimeline {
             -Before $firstScaleDown.At `
             -Tolerance $Tolerance
         if ($null -ne $downscaleRecommendedFrom) {
+            # The stretch the samples actually observed, trimmed forward past
+            # any interval too wide to be evidence. A sample proves the
+            # recommendation at its own instant only: two recommending samples
+            # five minutes apart leave room for a load spike between them that
+            # would have raised the recommendation and restarted the
+            # controller's window, and crediting that unobserved time as
+            # stabilization is the same false positive as crediting a sampling
+            # gap at the anchor. The latest well-sampled run ending at the last
+            # old-count sample is what remains provable.
+            $observedRecommendationFrom = $downscaleRecommendedFrom
+            $provenStretchGapSeconds = $null
+            $stretch = @($ordered | Where-Object {
+                    $_.Timestamp -ge $observedRecommendationFrom.Timestamp -and
+                    $_.Timestamp -le $firstScaleDown.PreviousSampleAt
+                })
+            for ($i = $stretch.Count - 1; $i -ge 1; $i--) {
+                $spacing = ($stretch[$i].Timestamp - $stretch[$i - 1].Timestamp).TotalSeconds
+                if ($spacing -gt $MaxObservationGapSeconds) {
+                    $downscaleRecommendedFrom = $stretch[$i]
+                    $provenStretchGapSeconds = [int] [math]::Ceiling($spacing)
+                    break
+                }
+            }
+
             $downscaleRecommendationDetail = (Get-HpaScaleRecommendation `
                     -Sample $downscaleRecommendedFrom `
                     -MinReplicas $MinReplicas `
@@ -824,7 +866,7 @@ function Get-AutoscalingTimeline {
             # measurement. See Get-ScaleDownSamplingGrace.
             $downscaleRecommendationGapSeconds = 0
             for ($i = 1; $i -lt $ordered.Count; $i++) {
-                if ($ordered[$i].Timestamp -eq $downscaleRecommendedFrom.Timestamp) {
+                if ($ordered[$i].Timestamp -eq $observedRecommendationFrom.Timestamp) {
                     $downscaleRecommendationGapSeconds = [int] [math]::Ceiling(
                         ($ordered[$i].Timestamp - $ordered[$i - 1].Timestamp).TotalSeconds)
                     break
@@ -859,6 +901,15 @@ function Get-AutoscalingTimeline {
 
     $unattributedScaleEvents = @($scaleEvents | Where-Object { -not $_.HpaAttributed })
 
+    # Transitions this run could only see through Deployment status.replicas,
+    # because one of the two samples bounding them carried no scale-subresource
+    # read. status.replicas moves when the rollout catches up, so an event timed
+    # from it is timestamped LATE - which lengthens the stabilization bound the
+    # verdict trusts. A run that sampled the scale subresource at all and then
+    # lost it around a transition cannot time that decision, and the verdict
+    # rejects rather than reading the rollout's clock as the decision's.
+    $untimedScaleEvents = @($scaleEvents | Where-Object { $_.DecisionSource -ne "scale subresource" })
+
     return [pscustomobject]@{
         SampleCount                   = $ordered.Count
         StartTime                     = $ordered[0].Timestamp
@@ -872,6 +923,8 @@ function Get-AutoscalingTimeline {
         PeakReadyReplicas             = $peakReadyObserved
         ScaleEvents                   = $scaleEvents
         UnattributedScaleEvents       = $unattributedScaleEvents
+        UntimedScaleEvents            = $untimedScaleEvents
+        ScaleSubresourceSampleCount   = @($ordered | Where-Object { $null -ne $_.ScaleDesiredReplicas }).Count
         ScaleUpCount                  = $scaleUps.Count
         ScaleDownCount                = $scaleDowns.Count
         PeakUtilizationPercent        = ($ordered | Where-Object { $null -ne $_.UtilizationPercent } |
@@ -884,6 +937,14 @@ function Get-AutoscalingTimeline {
         ProvenScaleDownDelaySeconds   = $provenScaleDownDelaySeconds
         DownscaleRecommendedAt        = $(if ($null -ne $downscaleRecommendedFrom) { $downscaleRecommendedFrom.Timestamp } else { $null })
         DownscaleRecommendationDetail = $downscaleRecommendationDetail
+        # The first sample that recommended the scale-in, before the proven
+        # stretch was trimmed past any unobserved interval. Equal to
+        # DownscaleRecommendedAt on a run sampled evenly throughout.
+        DownscaleRecommendationObservedFrom = $(if ($null -ne $observedRecommendationFrom) { $observedRecommendationFrom.Timestamp } else { $null })
+        # The oversized spacing that forced the trim, or null when the whole
+        # observed stretch was close-sampled enough to count.
+        ProvenStretchGapSeconds       = $provenStretchGapSeconds
+        MaxObservationGapSeconds      = $MaxObservationGapSeconds
         DownscaleRecommendationGapSeconds = $downscaleRecommendationGapSeconds
         DownscaleAnchorBlockedByMetric = $downscaleAnchorBlockedByMetric
         FirstScaleDownAt              = $(if ($null -ne $firstScaleDown) { $firstScaleDown.At } else { $null })
@@ -990,6 +1051,22 @@ function Confirm-AutoscalingBehavior {
         -SuccessMessage "the HPA reported ScalingActive=True in all $($Timeline.ScalingActiveTrueSamples) samples after the first, so the autoscaler was computing desired replica counts throughout the run" `
         -FailureMessage "the HPA did not report ScalingActive=True in $($Timeline.ScalingActiveNotTrueSamples) of the $($Timeline.SampleCount - 1) samples after the first. ScalingActive=False means the HPA computed no desired replica count, so for those samples any replica change came from something else - a rollout, a manual scale, or another controller - and proves nothing about the autoscaler. Check 'kubectl describe hpa' for the condition's reason"
 
+    # Decision timing. Every transition must have been seen in the scale
+    # subresource - the field the HPA writes its decision into - on both of the
+    # samples that bound it. A transition visible only through Deployment
+    # status.replicas is timestamped when the ROLLOUT caught up, which is later
+    # than the decision by however long the pods took, and that lag would be
+    # added to the stabilization bound below as if it were stabilization time.
+    # The sampler reads the scale subresource on every sample, so a missing read
+    # is a hole in the evidence rather than a slower autoscaler.
+    $untimedDetail = @($Timeline.UntimedScaleEvents | ForEach-Object {
+            "$($_.From) -> $($_.To) at $($_.At.ToString('HH:mm:ssZ'))"
+        }) -join "; "
+    Confirm-Condition `
+        -Condition ($Timeline.UntimedScaleEvents.Count -eq 0) `
+        -SuccessMessage "every replica transition ($($Timeline.ScaleEvents.Count) of them) was timed from the scale subresource's desired count, the field the HPA writes its decision into, rather than from the workload status that trails it" `
+        -FailureMessage "$($Timeline.UntimedScaleEvents.Count) of $($Timeline.ScaleEvents.Count) replica transition(s) were visible only through Deployment status.replicas: $untimedDetail. status.replicas moves when the rollout catches up with the decision, not when the decision is made, so timing an event from it credits the stabilization window with the rollout's lag. The sampler reads the workload's scale subresource on every sample (kubectl v1.27+ for --subresource=scale); a run missing that read around a transition cannot say when the decision happened"
+
     # Attribution. Every replica transition the run recorded must correlate
     # with the HPA's own rescale evidence: the HPA's desiredReplicas matching
     # the transition's new count, and its lastScaleTime advancing across the
@@ -1075,8 +1152,15 @@ function Confirm-AutoscalingBehavior {
             $scaleDownDelayFailureMessage = "the workload scaled in at $($Timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) without a single preceding sample in which the HPA's desired replica count was below the running one. No stabilization window explains that scale-in; check whether something other than the autoscaler resized the Deployment, or whether the sampling interval is coarse enough to have missed the recommendation entirely"
         }
     } else {
-        $scaleDownDelayFailureMessage = "the evidence proves a recommendation duration of only >= $($Timeline.ProvenScaleDownDelaySeconds)s before the scale-down decision - the HPA recommended fewer replicas continuously from $($Timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($Timeline.DownscaleRecommendationDetail)) and the decision came after the last old-count sample at $($Timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')) - which does not establish the configured ${ExpectedScaleDownWindowSeconds}s stabilization window (threshold ${threshold}s after ${ScaleDownGraceSeconds}s of sampling grace; anchor-to-decision-observation spacing $($Timeline.ObservedScaleDownDelaySeconds)s). Either the HPA scaled in early, or the sampling around the recommendation turnover or the decision was too sparse to prove the window held; sampling uncertainty is never credited as stabilization time"
-        $scaleDownDelaySuccessMessage = "the scale-down decision came after a proven recommendation duration >= $($Timeline.ProvenScaleDownDelaySeconds)s: the HPA recommended fewer replicas continuously from $($Timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($Timeline.DownscaleRecommendationDetail)) through the last old-count sample at $($Timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')), consistent with the configured ${ExpectedScaleDownWindowSeconds}s stabilization window (threshold ${threshold}s after ${ScaleDownGraceSeconds}s of sampling grace)"
+        # Disclosed in both directions: a stretch that had to be trimmed is a
+        # run whose sampling stopped being evidence for a while, and a reader
+        # of a PASS is owed that as much as a reader of a rejection.
+        $trimNote = ""
+        if ($null -ne $Timeline.ProvenStretchGapSeconds) {
+            $trimNote = " The stretch starts there rather than at the first recommending sample ($($Timeline.DownscaleRecommendationObservedFrom.ToString('HH:mm:ssZ'))) because the run left a $($Timeline.ProvenStretchGapSeconds)s spacing between consecutive samples inside it, wider than the $($Timeline.MaxObservationGapSeconds)s this harness will treat as continuous observation; the recommendation could have been interrupted and the window restarted in there unseen."
+        }
+        $scaleDownDelayFailureMessage = "the evidence proves a recommendation duration of only >= $($Timeline.ProvenScaleDownDelaySeconds)s before the scale-down decision - the HPA recommended fewer replicas continuously from $($Timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($Timeline.DownscaleRecommendationDetail)) and the decision came after the last old-count sample at $($Timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')) - which does not establish the configured ${ExpectedScaleDownWindowSeconds}s stabilization window (threshold ${threshold}s after ${ScaleDownGraceSeconds}s of sampling grace; anchor-to-decision-observation spacing $($Timeline.ObservedScaleDownDelaySeconds)s). Either the HPA scaled in early, or the sampling around the recommendation turnover or the decision was too sparse to prove the window held; sampling uncertainty is never credited as stabilization time.$trimNote"
+        $scaleDownDelaySuccessMessage = "the scale-down decision came after a proven recommendation duration >= $($Timeline.ProvenScaleDownDelaySeconds)s: the HPA recommended fewer replicas continuously from $($Timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($Timeline.DownscaleRecommendationDetail)) through the last old-count sample at $($Timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')), consistent with the configured ${ExpectedScaleDownWindowSeconds}s stabilization window (threshold ${threshold}s after ${ScaleDownGraceSeconds}s of sampling grace).$trimNote"
     }
     Confirm-Condition `
         -Condition ($null -ne $Timeline.ProvenScaleDownDelaySeconds -and $Timeline.ProvenScaleDownDelaySeconds -ge $threshold) `

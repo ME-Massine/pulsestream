@@ -333,10 +333,17 @@ function Get-Sample {
             ([System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal))
     }
 
-    $scaleDesired = $null
-    if ($null -ne $scale.spec.replicas) {
-        $scaleDesired = [int] $scale.spec.replicas
+    # Not optional, and not silently null: this field is what timestamps every
+    # scale decision in the run. Without it the analysis falls back to
+    # Deployment status.replicas, which moves when the rollout catches up rather
+    # than when the HPA decided, and the verdict rejects the run anyway. Failing
+    # here says why - an old kubectl without --subresource=scale support, or a
+    # scale object the API served without spec.replicas - instead of failing
+    # much later on evidence that never existed.
+    if ($null -eq $scale.spec.replicas) {
+        throw "The scale subresource of Deployment '$Service' carried no spec.replicas. That field is where the HPA writes its scaling decision and is what timestamps every scale event in this run; kubectl v1.27+ is required for 'kubectl get deployment --subresource=scale'."
     }
+    $scaleDesired = [int] $scale.spec.replicas
 
     # Every metric the HPA is configured with beyond CPU, read at the same
     # instant. The scale-down verdict recomputes the HPA's desired replica count,
@@ -642,7 +649,20 @@ if ($null -ne $runFailure) {
 # --- 5. Verdict --------------------------------------------------------------
 Write-Host ""
 Write-Host "Timeline ($($samples.Count) samples):"
-$timeline = Get-AutoscalingTimeline -Samples $samples -MinReplicas $minReplicas -MaxReplicas $maxReplicas -Tolerance $HpaTolerance
+# The widest spacing between two consecutive samples that the stabilization
+# stretch may contain and still count as continuously observed, derived from the
+# REQUESTED interval exactly like the sampling grace: a run that stalls proves
+# less, and what it actually did must never widen its own allowance. A stretch
+# containing a wider hole is trimmed to the observed part, because the
+# recommendation could have been interrupted in the hole and the controller's
+# window restarted without this run seeing it.
+$maxObservationGapSeconds = [math]::Max(60, $SampleIntervalSeconds * 2)
+$timeline = Get-AutoscalingTimeline `
+    -Samples $samples `
+    -MinReplicas $minReplicas `
+    -MaxReplicas $maxReplicas `
+    -Tolerance $HpaTolerance `
+    -MaxObservationGapSeconds $maxObservationGapSeconds
 $rendered = Format-AutoscalingTimeline -Timeline $timeline -Markers $markers
 Write-Host $rendered
 Write-Host ""
@@ -702,8 +722,16 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
     # The scale-down assertion is anchored to the HPA's own recommendation and
     # judged on the conservative proven bound, so the report carries both ends
     # of the interval the samples establish rather than one optimistic number.
+    # A stretch that had to be trimmed past an unobserved interval is disclosed
+    # in the report as well as in the verdict: the anchor the reader sees is
+    # then not the first sample that recommended the scale-in, and the reason
+    # belongs next to it.
+    $trimNote = ""
+    if ($null -ne $timeline.ProvenStretchGapSeconds) {
+        $trimNote = " The stretch starts there rather than at the first recommending sample ($($timeline.DownscaleRecommendationObservedFrom.ToString('HH:mm:ssZ'))): the run left a ``$($timeline.ProvenStretchGapSeconds)s`` spacing between consecutive samples inside it, wider than the ``$($timeline.MaxObservationGapSeconds)s`` this harness treats as continuous observation."
+    }
     if ($null -ne $timeline.ProvenScaleDownDelaySeconds) {
-        $scaleDownAnchorRow = "| Scale-down window | proven recommendation duration ``>= $($timeline.ProvenScaleDownDelaySeconds)s``: recommended continuously from $($timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($timeline.DownscaleRecommendationDetail)) through the last old-count sample at $($timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')); decision observed at $($timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) (anchor-to-observation spacing ``$($timeline.ObservedScaleDownDelaySeconds)s``, recommendation turnover uncertain by the ``$($graceDecision.AnchorGapSeconds)s`` gap ending at the anchor) |"
+        $scaleDownAnchorRow = "| Scale-down window | proven recommendation duration ``>= $($timeline.ProvenScaleDownDelaySeconds)s``: recommended continuously from $($timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($timeline.DownscaleRecommendationDetail)) through the last old-count sample at $($timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')); decision observed at $($timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) (anchor-to-observation spacing ``$($timeline.ObservedScaleDownDelaySeconds)s``, recommendation turnover uncertain by the ``$($graceDecision.AnchorGapSeconds)s`` gap ending at the anchor).$trimNote |"
     } else {
         $scaleDownAnchorRow = "| Scale-down window | not measured: this run recorded no scale-in preceded by a scale-in recommendation |"
     }
@@ -729,7 +757,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "| Tested revision | ``$revision`` |",
         "| HPA bounds | ``[$minReplicas, $maxReplicas]`` at a $targetPercent% CPU target |",
         "| Scale-down window | ``${scaleDownWindow}s`` (read from the applied HPA) |",
-        "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, gap before the scale-in recommendation ``$($graceDecision.AnchorGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of fixed grace (ceiling ``$($graceDecision.CeilingSeconds)s``; observed gaps shrink the proven bound instead of widening the grace) |",
+        "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, gap before the scale-in recommendation ``$($graceDecision.AnchorGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of fixed grace (ceiling ``$($graceDecision.CeilingSeconds)s``; observed gaps shrink the proven bound instead of widening the grace; consecutive samples more than ``${maxObservationGapSeconds}s`` apart stop counting as continuous observation) |",
         "| Load | $effectiveLoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, $KafkaBurstEventsPerSecond events/s for ${KafkaBurstDurationSeconds}s then $KafkaEventsPerSecond events/s per pod" }) |",
         "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first (health signal only; attribution is per scale event below) |",
         "| HPA rescale attribution | $($timeline.ScaleEvents.Count - $timeline.UnattributedScaleEvents.Count) of $($timeline.ScaleEvents.Count) replica transitions correlated with the HPA's desiredReplicas and an advancing lastScaleTime |",

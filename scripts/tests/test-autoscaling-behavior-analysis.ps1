@@ -1042,6 +1042,85 @@ Assert-Equal -Expected 315 -Actual $provenWindow.ProvenScaleDownDelaySeconds `
 Confirm-AutoscalingBehavior -Timeline $provenWindow -ExpectedScaleDownWindowSeconds 300 -RequireReturnToFloor
 Write-Host "[ok] a window proven by the conservative bound alone is accepted"
 
+# A hole INSIDE the stabilization stretch is the same false positive wearing a
+# different hat: two recommending samples 299s apart do not prove 299s of
+# recommendation, because a load spike between them would have raised the
+# recommendation and restarted the controller's window without this run ever
+# seeing it. Reading the span between them as continuous observation lets a
+# sampler that stalled once pass a window it never watched.
+$sparseStretch = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 60; Replicas = 6; Cpu = 8 },
+    @{ Offset = 359; Replicas = 6; Cpu = 8 },
+    @{ Offset = 365; Replicas = 5; Cpu = 6 },
+    @{ Offset = 425; Replicas = 4; Cpu = 5 },
+    @{ Offset = 485; Replicas = 3; Cpu = 4 },
+    @{ Offset = 545; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected 299 -Actual $sparseStretch.ProvenStretchGapSeconds `
+    -Description "the unobserved interval inside the stretch is recorded as the reason the stretch was trimmed"
+Assert-Equal -Expected 0 -Actual $sparseStretch.ProvenScaleDownDelaySeconds `
+    -Description "an unobserved interval inside the stretch is not credited as stabilization time"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $sparseStretch `
+    -ExpectedMessage "wider than the 60s this harness will treat as continuous observation" `
+    -Description "a window provable only by reading a 299s sampling hole as continuous recommendation was rejected"
+
+# The trim takes the unobserved interval and nothing more: a run that stalled
+# early but then watched the recommendation continuously for the whole window
+# still proves it, from the far side of the hole.
+$trimmedButProven = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 60; Replicas = 6; Cpu = 8 },
+    @{ Offset = 200; Replicas = 6; Cpu = 8 },
+    @{ Offset = 230; Replicas = 6; Cpu = 8 },
+    @{ Offset = 260; Replicas = 6; Cpu = 8 },
+    @{ Offset = 290; Replicas = 6; Cpu = 8 },
+    @{ Offset = 320; Replicas = 6; Cpu = 8 },
+    @{ Offset = 350; Replicas = 6; Cpu = 8 },
+    @{ Offset = 380; Replicas = 6; Cpu = 8 },
+    @{ Offset = 410; Replicas = 6; Cpu = 8 },
+    @{ Offset = 440; Replicas = 6; Cpu = 8 },
+    @{ Offset = 470; Replicas = 6; Cpu = 8 },
+    @{ Offset = 500; Replicas = 6; Cpu = 8 },
+    @{ Offset = 515; Replicas = 5; Cpu = 6 },
+    @{ Offset = 575; Replicas = 4; Cpu = 5 },
+    @{ Offset = 635; Replicas = 3; Cpu = 4 },
+    @{ Offset = 695; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected 300 -Actual $trimmedButProven.ProvenScaleDownDelaySeconds `
+    -Description "the well-sampled remainder of a trimmed stretch still proves what it observed"
+Assert-Equal -Expected ($script:Origin.AddSeconds(60)) -Actual $trimmedButProven.DownscaleRecommendationObservedFrom `
+    -Description "the first recommending sample is kept for reporting even when the proven stretch starts later"
+Assert-Equal -Expected ($script:Origin.AddSeconds(200)) -Actual $trimmedButProven.DownscaleRecommendedAt `
+    -Description "the proven stretch starts on the far side of the unobserved interval"
+Confirm-AutoscalingBehavior -Timeline $trimmedButProven -ExpectedScaleDownWindowSeconds 300 -RequireReturnToFloor
+Write-Host "[ok] a stretch trimmed past a sampling hole still passes on what it did observe"
+
+# The boundary: samples exactly the widest spacing the harness treats as
+# continuous observation apart, proving the window with nothing to spare.
+$boundarySpacing = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 60; Replicas = 6; Cpu = 8 },
+    @{ Offset = 120; Replicas = 6; Cpu = 8 },
+    @{ Offset = 180; Replicas = 6; Cpu = 8 },
+    @{ Offset = 240; Replicas = 6; Cpu = 8 },
+    @{ Offset = 300; Replicas = 6; Cpu = 8 },
+    @{ Offset = 360; Replicas = 6; Cpu = 8 },
+    @{ Offset = 375; Replicas = 5; Cpu = 6 },
+    @{ Offset = 435; Replicas = 4; Cpu = 5 },
+    @{ Offset = 495; Replicas = 3; Cpu = 4 },
+    @{ Offset = 555; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected $true -Actual ($null -eq $boundarySpacing.ProvenStretchGapSeconds) `
+    -Description "spacing at exactly the observation limit does not trim the stretch"
+Assert-Equal -Expected 300 -Actual $boundarySpacing.ProvenScaleDownDelaySeconds `
+    -Description "a stretch sampled at the observation limit proves its full span"
+
 # --- Scale decisions are timestamped from the scale subresource ---------------
 # Deployment status.replicas moves when the rollout catches up with the
 # decision, not when the decision is made, and the two can be a rollout apart.
@@ -1085,6 +1164,44 @@ Assert-Equal -Expected 1 -Actual $delayedStatusUpEvents.Count `
     -Description "a scale-up whose status lags its decision is one event"
 Assert-Equal -Expected ($script:Origin.AddSeconds(60)) -Actual $delayedStatusUpEvents[0].At `
     -Description "the scale-up decision is timestamped from the scale subresource transition"
+
+# The other half of the same false positive. A run that reads the scale
+# subresource on most samples but loses it around the transition falls back to
+# Deployment status.replicas exactly where the decision happens - and status
+# moves when the rollout finishes. Here the HPA's decision lands at 320s, 260s
+# after the anchor and short of the window, while status does not show 5 until
+# 400s; timing the event from status scores the bound at 300s and passes a 300s
+# requirement on rollout lag alone. The run is rejected for having no scale read
+# to time the decision with rather than judged on the workload's clock.
+$missingScaleRead = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 60; Replicas = 6; Cpu = 8 },
+    @{ Offset = 100; Replicas = 6; Cpu = 8 },
+    @{ Offset = 140; Replicas = 6; Cpu = 8 },
+    @{ Offset = 180; Replicas = 6; Cpu = 8 },
+    @{ Offset = 220; Replicas = 6; Cpu = 8 },
+    @{ Offset = 260; Replicas = 6; Cpu = 8 },
+    @{ Offset = 300; Replicas = 6; Cpu = 8 },
+    @{ Offset = 320; Replicas = 6; ScaleDesired = $null; Cpu = 8 },
+    @{ Offset = 360; Replicas = 6; ScaleDesired = $null; Cpu = 6 },
+    @{ Offset = 400; Replicas = 5; Cpu = 6 },
+    @{ Offset = 460; Replicas = 4; Cpu = 5 },
+    @{ Offset = 520; Replicas = 3; Cpu = 4 },
+    @{ Offset = 580; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected 300 -Actual $missingScaleRead.ProvenScaleDownDelaySeconds `
+    -Description "a decision seen only in the workload status inflates the bound by the rollout's lag"
+Assert-Equal -Expected 1 -Actual $missingScaleRead.UntimedScaleEvents.Count `
+    -Description "the transition bounded by a sample without a scale read is recorded as untimed"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $missingScaleRead `
+    -ExpectedMessage "visible only through Deployment status.replicas" `
+    -Description "a window provable only by timing the decision from a delayed status.replicas was rejected"
+
+Assert-Equal -Expected 0 -Actual $healthy.UntimedScaleEvents.Count `
+    -Description "a run that sampled the scale subresource throughout has no untimed transition"
 
 # --- Attribution: replica changes must be the HPA's own work ------------------
 # ScalingActive=True says the HPA can compute desired replica counts. It does
