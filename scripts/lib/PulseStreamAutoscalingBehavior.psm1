@@ -250,7 +250,30 @@ function New-AutoscalingSample {
         # the CPU reading; custom metrics carry their own coverage state. The
         # HPA reports an average before conservative missing-Pod substitutions,
         # so unknown coverage cannot safely establish a downscale anchor.
-        [Alias("MetricPodCount")] [nullable[int]] $CpuMetricPodCount = $null
+        [Alias("MetricPodCount")] [nullable[int]] $CpuMetricPodCount = $null,
+        # spec.replicas of the workload's scale subresource: the replica count
+        # that has been REQUESTED of the workload, which is where the HPA writes
+        # its decision. Deployment status.replicas (the Replicas parameter
+        # above) can lag this by the whole rollout of the change, so scale
+        # events are timestamped from this field when it was sampled. Null means
+        # the sampler did not read the scale subresource; the two fields are
+        # deliberately not collapsed into one.
+        [nullable[int]] $ScaleDesiredReplicas = $null,
+        # The HPA's own status at the same instant. desiredReplicas is the count
+        # the HPA wants; lastScaleTime is the controller's own record of when it
+        # last changed the target's scale. Together they are what attributes a
+        # replica transition to the HPA: the transition's new count must match
+        # the HPA's desired count AND lastScaleTime must have advanced across
+        # the transition. Null means unsampled, which conservatively attributes
+        # nothing.
+        [nullable[int]] $HpaDesiredReplicas = $null,
+        [nullable[int]] $HpaCurrentReplicas = $null,
+        [nullable[datetime]] $HpaLastScaleTime = $null,
+        # The reason of the HPA's AbleToScale condition, recorded verbatim
+        # ("SucceededRescale", "ReadyForNewScale", "BackoffDownscale", ...).
+        # Reported as supporting evidence only: the reason is overwritten by the
+        # next reconcile, so its absence at a sample proves nothing.
+        [string] $HpaAbleToScaleReason = $null
     )
 
     $metrics = @(New-AutoscalingMetricReading `
@@ -267,15 +290,26 @@ function New-AutoscalingSample {
         $metrics += $metric
     }
 
+    $lastScaleTime = $null
+    if ($null -ne $HpaLastScaleTime) {
+        # PowerShell unwraps the nullable to a plain [datetime] on binding.
+        $lastScaleTime = ([datetime] $HpaLastScaleTime).ToUniversalTime()
+    }
+
     return [pscustomobject]@{
-        Timestamp           = $Timestamp.ToUniversalTime()
-        Replicas            = $Replicas
-        ReadyReplicas       = $ReadyReplicas
-        TargetPercent       = $TargetPercent
-        UtilizationPercent  = $UtilizationPercent
-        RestartCounts       = $RestartCounts
-        ScalingActiveStatus = $ScalingActiveStatus
-        Metrics             = $metrics
+        Timestamp            = $Timestamp.ToUniversalTime()
+        Replicas             = $Replicas
+        ReadyReplicas        = $ReadyReplicas
+        TargetPercent        = $TargetPercent
+        UtilizationPercent   = $UtilizationPercent
+        RestartCounts        = $RestartCounts
+        ScalingActiveStatus  = $ScalingActiveStatus
+        Metrics              = $metrics
+        ScaleDesiredReplicas = $ScaleDesiredReplicas
+        HpaDesiredReplicas   = $HpaDesiredReplicas
+        HpaCurrentReplicas   = $HpaCurrentReplicas
+        HpaLastScaleTime     = $lastScaleTime
+        HpaAbleToScaleReason = $HpaAbleToScaleReason
     }
 }
 
@@ -320,13 +354,27 @@ function Get-RestartDelta {
     return $delta
 }
 
+# The replica count a sample proves was REQUESTED of the workload at that
+# instant: the scale subresource's desired count when it was sampled, and
+# Deployment status.replicas otherwise. The scale subresource is where the HPA
+# writes its decision, so it moves at the decision; status.replicas moves when
+# the rollout catches up, which can be many seconds later.
+function Get-ObservedDesiredReplicas {
+    param([Parameter(Mandatory)] $Sample)
+
+    if ($null -ne $Sample.ScaleDesiredReplicas) {
+        return [int] $Sample.ScaleDesiredReplicas
+    }
+    return [int] $Sample.Replicas
+}
+
 function Get-ScaleEvents {
     param([Parameter(Mandatory)] [object[]] $Samples)
 
     $events = @()
     for ($i = 1; $i -lt $Samples.Count; $i++) {
-        $previous = $Samples[$i - 1].Replicas
-        $current = $Samples[$i].Replicas
+        $previous = Get-ObservedDesiredReplicas -Sample $Samples[$i - 1]
+        $current = Get-ObservedDesiredReplicas -Sample $Samples[$i]
         if ($current -eq $previous) {
             continue
         }
@@ -336,11 +384,70 @@ function Get-ScaleEvents {
             $direction = "down"
         }
 
+        $decisionSource = "status.replicas"
+        if ($null -ne $Samples[$i].ScaleDesiredReplicas -and $null -ne $Samples[$i - 1].ScaleDesiredReplicas) {
+            $decisionSource = "scale subresource"
+        }
+
+        # Attribution. ScalingActive=True says the HPA COULD compute a desired
+        # count; it says nothing about who resized the workload, since a manual
+        # `kubectl scale`, a rollout, or another controller changes the same
+        # field while the HPA sits idle. A transition is credited to the HPA
+        # only on the controller's own rescale evidence:
+        #
+        #   * the HPA's status.desiredReplicas equals the transition's new
+        #     count - the HPA wanted exactly this many replicas; and
+        #   * the HPA's status.lastScaleTime ADVANCED across the transition -
+        #     the controller states it changed the target's scale in this
+        #     interval. lastScaleTime values are compared only against each
+        #     other, never against the sampler's clock, so clock skew between
+        #     the harness and the control plane cannot manufacture or destroy
+        #     an advance.
+        #
+        # The evidence may land one sample late: the HPA can rescale between
+        # one sample's HPA read and its scale read, so that sample carries the
+        # new scale count with the old HPA status. The next sample is therefore
+        # also consulted - but only while the scale target still holds this
+        # transition's count, because once it has moved on the newer evidence
+        # belongs to a different transition. Anything less than this evidence
+        # leaves the transition unattributed, which the verdict treats as a
+        # failure: ambiguity must not credit the HPA.
+        $baselineLastScale = $Samples[$i - 1].HpaLastScaleTime
+        $attributed = $false
+        $evidence = $null
+        foreach ($j in @($i, ($i + 1))) {
+            if ($j -ge $Samples.Count) {
+                break
+            }
+            if ($j -gt $i -and (Get-ObservedDesiredReplicas -Sample $Samples[$j]) -ne $current) {
+                break
+            }
+
+            $hpaDesired = $Samples[$j].HpaDesiredReplicas
+            $lastScale = $Samples[$j].HpaLastScaleTime
+            $advanced = ($null -ne $lastScale) -and (($null -eq $baselineLastScale) -or ($lastScale -gt $baselineLastScale))
+            if ($null -ne $hpaDesired -and [int] $hpaDesired -eq $current -and $advanced) {
+                $attributed = $true
+                $evidence = "HPA desiredReplicas=$hpaDesired with lastScaleTime advanced to $($lastScale.ToString('HH:mm:ssZ')), read at the $($Samples[$j].Timestamp.ToString('HH:mm:ssZ')) sample"
+                if (-not [string]::IsNullOrWhiteSpace($Samples[$j].HpaAbleToScaleReason)) {
+                    $evidence = "$evidence (AbleToScale: $($Samples[$j].HpaAbleToScaleReason))"
+                }
+                break
+            }
+        }
+
         $events += [pscustomobject]@{
-            At        = $Samples[$i].Timestamp
-            From      = $previous
-            To        = $current
-            Direction = $direction
+            At               = $Samples[$i].Timestamp
+            # The last sample that still showed the old count. The decision
+            # happened strictly after this instant, which is what makes it the
+            # conservative end of the stabilization-window bound.
+            PreviousSampleAt = $Samples[$i - 1].Timestamp
+            From             = $previous
+            To               = $current
+            Direction        = $direction
+            DecisionSource   = $decisionSource
+            HpaAttributed    = $attributed
+            HpaEvidence      = $evidence
         }
     }
 
@@ -658,17 +765,34 @@ function Get-AutoscalingTimeline {
     $scalingActiveTrue = @($afterFirst | Where-Object { $_.ScalingActiveStatus -eq "True" }).Count
     $scalingActiveNotTrue = $afterFirst.Count - $scalingActiveTrue
 
-    # Time from the HPA first recommending fewer replicas to the first pod
-    # actually being removed. This is the observed stabilization window, and the
-    # only part of `behavior` that a structural check cannot prove.
+    # Time from the HPA first recommending fewer replicas to the scale-down
+    # decision. This is the observed stabilization window, and the only part of
+    # `behavior` that a structural check cannot prove.
     #
     # Measured from the recommendation and not from the end of the load or from
     # utilization crossing the target: the controller stabilizes recommendations,
     # so those are the wrong clocks. See Get-HpaScaleRecommendation.
+    #
+    # Two numbers are computed, because the samples bound the true window
+    # rather than measure it:
+    #
+    #   * ObservedScaleDownDelaySeconds - anchor sample to the sample that
+    #     first observed the reduced desired count. The recommendation turned
+    #     over at or before the anchor and the decision happened at or before
+    #     its observation, so this value can OVERSTATE the true window by up to
+    #     the gap ending at the anchor. Reported, never asserted on.
+    #   * ProvenScaleDownDelaySeconds - anchor sample to the LAST sample that
+    #     still showed the old desired count. The recommendation was proven to
+    #     hold from the anchor, and the decision came strictly after that last
+    #     old-count sample, so the true window is strictly LONGER than this
+    #     bound. This is what the verdict compares against the configured
+    #     window: sampling gaps around either transition shrink the bound and
+    #     fail the assertion instead of being credited as stabilization time.
     $firstScaleDown = $scaleDowns | Select-Object -First 1
     $downscaleRecommendedFrom = $null
     $downscaleRecommendationDetail = $null
     $observedScaleDownDelaySeconds = $null
+    $provenScaleDownDelaySeconds = $null
     $downscaleRecommendationGapSeconds = $null
     $downscaleAnchorBlockedByMetric = $null
     if ($null -ne $firstScaleDown) {
@@ -685,6 +809,9 @@ function Get-AutoscalingTimeline {
                     -MaxReplicas $MaxReplicas `
                     -Tolerance $Tolerance).Detail
             $observedScaleDownDelaySeconds = [int] [math]::Round(($firstScaleDown.At - $downscaleRecommendedFrom.Timestamp).TotalSeconds)
+            # Floored, not rounded: this is the lower bound the verdict trusts,
+            # and rounding up would credit sub-second time that was not proven.
+            $provenScaleDownDelaySeconds = [int] [math]::Floor(($firstScaleDown.PreviousSampleAt - $downscaleRecommendedFrom.Timestamp).TotalSeconds)
 
             # The one interval the observed delay is genuinely uncertain over:
             # the recommendation turned over somewhere between the sample before
@@ -730,6 +857,8 @@ function Get-AutoscalingTimeline {
         }
     }
 
+    $unattributedScaleEvents = @($scaleEvents | Where-Object { -not $_.HpaAttributed })
+
     return [pscustomobject]@{
         SampleCount                   = $ordered.Count
         StartTime                     = $ordered[0].Timestamp
@@ -742,6 +871,7 @@ function Get-AutoscalingTimeline {
         MinReadyObserved              = $minReadyObserved
         PeakReadyReplicas             = $peakReadyObserved
         ScaleEvents                   = $scaleEvents
+        UnattributedScaleEvents       = $unattributedScaleEvents
         ScaleUpCount                  = $scaleUps.Count
         ScaleDownCount                = $scaleDowns.Count
         PeakUtilizationPercent        = ($ordered | Where-Object { $null -ne $_.UtilizationPercent } |
@@ -751,38 +881,42 @@ function Get-AutoscalingTimeline {
         ScalingActiveNotTrueSamples   = $scalingActiveNotTrue
         RestartDelta                  = $restartDelta
         ObservedScaleDownDelaySeconds = $observedScaleDownDelaySeconds
+        ProvenScaleDownDelaySeconds   = $provenScaleDownDelaySeconds
         DownscaleRecommendedAt        = $(if ($null -ne $downscaleRecommendedFrom) { $downscaleRecommendedFrom.Timestamp } else { $null })
         DownscaleRecommendationDetail = $downscaleRecommendationDetail
         DownscaleRecommendationGapSeconds = $downscaleRecommendationGapSeconds
         DownscaleAnchorBlockedByMetric = $downscaleAnchorBlockedByMetric
         FirstScaleDownAt              = $(if ($null -ne $firstScaleDown) { $firstScaleDown.At } else { $null })
+        FirstScaleDownPreviousSampleAt = $(if ($null -ne $firstScaleDown) { $firstScaleDown.PreviousSampleAt } else { $null })
         Tolerance                     = $Tolerance
         Samples                       = $ordered
     }
 }
 
 # How much of the configured stabilization window the verdict is allowed to
-# forgive, given how this particular run was sampled.
+# forgive.
 #
-# The observed delay runs from the anchor sample to the scale-in sample, and is
-# uncertain in exactly one direction: the recommendation turned over somewhere
-# inside the gap that ENDS at the anchor, so the real window can be up to that
-# gap longer than the measurement. Everything else about the sampling is either
-# irrelevant to this measurement or biases it the other way (the scale-in
-# happened at or before the sample that first saw it, which makes the observed
-# delay too LONG, and is not forgiven).
+# The grace is the fixed quantization allowance of the REQUESTED sampling
+# interval, and nothing about how the run actually sampled ever widens it. The
+# verdict compares the conservative proven bound - anchor sample to the last
+# sample still showing the old desired count - and even a perfectly compliant
+# window loses up to one requested interval at each end of that bound, which is
+# what the requested grace covers.
 #
-# That is why the widest gap anywhere in the timeline is the wrong number. A run
-# that stalled for 299s between two idle post-load samples, and then scaled in
-# 60s after the recommendation turned over, has told us nothing about the 300s
-# window - but a grace taken from the widest gap would forgive the entire window
-# and pass it.
+# The run's OBSERVED gaps must not feed this number, and #290's review is why:
+# a gap around either transition means the evidence proves less, and forgiving
+# it would let sampling uncertainty manufacture stabilization time. Under the
+# proven bound those gaps already do the conservative thing on their own - they
+# shrink the bound and fail the assertion. AnchorGapSeconds is carried in the
+# result for reporting only, so a reader can see how sparse the sampling around
+# the anchor was; it buys the verdict nothing.
 #
-# The ceiling is the second guard. A grace worth more than half the window means
-# the sampler was too coarse to say whether the window held at all, which is a
-# run to reject rather than to pass on a technicality; the caller turns
-# ExceedsCeiling into that rejection, and GraceSeconds stays capped either way so
-# the value handed to Confirm-AutoscalingBehavior is always a legal one.
+# The ceiling is the second guard. A grace worth more than half the window
+# means the requested sampling was too coarse to say whether the window held at
+# all, which is a run to reject rather than to pass on a technicality; the
+# caller turns ExceedsCeiling into that rejection, and GraceSeconds stays
+# capped either way so the value handed to Confirm-AutoscalingBehavior is
+# always a legal one.
 function Get-ScaleDownSamplingGrace {
     param(
         [Parameter(Mandatory)] $Timeline,
@@ -805,13 +939,12 @@ function Get-ScaleDownSamplingGrace {
         $anchorGap = [int] $Timeline.DownscaleRecommendationGapSeconds
     }
 
-    $uncapped = [math]::Max($RequestedGraceSeconds, $anchorGap)
     return [pscustomobject]@{
-        GraceSeconds         = [math]::Min($uncapped, $ceiling)
-        UncappedGraceSeconds = $uncapped
+        GraceSeconds         = [math]::Min($RequestedGraceSeconds, $ceiling)
+        UncappedGraceSeconds = $RequestedGraceSeconds
         AnchorGapSeconds     = $anchorGap
         CeilingSeconds       = $ceiling
-        ExceedsCeiling       = ($uncapped -gt $ceiling)
+        ExceedsCeiling       = ($RequestedGraceSeconds -gt $ceiling)
     }
 }
 
@@ -847,13 +980,30 @@ function Confirm-AutoscalingBehavior {
         -SuccessMessage "the HPA reported a CPU utilization value in every sample after the first (peak $($Timeline.PeakUtilizationPercent)% against a $($Timeline.Samples[0].TargetPercent)% target)" `
         -FailureMessage "the HPA reported <unknown> in $($Timeline.UnknownMetricSamples) of $($Timeline.SampleCount) samples. An HPA that cannot read its metric does not scale at all, so the rest of this run proves nothing; check that metrics-server is installed and Available"
 
-    # Ordered before the replica assertions on purpose: without this, a run that
-    # scaled for some other reason - a rollout, a manual `kubectl scale`, a
-    # second controller - reads exactly like a working autoscaler.
+    # A health check, not an attribution check: ScalingActive=True says the HPA
+    # could read its metrics and compute a desired count throughout the run. It
+    # does NOT say the HPA performed any particular replica change - a manual
+    # `kubectl scale` next to a healthy HPA keeps this condition True. Who
+    # performed each transition is the next assertion's job.
     Confirm-Condition `
         -Condition ($Timeline.ScalingActiveNotTrueSamples -eq 0 -and $Timeline.ScalingActiveTrueSamples -gt 0) `
-        -SuccessMessage "the HPA reported ScalingActive=True in all $($Timeline.ScalingActiveTrueSamples) samples after the first, so it was the autoscaler that calculated and applied the replica counts below" `
-        -FailureMessage "the HPA did not report ScalingActive=True in $($Timeline.ScalingActiveNotTrueSamples) of the $($Timeline.SampleCount - 1) samples after the first. ScalingActive=False means the HPA computed no desired replica count, so any replica change in this run came from something else - a rollout, a manual scale, or another controller - and proves nothing about the autoscaler. Check 'kubectl describe hpa' for the condition's reason"
+        -SuccessMessage "the HPA reported ScalingActive=True in all $($Timeline.ScalingActiveTrueSamples) samples after the first, so the autoscaler was computing desired replica counts throughout the run" `
+        -FailureMessage "the HPA did not report ScalingActive=True in $($Timeline.ScalingActiveNotTrueSamples) of the $($Timeline.SampleCount - 1) samples after the first. ScalingActive=False means the HPA computed no desired replica count, so for those samples any replica change came from something else - a rollout, a manual scale, or another controller - and proves nothing about the autoscaler. Check 'kubectl describe hpa' for the condition's reason"
+
+    # Attribution. Every replica transition the run recorded must correlate
+    # with the HPA's own rescale evidence: the HPA's desiredReplicas matching
+    # the transition's new count, and its lastScaleTime advancing across the
+    # transition. A transition without that evidence may be a manual resize, a
+    # rollout, or another controller - and every assertion below reads the
+    # replica numbers as the autoscaler's work, so one unattributed transition
+    # poisons the run. Ordered before the replica assertions for that reason.
+    $unattributedDetail = @($Timeline.UnattributedScaleEvents | ForEach-Object {
+            "$($_.From) -> $($_.To) at $($_.At.ToString('HH:mm:ssZ'))"
+        }) -join "; "
+    Confirm-Condition `
+        -Condition ($Timeline.UnattributedScaleEvents.Count -eq 0) `
+        -SuccessMessage "every replica transition ($($Timeline.ScaleEvents.Count) of them) correlates with the HPA's own rescale evidence: desiredReplicas matched the new count and lastScaleTime advanced across the transition" `
+        -FailureMessage "$($Timeline.UnattributedScaleEvents.Count) of $($Timeline.ScaleEvents.Count) replica transition(s) carry no correlated successful HPA rescale evidence: $unattributedDetail. ScalingActive=True only says the HPA could compute a desired count, not that it performed these rescales; a manual 'kubectl scale', a rollout, or another controller produces the same replica change. A transition is credited to the HPA only when the HPA's desiredReplicas matches the new count and its lastScaleTime advanced across the transition, so this run cannot prove the autoscaler produced the timeline below"
 
     Confirm-Condition `
         -Condition ($Timeline.PeakReplicas -gt $Timeline.BaselineReplicas) `
@@ -899,8 +1049,20 @@ function Confirm-AutoscalingBehavior {
         -SuccessMessage "the workload returned to the minReplicas floor of $($Timeline.MinReplicas)" `
         -FailureMessage "the workload settled at $($Timeline.FinalReplicas) replicas rather than the minReplicas floor of $($Timeline.MinReplicas). Scaling in that stops short of the floor leaves capacity allocated that nothing is using"
 
+    # The verdict compares the PROVEN bound, not the observed spacing. The
+    # true window lies somewhere inside an interval: the recommendation turned
+    # over at or before the anchor sample, and the decision came strictly
+    # after the last sample still showing the old desired count. Judging the
+    # optimistic end of that interval would let a sampling gap around either
+    # transition manufacture stabilization time - the #290 false positive - so
+    # the conservative end is what must clear the window, and a gap that makes
+    # the window unprovable fails here instead of being forgiven.
     $threshold = $ExpectedScaleDownWindowSeconds - $ScaleDownGraceSeconds
-    if ($null -eq $Timeline.ObservedScaleDownDelaySeconds) {
+    # Both messages are built up front because both are evaluated on every
+    # call, and the success one dereferences fields that are null when no
+    # anchor exists.
+    $scaleDownDelaySuccessMessage = "the scale-down window was proven"
+    if ($null -eq $Timeline.ProvenScaleDownDelaySeconds) {
         if ($null -eq $Timeline.FirstScaleDownAt) {
             $scaleDownDelayFailureMessage = "no scale-down delay could be computed because no scale-down occurred during the run. Either the run ended before the ${ExpectedScaleDownWindowSeconds}s stabilization window elapsed, or the HPA never recommended fewer replicas"
         } elseif ($null -ne $Timeline.DownscaleAnchorBlockedByMetric) {
@@ -913,11 +1075,12 @@ function Confirm-AutoscalingBehavior {
             $scaleDownDelayFailureMessage = "the workload scaled in at $($Timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) without a single preceding sample in which the HPA's desired replica count was below the running one. No stabilization window explains that scale-in; check whether something other than the autoscaler resized the Deployment, or whether the sampling interval is coarse enough to have missed the recommendation entirely"
         }
     } else {
-        $scaleDownDelayFailureMessage = "the first scale-down came $($Timeline.ObservedScaleDownDelaySeconds)s after the HPA first recommended fewer replicas ($($Timeline.DownscaleRecommendationDetail), at $($Timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ'))), short of the configured ${ExpectedScaleDownWindowSeconds}s stabilization window (minus ${ScaleDownGraceSeconds}s of sampling grace). A window that does not hold turns a GC or JIT dip into a scale-in"
+        $scaleDownDelayFailureMessage = "the evidence proves a recommendation duration of only >= $($Timeline.ProvenScaleDownDelaySeconds)s before the scale-down decision - the HPA recommended fewer replicas continuously from $($Timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($Timeline.DownscaleRecommendationDetail)) and the decision came after the last old-count sample at $($Timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')) - which does not establish the configured ${ExpectedScaleDownWindowSeconds}s stabilization window (threshold ${threshold}s after ${ScaleDownGraceSeconds}s of sampling grace; anchor-to-decision-observation spacing $($Timeline.ObservedScaleDownDelaySeconds)s). Either the HPA scaled in early, or the sampling around the recommendation turnover or the decision was too sparse to prove the window held; sampling uncertainty is never credited as stabilization time"
+        $scaleDownDelaySuccessMessage = "the scale-down decision came after a proven recommendation duration >= $($Timeline.ProvenScaleDownDelaySeconds)s: the HPA recommended fewer replicas continuously from $($Timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($Timeline.DownscaleRecommendationDetail)) through the last old-count sample at $($Timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')), consistent with the configured ${ExpectedScaleDownWindowSeconds}s stabilization window (threshold ${threshold}s after ${ScaleDownGraceSeconds}s of sampling grace)"
     }
     Confirm-Condition `
-        -Condition ($null -ne $Timeline.ObservedScaleDownDelaySeconds -and $Timeline.ObservedScaleDownDelaySeconds -ge $threshold) `
-        -SuccessMessage "the first scale-down came $($Timeline.ObservedScaleDownDelaySeconds)s after the HPA first recommended fewer replicas ($($Timeline.DownscaleRecommendationDetail)), consistent with the configured ${ExpectedScaleDownWindowSeconds}s stabilization window" `
+        -Condition ($null -ne $Timeline.ProvenScaleDownDelaySeconds -and $Timeline.ProvenScaleDownDelaySeconds -ge $threshold) `
+        -SuccessMessage $scaleDownDelaySuccessMessage `
         -FailureMessage $scaleDownDelayFailureMessage
 }
 
@@ -947,13 +1110,34 @@ function Format-AutoscalingTimeline {
             $scalingActive = $sample.ScalingActiveStatus
         }
 
-        $line = "{0} | cpu: {1,9}/{2}%  {3}  {4}  {5} | ready={6} scalingActive={7}" -f `
+        # The three replica concepts stay separate on every line: desired is
+        # the scale subresource (where the HPA writes its decision), hpaDesired
+        # is the HPA's own status, and replicas/ready are what the workload
+        # realized. "-" means the field was not sampled, which is different
+        # from any number.
+        $scaleDesired = "-"
+        if ($null -ne $sample.ScaleDesiredReplicas) {
+            $scaleDesired = "$($sample.ScaleDesiredReplicas)"
+        }
+        $hpaDesired = "-"
+        if ($null -ne $sample.HpaDesiredReplicas) {
+            $hpaDesired = "$($sample.HpaDesiredReplicas)"
+        }
+        $lastScale = "-"
+        if ($null -ne $sample.HpaLastScaleTime) {
+            $lastScale = $sample.HpaLastScaleTime.ToString("HH:mm:ssZ")
+        }
+
+        $line = "{0} | cpu: {1,9}/{2}%  {3}  {4}  {5} | desired={6} hpaDesired={7} lastScale={8} ready={9} scalingActive={10}" -f `
             $sample.Timestamp.ToString("HH:mm:ssZ"),
             $utilization,
             $sample.TargetPercent,
             $Timeline.MinReplicas,
             $Timeline.MaxReplicas,
             $sample.Replicas,
+            $scaleDesired,
+            $hpaDesired,
+            $lastScale,
             $sample.ReadyReplicas,
             $scalingActive
 

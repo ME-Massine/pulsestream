@@ -190,10 +190,12 @@ done | {{BIN}}/kafka-console-producer.sh \
 '@
 
 # --- Sampling ----------------------------------------------------------------
-# Four reads per sample rather than one: the HPA carries the metric, the
-# Deployment carries the authoritative ready count, the pods carry restart
-# counts, and `kubectl top` says how many pods metrics-server had a CPU reading
-# for. They are read back to back and stamped with a single timestamp.
+# Five reads per sample rather than one: the HPA carries the metric and its own
+# rescale evidence, the scale subresource carries the replica count that has
+# been REQUESTED of the workload, the Deployment carries the authoritative
+# ready count, the pods carry restart counts, and `kubectl top` says how many
+# pods metrics-server had a CPU reading for. They are read back to back and
+# stamped with a single timestamp.
 
 # How many pods of the workload metrics-server currently has a CPU value for.
 #
@@ -229,6 +231,14 @@ function Get-Sample {
     $deployment = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "deployment", $Service, "--namespace", $Namespace, "-o", "json") `
             -ErrorContext "Deployment '$Service' disappeared mid-run"
+
+    # The scale subresource is where the HPA writes its decision, so its
+    # spec.replicas moves at the decision; the Deployment's status.replicas
+    # moves when the rollout catches up, which can be an entire rollout later.
+    # Scale events are timestamped from this read.
+    $scale = Invoke-KubectlJsonChecked `
+            -KubectlArgs @("get", "deployment", $Service, "--namespace", $Namespace, "--subresource=scale", "-o", "json") `
+            -ErrorContext "The scale subresource of Deployment '$Service' could not be read"
 
     $pods = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "pods", "--namespace", $Namespace, "--selector", $podSelector, "-o", "json") `
@@ -270,15 +280,53 @@ function Get-Sample {
     }
 
     # Recorded verbatim, and left null only when the HPA carries no ScalingActive
-    # condition at all. This is the autoscaler's own statement that it computed a
-    # desired replica count from the metric and wrote it to the scale
-    # subresource; the replica numbers above say only that the Deployment
-    # changed size, not who changed it.
+    # condition at all. This is a HEALTH signal - the autoscaler stating it can
+    # compute a desired replica count from its metrics - and deliberately not an
+    # attribution signal: a manual `kubectl scale` next to a healthy HPA leaves
+    # it True. Attribution comes from the rescale evidence below.
     $scalingActive = $null
+    $ableToScaleReason = $null
     foreach ($condition in @($hpa.status.conditions)) {
-        if ($null -ne $condition -and $condition.type -eq "ScalingActive") {
+        if ($null -eq $condition) {
+            continue
+        }
+        if ($condition.type -eq "ScalingActive") {
             $scalingActive = [string] $condition.status
         }
+        # The AbleToScale reason reads "SucceededRescale" right after the
+        # controller changes the target's scale. Recorded as supporting
+        # evidence only: the next reconcile overwrites it, so its absence
+        # proves nothing and attribution never requires it.
+        if ($condition.type -eq "AbleToScale") {
+            $ableToScaleReason = [string] $condition.reason
+        }
+    }
+
+    # The HPA's own rescale evidence. desiredReplicas is the count the
+    # controller wants; lastScaleTime is its own record of when it last changed
+    # the target's scale. A replica transition is credited to the HPA only when
+    # the new count matches desiredReplicas AND lastScaleTime advanced across
+    # the transition - ScalingActive=True alone proves nothing about who
+    # resized the workload.
+    $hpaDesired = $null
+    if ($null -ne $hpa.status.desiredReplicas) {
+        $hpaDesired = [int] $hpa.status.desiredReplicas
+    }
+    $hpaCurrent = $null
+    if ($null -ne $hpa.status.currentReplicas) {
+        $hpaCurrent = [int] $hpa.status.currentReplicas
+    }
+    $hpaLastScaleTime = $null
+    if (-not [string]::IsNullOrWhiteSpace([string] $hpa.status.lastScaleTime)) {
+        $hpaLastScaleTime = [datetime]::Parse(
+            [string] $hpa.status.lastScaleTime,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+    }
+
+    $scaleDesired = $null
+    if ($null -ne $scale.spec.replicas) {
+        $scaleDesired = [int] $scale.spec.replicas
     }
 
     # Every metric the HPA is configured with beyond CPU, read at the same
@@ -299,7 +347,12 @@ function Get-Sample {
         -RestartCounts $restartCounts `
         -ScalingActiveStatus $scalingActive `
         -AdditionalMetrics $additionalMetrics `
-        -CpuMetricPodCount $cpuMetricPodCount
+        -CpuMetricPodCount $cpuMetricPodCount `
+        -ScaleDesiredReplicas $scaleDesired `
+        -HpaDesiredReplicas $hpaDesired `
+        -HpaCurrentReplicas $hpaCurrent `
+        -HpaLastScaleTime $hpaLastScaleTime `
+        -HpaAbleToScaleReason $ableToScaleReason
 }
 
 function Write-SampleLine {
@@ -315,8 +368,17 @@ function Write-SampleLine {
         $scalingActive = $Sample.ScalingActiveStatus
     }
 
-    Write-Host ("  {0} cpu: {1,9}/{2}%  replicas={3} ready={4} scalingActive={5}" -f `
-            $Sample.Timestamp.ToString("HH:mm:ssZ"), $utilization, $Sample.TargetPercent, $Sample.Replicas, $Sample.ReadyReplicas, $scalingActive)
+    $scaleDesired = "-"
+    if ($null -ne $Sample.ScaleDesiredReplicas) {
+        $scaleDesired = "$($Sample.ScaleDesiredReplicas)"
+    }
+    $hpaDesired = "-"
+    if ($null -ne $Sample.HpaDesiredReplicas) {
+        $hpaDesired = "$($Sample.HpaDesiredReplicas)"
+    }
+
+    Write-Host ("  {0} cpu: {1,9}/{2}%  desired={3} hpaDesired={4} replicas={5} ready={6} scalingActive={7}" -f `
+            $Sample.Timestamp.ToString("HH:mm:ssZ"), $utilization, $Sample.TargetPercent, $scaleDesired, $hpaDesired, $Sample.Replicas, $Sample.ReadyReplicas, $scalingActive)
 }
 
 Write-Host "Validating autoscaling behavior for '$Service' in namespace '$Namespace' (run $runId)..."
@@ -576,11 +638,11 @@ $rendered = Format-AutoscalingTimeline -Timeline $timeline -Markers $markers
 Write-Host $rendered
 Write-Host ""
 
-# The grace is a tolerance for observation quantization, and the only quantum
-# that can make the measured window too SHORT is the gap the recommendation
-# turned over inside - the one ending at the anchor sample. Widening the grace
-# to the largest gap anywhere in the timeline would let an unrelated stall in a
-# quiet stretch of the run forgive most of the window; see
+# The grace is the fixed quantization allowance of the REQUESTED sampling
+# interval, and nothing the run actually did widens it: the verdict judges the
+# conservative proven bound (anchor sample to the last sample still at the old
+# desired count), so a sampling gap around either transition shrinks what the
+# evidence proves and fails the assertion instead of being forgiven. See
 # Get-ScaleDownSamplingGrace, which owns this rule so that
 # test-autoscaling-behavior-analysis.ps1 can hold it to it offline.
 #
@@ -599,12 +661,6 @@ $graceDecision = Get-ScaleDownSamplingGrace `
     -RequestedGraceSeconds $scaleDownGraceSeconds `
     -ExpectedScaleDownWindowSeconds $scaleDownWindow
 $effectiveGraceSeconds = $graceDecision.GraceSeconds
-if ($IncludeScaleDown -and $graceDecision.ExceedsCeiling) {
-    throw "The sample before the first scale-in recommendation was $($graceDecision.AnchorGapSeconds)s earlier, so the observed window is uncertain by more than half of the configured ${scaleDownWindow}s stabilization window ($($graceDecision.CeilingSeconds)s). This run cannot say whether the window held; sample a workload the cluster can serve while still answering API reads promptly."
-}
-if ($effectiveGraceSeconds -gt $scaleDownGraceSeconds) {
-    Write-Host "[note] The sample before the first scale-in recommendation was $($graceDecision.AnchorGapSeconds)s earlier, above the requested ${SampleIntervalSeconds}s, so the scale-down window is judged with ${effectiveGraceSeconds}s of grace rather than ${scaleDownGraceSeconds}s."
-}
 
 Confirm-AutoscalingBehavior `
     -Timeline $timeline `
@@ -634,17 +690,23 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
     # judged: every metric the HPA weighed, not just the CPU one in the timeline.
     $metricSummary = (@($samples[-1].Metrics | ForEach-Object { "``$($_.Name)`` at $($_.TargetValue)" }) -join ", ")
 
-    # The scale-down assertion is anchored to the HPA's own recommendation, so
-    # the report carries that anchor rather than leaving a reader to infer it
-    # from the timeline.
-    if ($null -ne $timeline.ObservedScaleDownDelaySeconds) {
-        $scaleDownAnchorRow = "| Scale-down window observed | ``$($timeline.ObservedScaleDownDelaySeconds)s`` from the first sample recommending fewer replicas ($($timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')): $($timeline.DownscaleRecommendationDetail)) to the scale-in at $($timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) |"
+    # The scale-down assertion is anchored to the HPA's own recommendation and
+    # judged on the conservative proven bound, so the report carries both ends
+    # of the interval the samples establish rather than one optimistic number.
+    if ($null -ne $timeline.ProvenScaleDownDelaySeconds) {
+        $scaleDownAnchorRow = "| Scale-down window | proven recommendation duration ``>= $($timeline.ProvenScaleDownDelaySeconds)s``: recommended continuously from $($timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($timeline.DownscaleRecommendationDetail)) through the last old-count sample at $($timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')); decision observed at $($timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) (anchor-to-observation spacing ``$($timeline.ObservedScaleDownDelaySeconds)s``, recommendation turnover uncertain by the ``$($graceDecision.AnchorGapSeconds)s`` gap ending at the anchor) |"
     } else {
-        $scaleDownAnchorRow = "| Scale-down window observed | not measured: this run recorded no scale-in preceded by a scale-in recommendation |"
+        $scaleDownAnchorRow = "| Scale-down window | not measured: this run recorded no scale-in preceded by a scale-in recommendation |"
     }
 
+    # Per-event attribution evidence, so a reviewer can see WHY each transition
+    # is credited to the HPA instead of taking the verdict's word for it.
     $scaleEventLines = @($timeline.ScaleEvents | ForEach-Object {
-            "| {0} | {1} | {2} -> {3} |" -f $_.At.ToString("HH:mm:ssZ"), $_.Direction, $_.From, $_.To
+            $evidence = "none: not attributed to the HPA"
+            if ($_.HpaAttributed) {
+                $evidence = $_.HpaEvidence
+            }
+            "| {0} | {1} | {2} -> {3} | {4} | {5} |" -f $_.At.ToString("HH:mm:ssZ"), $_.Direction, $_.From, $_.To, $_.DecisionSource, $evidence
         })
 
     $report = @(
@@ -658,9 +720,10 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "| Tested revision | ``$revision`` |",
         "| HPA bounds | ``[$minReplicas, $maxReplicas]`` at a $targetPercent% CPU target |",
         "| Scale-down window | ``${scaleDownWindow}s`` (read from the applied HPA) |",
-        "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, gap before the scale-in recommendation ``$($graceDecision.AnchorGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of grace (ceiling ``$($graceDecision.CeilingSeconds)s``) |",
+        "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, gap before the scale-in recommendation ``$($graceDecision.AnchorGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of fixed grace (ceiling ``$($graceDecision.CeilingSeconds)s``; observed gaps shrink the proven bound instead of widening the grace) |",
         "| Load | $effectiveLoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, $KafkaBurstEventsPerSecond events/s for ${KafkaBurstDurationSeconds}s then $KafkaEventsPerSecond events/s per pod" }) |",
-        "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first |",
+        "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first (health signal only; attribution is per scale event below) |",
+        "| HPA rescale attribution | $($timeline.ScaleEvents.Count - $timeline.UnattributedScaleEvents.Count) of $($timeline.ScaleEvents.Count) replica transitions correlated with the HPA's desiredReplicas and an advancing lastScaleTime |",
         "| HPA metrics | $($metricSummary) (desired replicas = max across metrics, tolerance ``$HpaTolerance``) |",
         $scaleDownAnchorRow,
         "| Peak utilization | $($timeline.PeakUtilizationPercent)% |",
@@ -671,16 +734,18 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "## Timeline",
         "",
         '```text',
-        "timestamp | cpu: current/target  min  max  replicas | ready  hpa ScalingActive",
+        "timestamp | cpu: current/target  min  max  replicas | scale-subresource desired  HPA desired  HPA lastScaleTime  ready  hpa ScalingActive",
         $rendered,
         '```',
         "",
         "## Scale events",
+        "",
+        "``desired`` in the timeline is the scale subresource's requested count, which is where the HPA writes its decision; ``replicas``/``ready`` are what the workload realized, and can lag it. Each event below is timestamped from the first sampled transition of the desired count, and is credited to the HPA only on the controller's own rescale evidence.",
         ""
     )
 
     if ($scaleEventLines.Count -gt 0) {
-        $report += @("| At | Direction | Replicas |", "| --- | --- | --- |") + $scaleEventLines
+        $report += @("| Decision observed | Direction | Desired replicas | Decision source | HPA rescale evidence |", "| --- | --- | --- | --- | --- |") + $scaleEventLines
     } else {
         $report += "No scale event was recorded in this run."
     }
