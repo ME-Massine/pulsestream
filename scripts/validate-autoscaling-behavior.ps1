@@ -316,12 +316,21 @@ function Get-Sample {
     if ($null -ne $hpa.status.currentReplicas) {
         $hpaCurrent = [int] $hpa.status.currentReplicas
     }
+    # ConvertFrom-Json has usually already turned lastScaleTime into a
+    # [datetime] carrying its own Kind, and stringifying that value drops the
+    # timezone - a round-trip through [string] shifted the recorded rescale
+    # times by the host's UTC offset. Use the value as-is when it is already a
+    # datetime (New-AutoscalingSample normalizes the Kind), and parse a string
+    # as UTC, which is the only timezone Kubernetes serializes.
     $hpaLastScaleTime = $null
-    if (-not [string]::IsNullOrWhiteSpace([string] $hpa.status.lastScaleTime)) {
+    $rawLastScaleTime = $hpa.status.lastScaleTime
+    if ($rawLastScaleTime -is [datetime]) {
+        $hpaLastScaleTime = $rawLastScaleTime
+    } elseif (-not [string]::IsNullOrWhiteSpace([string] $rawLastScaleTime)) {
         $hpaLastScaleTime = [datetime]::Parse(
-            [string] $hpa.status.lastScaleTime,
+            [string] $rawLastScaleTime,
             [System.Globalization.CultureInfo]::InvariantCulture,
-            [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+            ([System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal))
     }
 
     $scaleDesired = $null
