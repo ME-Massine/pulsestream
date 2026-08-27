@@ -18,6 +18,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamTracing.psm1") -Force
 
 # Fixed lower bound captured before we send traffic so the generated spans always
 # fall inside the search window. The upper bound is recomputed per attempt so
@@ -50,35 +51,6 @@ function Invoke-JaegerTraceSearch {
 function Get-TraceServiceNames {
     param([Parameter(Mandatory)] $Trace)
     @($Trace.processes.PSObject.Properties | ForEach-Object { $_.Value.serviceName })
-}
-
-function Test-SpanKind {
-    param(
-        [Parameter(Mandatory)] $Trace,
-        [Parameter(Mandatory)] [string] $Kind
-    )
-    [bool](@($Trace.spans | Where-Object {
-        $_.tags | Where-Object { $_.key -eq "span.kind" -and $_.value -eq $Kind }
-    }).Count)
-}
-
-# Spans of one kind carrying a specific tag value. Jaeger's `tags` query filters
-# TRACES - a trace comes back when any one of its spans matches - so a trace
-# returned by a tag search is not on its own evidence that the span we care
-# about is the one that carried the tag. Both conditions are re-checked here on
-# the same span.
-function Get-SpansWithTag {
-    param(
-        [Parameter(Mandatory)] $Trace,
-        [Parameter(Mandatory)] [string] $Kind,
-        [Parameter(Mandatory)] [string] $TagKey,
-        [Parameter(Mandatory)] [string] $TagValue
-    )
-    @($Trace.spans | Where-Object {
-        $span = $_
-        (@($span.tags | Where-Object { $_.key -eq "span.kind" -and $_.value -eq $Kind }).Count -gt 0) -and
-        (@($span.tags | Where-Object { $_.key -eq $TagKey -and "$($_.value)" -eq $TagValue }).Count -gt 0)
-    })
 }
 
 Write-Host "Validating distributed tracing end to end..."
@@ -164,8 +136,8 @@ $ingestionTrace = Invoke-WithRetry `
         if (@($trace.spans | ForEach-Object { $_.operationName }) -notcontains $requiredOperation) {
             $missing += "the $requiredOperation span"
         }
-        if (-not (Test-SpanKind -Trace $trace -Kind "server")) { $missing += "the HTTP server span" }
-        if (-not (Test-SpanKind -Trace $trace -Kind "producer")) { $missing += "the Kafka producer span" }
+        if (-not (Test-TraceSpanKind -Trace $trace -Kind "server")) { $missing += "the HTTP server span" }
+        if (-not (Test-TraceSpanKind -Trace $trace -Kind "producer")) { $missing += "the Kafka producer span" }
 
         if ($missing.Count -gt 0) {
             throw "Ingestion trace for eventId $eventId is still partial; missing $($missing -join ', ')"
@@ -187,12 +159,12 @@ Confirm-Condition `
     -FailureMessage "Ingestion trace is missing the $requiredOperation span"
 
 Confirm-Condition `
-    -Condition (Test-SpanKind -Trace $ingestionTrace -Kind "server") `
+    -Condition (Test-TraceSpanKind -Trace $ingestionTrace -Kind "server") `
     -SuccessMessage "Ingestion trace contains the HTTP server span" `
     -FailureMessage "Ingestion trace is missing the HTTP server span"
 
 Confirm-Condition `
-    -Condition (Test-SpanKind -Trace $ingestionTrace -Kind "producer") `
+    -Condition (Test-TraceSpanKind -Trace $ingestionTrace -Kind "producer") `
     -SuccessMessage "Ingestion trace contains the Kafka producer span" `
     -FailureMessage "Ingestion trace is missing the Kafka producer span"
 
@@ -224,45 +196,41 @@ Invoke-WithRetry `
 #    trace still in the lookback window from an earlier run - and would report
 #    the processor as tracing correctly even when the event under test was never
 #    consumed at all.
-$processorTrace = Invoke-WithRetry `
+#
+#    Kind, key and destination topic are matched together on one span, inside
+#    the retry. Splitting them - taking the first same-key trace here and
+#    checking its topic afterwards - fails a run in which Jaeger listed a
+#    same-key DLQ trace ahead of the raw-topic trace, because the check never
+#    looks past the trace it already picked. Both traces are legitimately
+#    present whenever the event has also been replayed, and their order in the
+#    response is not something this run controls.
+$correlation = Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
-    -FailureMessage "No telemetry-processor consumer trace was found for eventId $eventId within $TimeoutSeconds seconds. The processor consumes from Kafka, so this lags the ingestion trace by the consumer poll and any partition backlog." `
+    -FailureMessage "No telemetry-processor consumer trace was found for eventId $eventId on $RawTopic within $TimeoutSeconds seconds. The processor consumes from Kafka, so this lags the ingestion trace by the consumer poll and any partition backlog." `
     -Operation {
         $processorTraces = Invoke-JaegerTraceSearch `
             -ServiceName $ProcessorServiceName `
             -Tags @{ "messaging.kafka.message.key" = $eventId }
 
-        Confirm-Condition `
-            -Condition ($processorTraces.Count -gt 0) `
-            -SuccessMessage "telemetry-processor trace is visible in Jaeger for eventId $eventId" `
-            -FailureMessage "telemetry-processor trace is not yet visible in Jaeger for eventId $eventId"
+        $match = Select-CorrelatedConsumerSpan `
+            -Traces $processorTraces `
+            -MessageKey $eventId `
+            -DestinationTopic $RawTopic
 
-        $correlated = @($processorTraces | Where-Object {
-            (Get-SpansWithTag -Trace $_ -Kind "consumer" `
-                -TagKey "messaging.kafka.message.key" -TagValue $eventId).Count -gt 0
-        })
+        if ($null -eq $match.Span) {
+            # Naming the topics that WERE seen separates "the processor never
+            # consumed this event" from "it consumed it, but off the DLQ".
+            # Both are still retried: the raw-topic trace may not have been
+            # exported yet, and a DLQ trace present now does not rule it out.
+            if ($match.ObservedDestinations.Count -gt 0) {
+                throw "telemetry-processor consumer spans for eventId $eventId name only $($match.ObservedDestinations -join ', '); no span names $RawTopic yet"
+            }
+            throw "No telemetry-processor consumer span keyed to eventId $eventId is visible in Jaeger yet"
+        }
 
-        Confirm-Condition `
-            -Condition ($correlated.Count -gt 0) `
-            -SuccessMessage "telemetry-processor trace contains a Kafka consumer span keyed to eventId $eventId" `
-            -FailureMessage "telemetry-processor trace is missing a Kafka consumer span keyed to eventId $eventId"
-
-        $correlated[0]
+        $match
     }
 
-# The record the consumer span names must be the raw telemetry topic. A DLQ or
-# replay record carries the same message key, so the key alone does not
-# establish that the event travelled the normal ingest path.
-$consumerSpan = (Get-SpansWithTag -Trace $processorTrace -Kind "consumer" `
-    -TagKey "messaging.kafka.message.key" -TagValue $eventId)[0]
-
-$destination = $consumerSpan.tags |
-    Where-Object { $_.key -eq "messaging.destination.name" } |
-    Select-Object -First 1 -ExpandProperty value
-
-Confirm-Condition `
-    -Condition ($destination -eq $RawTopic) `
-    -SuccessMessage "telemetry-processor consumed eventId $eventId from $RawTopic" `
-    -FailureMessage "telemetry-processor consumer span for eventId $eventId names destination '$destination', not '$RawTopic'"
+Write-Host "[ok] telemetry-processor consumed eventId $eventId from $RawTopic (trace $($correlation.Trace.traceID))"
 
 Write-Host "[ok] Distributed tracing validation completed."
