@@ -134,6 +134,8 @@ The following table provides a quick reference to the primary documentation avai
 | [docs/diagrams/](./docs/diagrams/) | Visual representations of the platform's various components. |
 | [docs/decisions/](./docs/decisions/) | Architecture Decision Records (ADRs) detailing key design choices. |
 | [docs/roadmap.md](./docs/roadmap.md) | Outline of the project's development phases and future goals. |
+| [docs/architecture/supply-chain-security.md](./docs/architecture/supply-chain-security.md) | Dependency, build, and release security controls, and how to verify a published image. |
+| [SECURITY.md](./SECURITY.md) | Supported versions and how to report a vulnerability privately. |
 
 ---
 

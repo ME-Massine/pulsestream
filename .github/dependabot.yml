@@ -1,0 +1,137 @@
+# Dependabot keeps the three dependency surfaces this repository actually ships
+# under version control: the Maven dependency trees of the services, the GitHub
+# Actions that build and publish them, and the container base images they run on.
+#
+# Every service is its own Maven project with its own pom.xml and its own
+# Dockerfile - there is no aggregator POM - so each one needs its own update
+# configuration. Adding a service means adding its three blocks here; the
+# coverage check in scripts/validate-supply-chain-security.ps1 fails if that is
+# forgotten.
+#
+# Updates land as pull requests, which means they run through CI, CodeQL, and
+# dependency review before a human merges them. Triage expectations live in
+# docs/architecture/supply-chain-security.md.
+version: 2
+
+updates:
+  # --- Maven -----------------------------------------------------------------
+  # Minor and patch updates are grouped per service so a Spring Boot bump does
+  # not arrive as a dozen separate pull requests. Majors stay ungrouped: they
+  # carry breaking changes and deserve to be reviewed one at a time.
+  - package-ecosystem: maven
+    directory: /services/ingestion-service
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - java
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      ingestion-service-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: maven
+    directory: /services/telemetry-processor
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - java
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      telemetry-processor-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: maven
+    directory: /services/query-service
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - java
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      query-service-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # --- GitHub Actions --------------------------------------------------------
+  # Workflows pin actions to full commit SHAs (see the pinning rationale in
+  # docs/architecture/supply-chain-security.md). Dependabot understands that
+  # form: it rewrites the SHA and the trailing version comment together, which is
+  # what keeps pinning from turning into permanent staleness.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # --- Docker base images ----------------------------------------------------
+  # Tracks the FROM lines in each service Dockerfile (the Maven build stage and
+  # the Temurin JRE runtime stage). Most image vulnerabilities the release scan
+  # reports are fixed by a base image bump, so this is the feed that answers
+  # them.
+  #
+  # Kubernetes manifests pin their images by digest and are not covered here -
+  # Dependabot does not read Kubernetes manifests. Those digests are updated by
+  # the change that bumps the workload, as documented in
+  # docs/architecture/container-image-registry.md.
+  - package-ecosystem: docker
+    directory: /services/ingestion-service
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: docker
+    directory: /services/telemetry-processor
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: docker
+    directory: /services/query-service
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(deps)"

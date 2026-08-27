@@ -3,10 +3,18 @@ name: Publish images
 # Publishes platform service container images to the GitHub Container Registry
 # (GHCR) so Kubernetes can pull them. See
 # docs/architecture/container-image-registry.md for the naming and tagging
-# strategy this workflow implements.
+# strategy this workflow implements, and
+# docs/architecture/supply-chain-security.md for the scan, SBOM, and signing
+# steps built around it.
 #
-# Runs only on pushes to main and on version tags (v*) — never on pull requests,
+# Runs only on pushes to main and on version tags (v*) - never on pull requests,
 # so forks cannot publish and unmerged work never reaches the registry.
+#
+# Ordering matters: the image is built, then scanned, and only then pushed. A
+# scan that runs after the push protects nobody, because the bad image is
+# already pullable by the cluster. Everything after the push (SBOM,
+# attestation, signature) is bound to the digest the registry returned rather
+# than to a tag, because tags move and digests do not.
 
 on:
   push:
@@ -20,11 +28,15 @@ jobs:
     name: Build and push ${{ matrix.service }}
     runs-on: ubuntu-latest
 
-    # GITHUB_TOKEN needs write access to publish packages to GHCR. contents:read
-    # is the least privilege needed to check out the repository.
     permissions:
+      # GITHUB_TOKEN needs write access to publish packages to GHCR. contents:read
+      # is the least privilege needed to check out the repository.
       contents: read
       packages: write
+      # Keyless signing: cosign exchanges this run's OIDC token for a short-lived
+      # Fulcio certificate. Nothing long-lived is stored, and the certificate
+      # records which workflow, on which ref, produced the signature.
+      id-token: write
 
     strategy:
       # One service failing to publish must not silently skip the others.
@@ -37,14 +49,18 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Log in to GHCR
         # GITHUB_TOKEN is scoped to this repository and expires with the run, so
         # no long-lived registry credentials are stored.
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push image
+      - name: Resolve image reference and tags
+        id: refs
         run: |
           set -euo pipefail
 
@@ -64,13 +80,137 @@ jobs:
             tags+=("${GITHUB_REF#refs/tags/}")
           fi
 
+          {
+            echo "image=${image}"
+            echo "primary_tag=${tags[0]}"
+            echo "tags=${tags[*]}"
+          } >>"${GITHUB_OUTPUT}"
+
           echo "Publishing ${image} with tags: ${tags[*]}"
 
-          # Build once, then apply every tag to the same image id and push each.
-          docker build -t "${image}:${tags[0]}" "services/${{ matrix.service }}"
+      - name: Build image
+        # Built and tagged locally only. Nothing reaches the registry until the
+        # gate below has passed.
+        run: |
+          set -euo pipefail
+          docker build \
+            -t "${{ steps.refs.outputs.image }}:${{ steps.refs.outputs.primary_tag }}" \
+            "services/${{ matrix.service }}"
+
+      - name: Report vulnerabilities
+        # The full fixable HIGH and CRITICAL picture, always printed, never
+        # failing. The gate below is deliberately narrower than this report, so
+        # this step is what keeps the difference visible instead of hiding it
+        # behind a green check.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # Trivy pulls its vulnerability database from GHCR. Anonymous pulls are
+          # rate limited per IP, which on hosted runners means sharing a limit
+          # with every other job on that address; authenticating with this run's
+          # token avoids intermittent database-download failures.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ steps.refs.outputs.image }}:${{ steps.refs.outputs.primary_tag }}
+          scanners: vuln
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Vulnerability gate
+        # Blocks publication. Scoped to fixable CRITICAL findings: a finding with
+        # no upstream fix cannot be answered by shipping faster, and blocking on
+        # it only teaches people to disable the gate. Findings accepted for now,
+        # with their expiry dates and the update that clears them, are listed in
+        # .trivyignore.yaml.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ steps.refs.outputs.image }}:${{ steps.refs.outputs.primary_tag }}
+          scanners: vuln
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: "1"
+
+      - name: Push image
+        id: push
+        run: |
+          set -euo pipefail
+
+          image="${{ steps.refs.outputs.image }}"
+          primary="${{ steps.refs.outputs.primary_tag }}"
+          read -r -a tags <<<"${{ steps.refs.outputs.tags }}"
+
+          # One build, every tag applied to the same image id, each pushed.
           for tag in "${tags[@]:1}"; do
-            docker tag "${image}:${tags[0]}" "${image}:${tag}"
+            docker tag "${image}:${primary}" "${image}:${tag}"
           done
           for tag in "${tags[@]}"; do
             docker push "${image}:${tag}"
           done
+
+          # The registry assigns the digest; read it back rather than computing
+          # one locally, so everything signed below refers to the bytes GHCR
+          # actually stored.
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${image}:${primary}" | cut -d'@' -f2)"
+          case "${digest}" in
+            sha256:*) ;;
+            *)
+              echo "::error::Could not resolve a pushed digest for ${image}:${primary}"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "digest=${digest}"
+            echo "ref=${image}@${digest}"
+          } >>"${GITHUB_OUTPUT}"
+
+          echo "Pushed ${image}@${digest}"
+
+      - name: Generate SBOM
+        # Generated from the local image, which is the same image id that was
+        # just pushed, and bound to the pushed digest by the attestation in the
+        # next step. SPDX JSON because it is the format GitHub, cosign, and most
+        # scanners all read without conversion.
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ steps.refs.outputs.image }}:${{ steps.refs.outputs.primary_tag }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.service }}.spdx.json
+          artifact-name: sbom-${{ matrix.service }}.spdx.json
+
+      - name: Sign image and attach SBOM attestation
+        # Both operations address the image by digest. Signing a tag would sign a
+        # name that can later point at different bytes, which is exactly the
+        # substitution a signature is supposed to rule out.
+        run: |
+          set -euo pipefail
+
+          ref="${{ steps.push.outputs.ref }}"
+
+          cosign sign --yes "${ref}"
+          cosign attest --yes --type spdxjson \
+            --predicate "sbom-${{ matrix.service }}.spdx.json" \
+            "${ref}"
+
+      - name: Summarize published image
+        if: always() && steps.push.outputs.digest != ''
+        run: |
+          {
+            echo "### ${{ matrix.service }}"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Image | \`${{ steps.refs.outputs.image }}\` |"
+            echo "| Tags | \`${{ steps.refs.outputs.tags }}\` |"
+            echo "| Digest | \`${{ steps.push.outputs.digest }}\` |"
+            echo "| SBOM | \`sbom-${{ matrix.service }}.spdx.json\` (run artifact and spdxjson attestation) |"
+            echo ""
+            echo "Verification commands: docs/architecture/supply-chain-security.md"
+          } >>"${GITHUB_STEP_SUMMARY}"

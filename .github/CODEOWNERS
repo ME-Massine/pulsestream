@@ -1,0 +1,49 @@
+# Code owners for PulseStream.
+#
+# Every path here gets an automatic review request, and - once branch protection
+# requires review from code owners - cannot be merged without one. The point is
+# not ceremony: these are the paths where a wrong change is either invisible in
+# review or expensive to undo. A workflow edit can exfiltrate a token, a
+# manifest edit can take the platform down, and a change to this file can remove
+# every other rule in it.
+#
+# Later rules win over earlier ones, so the catch-all comes first and the
+# narrowest, most sensitive paths come last.
+#
+# Ownership currently sits with a single maintainer. When that changes, split
+# these lines by area rather than adding everyone to every line - a review
+# request that always goes to everybody is a review request nobody answers.
+
+# Default owner for anything not matched below.
+*                                       @ME-Massine
+
+# Services: the application code and its dependency manifests.
+/services/                              @ME-Massine
+
+# Build and release automation. These workflows hold GITHUB_TOKEN permissions,
+# publish images, and sign them; a change here changes what the project ships
+# and what credentials that process can reach.
+/.github/workflows/                     @ME-Massine
+
+# Repository automation and policy: Dependabot coverage, code ownership itself,
+# templates.
+/.github/                               @ME-Massine
+
+# Deployment topology: Kubernetes manifests, NetworkPolicies, Kafka, and the
+# local Docker Compose stack.
+/infrastructure/                        @ME-Massine
+
+# Validation scripts. CI runs these, so a change here changes what CI is
+# actually proving.
+/scripts/                               @ME-Massine
+
+# Architecture decision records are the project's memory. Amending one silently
+# rewrites the reasoning behind a decision that is already in effect.
+/docs/decisions/                        @ME-Massine
+
+# Supply-chain surface. Each of these decides what the release pipeline trusts:
+# the accepted-vulnerability list, the reporting policy, and the Maven
+# distribution checksum every build verifies before executing Maven.
+/.trivyignore.yaml                      @ME-Massine
+/SECURITY.md                            @ME-Massine
+/services/*/.mvn/wrapper/maven-wrapper.properties  @ME-Massine

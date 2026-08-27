@@ -1,0 +1,59 @@
+# Vulnerabilities the release gate in .github/workflows/publish-images.yml is
+# allowed to pass over, and the date each acceptance stops working.
+#
+# This file exists because the gate is real. Every entry below is a fixable
+# CRITICAL finding that is present in the images today, has a known upstream
+# fix, and is only accepted long enough for the dependency update that removes
+# it to be reviewed and merged. Trivy drops an entry once expired_at passes, at
+# which point the gate blocks publication until the update lands. Nothing here
+# is a permanent exemption, and nothing here is hidden: the non-blocking report
+# step in the same workflow prints all of these on every run.
+#
+# Adding an entry is a decision that needs the same review as any other change
+# to release behaviour. Removing one needs no ceremony at all - if the update
+# has landed, delete the entry.
+#
+# Triage process: docs/architecture/supply-chain-security.md
+vulnerabilities:
+  # All four are Apache Tomcat findings reaching the images through the
+  # spring-boot-starter-web dependency chain, which the services pin only
+  # indirectly through spring-boot-starter-parent 3.3.5. They share one fix: a
+  # Spring Boot parent version whose managed tomcat-embed-core is 10.1.55 or
+  # later. Dependabot's Maven configuration proposes that bump, and merging it
+  # empties this file.
+  #
+  # Deployment context that makes a short acceptance window reasonable rather
+  # than indefinite: the services run inside the cluster behind default-deny
+  # NetworkPolicies (infrastructure/kubernetes/network-policies/), only the
+  # ingestion API is reachable from outside the cluster, and none of the
+  # services configures Tomcat authentication - so the two authentication-bypass
+  # findings have no authenticator to bypass. That reduces exposure. It does not
+  # remove the vulnerable code, which is why these expire.
+  - id: CVE-2025-24813
+    statement: >-
+      Tomcat partial PUT remote code execution. Fixed in tomcat-embed-core
+      10.1.35. Accepted until the Spring Boot parent bump lands; the services do
+      not enable the default servlet's write support, which the exploit path
+      requires.
+    expired_at: 2026-10-31
+
+  - id: CVE-2026-41293
+    statement: >-
+      Tomcat HTTP/2 request headers not validated. Fixed in tomcat-embed-core
+      10.1.55. Accepted until the Spring Boot parent bump lands; the services
+      serve HTTP/1.1 with the default Spring Boot connector configuration.
+    expired_at: 2026-10-31
+
+  - id: CVE-2026-43512
+    statement: >-
+      Tomcat digest authenticator authenticates unknown users. Fixed in
+      tomcat-embed-core 10.1.55. Accepted until the Spring Boot parent bump
+      lands; no service configures a Tomcat authenticator or realm.
+    expired_at: 2026-10-31
+
+  - id: CVE-2026-43515
+    statement: >-
+      Tomcat security constraints not correctly applied. Fixed in
+      tomcat-embed-core 10.1.55. Accepted until the Spring Boot parent bump
+      lands; no service declares Tomcat security constraints.
+    expired_at: 2026-10-31

@@ -1,0 +1,93 @@
+name: CodeQL
+
+# Static analysis of the Java services. CodeQL builds a database from the code
+# as it is actually compiled and runs GitHub's security query suite over it;
+# results land in the repository's Code scanning alerts and, for pull requests,
+# as inline annotations on the diff.
+#
+# Analysis runs on pull requests (catch it before merge), on pushes to main
+# (keep the baseline on the default branch honest, which is what Code scanning
+# reports against), and weekly - a scheduled run re-analyses unchanged code
+# against query packs that have moved on since the last commit.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+      - dev
+  schedule:
+    # Mondays 04:17 UTC. Off the hour on purpose: scheduled workflows on the
+    # hour queue behind everyone else's.
+    - cron: "17 4 * * 1"
+
+# A new push to a pull request makes the in-flight analysis irrelevant. Runs on
+# main are never cancelled - that baseline is what alerts are measured against.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze Java
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Required to upload the analysis results as Code scanning alerts.
+      security-events: write
+      # CodeQL reads workflow run metadata to attribute results to a run.
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Java 17
+        # Matches <java.version> in every service pom and the JRE in the service
+        # Dockerfiles. Analysing on a newer JDK than the services are compiled
+        # and shipped with would model code that is not what runs.
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: services/*/pom.xml
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3.37.9
+        with:
+          languages: java-kotlin
+          # The repository has three independent Maven projects and no
+          # aggregator POM, so autobuild would have to guess which one to build
+          # and would analyse whichever it picked. The manual build below
+          # compiles all three into one database.
+          build-mode: manual
+          # security-extended adds the lower-precision security queries on top
+          # of the default suite. Worth the extra noise on a codebase this size,
+          # and this is the workflow that is supposed to find things.
+          queries: security-extended
+
+      - name: Build all services
+        # CodeQL traces this step: every class javac compiles here is a class
+        # that ends up in the database, so all three services are built, and
+        # tests are skipped because test code is not what ships.
+        #
+        # mvnw is committed without an execute bit, so it is invoked through sh.
+        # It verifies distributionSha256Sum from
+        # .mvn/wrapper/maven-wrapper.properties before unpacking Maven, which
+        # makes this step a live check of that checksum on every run.
+        run: |
+          set -euo pipefail
+          for service in ingestion-service telemetry-processor query-service; do
+            echo "::group::Building ${service}"
+            (cd "services/${service}" && sh mvnw -B -ntp -DskipTests package)
+            echo "::endgroup::"
+          done
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3.37.9
+        with:
+          category: /language:java-kotlin

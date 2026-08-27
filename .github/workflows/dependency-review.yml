@@ -1,0 +1,50 @@
+name: Dependency review
+
+# Compares the dependency graph of the pull request against its base branch and
+# fails when the diff introduces a dependency with a known vulnerability or a
+# licence the project does not accept.
+#
+# This is the gate that catches a bad dependency on the way in. Dependabot
+# handles the ones already merged; CodeQL analyses our own code. None of the
+# three covers what the other two do.
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Review dependency changes
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Needed to post the summary comment on the pull request.
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          # Fail on high and critical. Moderate and low findings are reported in
+          # the job summary and left to Dependabot's normal update flow rather
+          # than blocking unrelated work.
+          fail-on-severity: high
+          # Copyleft licences would change the terms this project ships under
+          # (see LICENSE), so a pull request that pulls one in has to be a
+          # deliberate decision, not an incidental transitive addition.
+          deny-licenses:
+            - AGPL-3.0-only
+            - AGPL-3.0-or-later
+            - GPL-2.0-only
+            - GPL-3.0-only
+            - GPL-3.0-or-later
+          comment-summary-in-pr: on-failure
