@@ -166,6 +166,49 @@ if ($uncommented.Count -eq 0) {
     Write-CheckFail "pinned action(s) missing a '# vX.Y.Z' version comment: $($uncommented -join '; ')"
 }
 
+# --- 2b. Action inputs are scalars -------------------------------------------
+# Every value under 'with:' is an action input, and action inputs are strings. A
+# YAML sequence there is rejected by GitHub's workflow parser before any job is
+# created - which means no check run, no annotation on the pull request, and a
+# workflow that looks present but has never executed. Multi-value inputs are
+# comma-separated strings instead.
+
+$sequenceInputs = @()
+
+foreach ($workflow in $workflows) {
+    $lines = Get-Content -LiteralPath $workflow.FullName
+    $withIndent = -1
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+
+        if ($line -match '^(?<indent>\s*)with:\s*$') {
+            $withIndent = $Matches["indent"].Length
+            continue
+        }
+
+        if ($withIndent -lt 0) { continue }
+        if ($line -match '^\s*$' -or $line -match '^\s*#') { continue }
+
+        $indent = ($line -replace '\S.*$', '').Length
+        if ($indent -le $withIndent) {
+            # Dedented out of the with: block.
+            $withIndent = -1
+            continue
+        }
+
+        if ($line -match '^\s*-\s') {
+            $sequenceInputs += "$($workflow.Name):$($i + 1)"
+        }
+    }
+}
+
+if ($sequenceInputs.Count -eq 0) {
+    Write-CheckOk "every action input is a scalar, so no workflow is rejected at parse time"
+} else {
+    Write-CheckFail "action input(s) given as a YAML sequence, which makes the workflow file invalid: $($sequenceInputs -join '; ')"
+}
+
 # --- 3. Dependabot coverage --------------------------------------------------
 # Each service is an independent Maven project with its own Dockerfile, so each
 # needs its own update configuration. Adding a service without adding its blocks

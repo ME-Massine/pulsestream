@@ -41,10 +41,9 @@ jobs:
           # Copyleft licences would change the terms this project ships under
           # (see LICENSE), so a pull request that pulls one in has to be a
           # deliberate decision, not an incidental transitive addition.
-          deny-licenses:
-            - AGPL-3.0-only
-            - AGPL-3.0-or-later
-            - GPL-2.0-only
-            - GPL-3.0-only
-            - GPL-3.0-or-later
+          #
+          # Comma-separated, not a YAML list: every `with:` value is an action
+          # input, and action inputs are strings. A sequence here is rejected by
+          # the workflow parser before the job is ever created.
+          deny-licenses: "AGPL-3.0-only, AGPL-3.0-or-later, GPL-2.0-only, GPL-3.0-only, GPL-3.0-or-later"
           comment-summary-in-pr: on-failure

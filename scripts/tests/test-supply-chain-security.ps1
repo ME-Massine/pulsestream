@@ -194,6 +194,29 @@ try {
         -Transform { param($text) $text -replace '(actions/checkout@[0-9a-f]{40}) # v[0-9.]+', '$1' } `
         -ExpectedMessage "missing a '# vX.Y.Z' version comment"
 
+    # --- Action inputs -------------------------------------------------------
+    # This is the case that exists because it happened: deny-licenses was
+    # written as a YAML list, GitHub rejected the whole file at parse time, and
+    # the pull request showed no failing check because no job was ever created.
+
+    Assert-Rejects `
+        -What "an action input written as a YAML sequence was rejected" `
+        -RelativePath ".github\workflows\dependency-review.yml" `
+        -Transform {
+            param($text)
+            $text -replace 'deny-licenses: "[^"]+"', "deny-licenses:`r`n            - AGPL-3.0-only`r`n            - GPL-3.0-only"
+        } `
+        -ExpectedMessage "given as a YAML sequence"
+
+    Assert-Rejects `
+        -What "a sequence-valued input in the release workflow was rejected" `
+        -RelativePath ".github\workflows\publish-images.yml" `
+        -Transform {
+            param($text)
+            $text -replace '(?m)^          severity: CRITICAL,HIGH$', "          severity:`r`n            - CRITICAL`r`n            - HIGH"
+        } `
+        -ExpectedMessage "given as a YAML sequence"
+
     # --- Dependabot coverage -------------------------------------------------
 
     Assert-Rejects `
