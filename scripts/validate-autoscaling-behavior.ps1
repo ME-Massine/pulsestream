@@ -84,6 +84,7 @@ Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamAutoscalingLoad.psm1") -F
 $runId = [guid]::NewGuid().ToString("N").Substring(0, 6)
 $loadPodLabel = "pulsestream.io/autoscaling-load=$runId"
 $podSelector = "app.kubernetes.io/name=$Service"
+$successfulRescaleEventCounts = @{}
 
 # The structural validators predate this script and are not named uniformly
 # after their workload, so the file name cannot be derived from $Service:
@@ -190,12 +191,42 @@ done | {{BIN}}/kafka-console-producer.sh \
 '@
 
 # --- Sampling ----------------------------------------------------------------
-# Five reads per sample rather than one: the HPA carries the metric and its own
-# rescale evidence, the scale subresource carries the replica count that has
+# Event collection is read first, then the workload resources: a controller
+# event observed in a sample was emitted only after its scale update succeeded,
+# so the later scale read should carry its target unless another writer changed
+# it. A rescale racing the event read is allowed to appear one sample late.
+# The HPA carries metrics and health status, the scale subresource carries the
+# replica count that has
 # been REQUESTED of the workload, the Deployment carries the authoritative
 # ready count, the pods carry restart counts, and `kubectl top` says how many
-# pods metrics-server had a CPU reading for. They are read back to back and
-# stamped with a single timestamp.
+# pods metrics-server had a CPU reading for. They are read back to back; the
+# scale read keeps its own completion timestamp for decision bounds, and the
+# completed evidence bundle receives the later recommendation timestamp.
+
+function Get-SuccessfulRescaleEvidenceSnapshot {
+    param(
+        [Parameter(Mandatory)] [datetime] $ObservedAt,
+        [switch] $EstablishBaseline
+    )
+
+    # The server-side selector reduces noise; exact HPA UID, kind, reporting
+    # component, message shape, and occurrence deltas are still verified locally.
+    # Any read failure aborts the run through Invoke-KubectlJsonChecked, because
+    # a collection hole can hide either missing or ambiguous evidence.
+    $eventList = Invoke-KubectlJsonChecked `
+        -KubectlArgs @(
+            "get", "events", "--namespace", $Namespace,
+            "--field-selector", "reason=SuccessfulRescale", "-o", "json"
+        ) `
+        -ErrorContext "SuccessfulRescale event collection was interrupted for HPA '$Service'"
+
+    return Get-NewHpaSuccessfulRescaleEvents `
+        -Events @($eventList.items) `
+        -HpaUid $script:hpaUid `
+        -EventCounts $successfulRescaleEventCounts `
+        -ObservedAt $ObservedAt `
+        -EstablishBaseline:$EstablishBaseline
+}
 
 # How many pods of the workload metrics-server currently has a CPU value for.
 #
@@ -222,11 +253,28 @@ function Get-CpuMetricPodCount {
 function Get-Sample {
     param([Parameter(Mandatory)] [int] $TargetPercent)
 
-    $timestamp = (Get-Date).ToUniversalTime()
+    # Read events before the other resources; see the sampling contract above.
+    $eventObservedAt = (Get-Date).ToUniversalTime()
+    $successfulRescaleEvents = Get-SuccessfulRescaleEvidenceSnapshot -ObservedAt $eventObservedAt
 
     $hpa = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "hpa", $Service, "--namespace", $Namespace, "-o", "json") `
             -ErrorContext "HorizontalPodAutoscaler '$Service' disappeared mid-run"
+
+    if ([string] $hpa.metadata.uid -ne $script:hpaUid) {
+        throw "HorizontalPodAutoscaler '$Service' changed UID from '$script:hpaUid' to '$($hpa.metadata.uid)' during the run. A replacement HPA cannot inherit the baseline or rescale evidence."
+    }
+    $currentGeneration = $null
+    if ($null -ne $hpa.metadata.generation) {
+        $currentGeneration = [long] $hpa.metadata.generation
+    }
+    if ([string] $currentGeneration -ne [string] $script:hpaGeneration) {
+        throw "HorizontalPodAutoscaler '$Service' changed generation from '$script:hpaGeneration' to '$currentGeneration' during the run. The tested HPA spec must remain fixed."
+    }
+    $currentSpecJson = $hpa.spec | ConvertTo-Json -Depth 100 -Compress
+    if ($currentSpecJson -ne $script:hpaSpecJson) {
+        throw "HorizontalPodAutoscaler '$Service' spec changed during the run even though the API did not expose a generation change. The validation only applies to one fixed HPA configuration."
+    }
 
     $deployment = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "deployment", $Service, "--namespace", $Namespace, "-o", "json") `
@@ -239,6 +287,7 @@ function Get-Sample {
     $scale = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "deployment", $Service, "--namespace", $Namespace, "--subresource=scale", "-o", "json") `
             -ErrorContext "The scale subresource of Deployment '$Service' could not be read"
+    $scaleObservedAt = (Get-Date).ToUniversalTime()
 
     $pods = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "pods", "--namespace", $Namespace, "--selector", $podSelector, "-o", "json") `
@@ -302,12 +351,9 @@ function Get-Sample {
         }
     }
 
-    # The HPA's own rescale evidence. desiredReplicas is the count the
-    # controller wants; lastScaleTime is its own record of when it last changed
-    # the target's scale. A replica transition is credited to the HPA only when
-    # the new count matches desiredReplicas AND lastScaleTime advanced across
-    # the transition - ScalingActive=True alone proves nothing about who
-    # resized the workload.
+    # HPA status retained for diagnostics and controller-health reporting only.
+    # Attribution comes exclusively from the run-local, target-specific
+    # SuccessfulRescale occurrences collected at the start of this sample.
     $hpaDesired = $null
     if ($null -ne $hpa.status.desiredReplicas) {
         $hpaDesired = [int] $hpa.status.desiredReplicas
@@ -354,6 +400,10 @@ function Get-Sample {
         -SpecMetrics @($hpa.spec.metrics) `
         -CurrentMetrics @($hpa.status.currentMetrics)
 
+    # Timestamp the recommendation evidence when the complete asynchronous
+    # bundle has been collected, never at the optimistic start of the reads.
+    $timestamp = (Get-Date).ToUniversalTime()
+
     return New-AutoscalingSample `
         -Timestamp $timestamp `
         -Replicas $replicas `
@@ -365,10 +415,15 @@ function Get-Sample {
         -AdditionalMetrics $additionalMetrics `
         -CpuMetricPodCount $cpuMetricPodCount `
         -ScaleDesiredReplicas $scaleDesired `
+        -ScaleObservedAt $scaleObservedAt `
         -HpaDesiredReplicas $hpaDesired `
         -HpaCurrentReplicas $hpaCurrent `
         -HpaLastScaleTime $hpaLastScaleTime `
-        -HpaAbleToScaleReason $ableToScaleReason
+        -HpaAbleToScaleReason $ableToScaleReason `
+        -HpaUid $script:hpaUid `
+        -HpaGeneration $script:hpaGeneration `
+        -HpaSuccessfulRescaleEvents $successfulRescaleEvents `
+        -HpaEventCollectionSucceeded $true
 }
 
 function Write-SampleLine {
@@ -406,6 +461,12 @@ Invoke-KubectlChecked `
     -KubectlArgs @("cluster-info") `
     -ErrorContext "kubectl cannot reach a Kubernetes cluster" | Out-Null
 
+$kubernetesVersion = Invoke-KubectlJsonChecked `
+    -KubectlArgs @("version", "-o", "json") `
+    -ErrorContext "Could not record Kubernetes client/server versions for the runtime evidence"
+$kubernetesClientVersion = [string] $kubernetesVersion.clientVersion.gitVersion
+$kubernetesServerVersion = [string] $kubernetesVersion.serverVersion.gitVersion
+
 $metricsApi = Invoke-Kubectl -KubectlArgs @(
     "get", "apiservice", "v1beta1.metrics.k8s.io",
     "-o", "jsonpath={.status.conditions[?(@.type=='Available')].status}"
@@ -419,6 +480,23 @@ Confirm-Condition `
 $hpaJson = Invoke-KubectlJsonChecked `
         -KubectlArgs @("get", "hpa", $Service, "--namespace", $Namespace, "-o", "json") `
         -ErrorContext "HorizontalPodAutoscaler '$Service' was not found in namespace '$Namespace'. Apply infrastructure/kubernetes/$Service/"
+
+$script:hpaUid = [string] $hpaJson.metadata.uid
+if ([string]::IsNullOrWhiteSpace($script:hpaUid)) {
+    throw "HorizontalPodAutoscaler '$Service' carried no metadata.uid. Events cannot be tied to the exact HPA incarnation, so attribution must fail closed."
+}
+$script:hpaGeneration = $null
+if ($null -ne $hpaJson.metadata.generation) {
+    $script:hpaGeneration = [long] $hpaJson.metadata.generation
+}
+$script:hpaSpecJson = $hpaJson.spec | ConvertTo-Json -Depth 100 -Compress
+$hpaGenerationDisplay = if ($null -eq $script:hpaGeneration) { "<not reported by API>" } else { [string] $script:hpaGeneration }
+
+# Establish occurrence-count baselines before any behavioral sample. Existing
+# same-size SuccessfulRescale events are historical and will never be returned
+# as run-local evidence unless their count advances after this snapshot.
+$eventBaselineAt = (Get-Date).ToUniversalTime()
+Get-SuccessfulRescaleEvidenceSnapshot -ObservedAt $eventBaselineAt -EstablishBaseline | Out-Null
 
 $minReplicas = [int] $hpaJson.spec.minReplicas
 $maxReplicas = [int] $hpaJson.spec.maxReplicas
@@ -481,6 +559,12 @@ try {
         -Condition ($baseline.ReadyReplicas -ge $minReplicas) `
         -SuccessMessage "the workload starts from a healthy floor of $($baseline.ReadyReplicas) Ready replicas" `
         -FailureMessage "only $($baseline.ReadyReplicas) replicas are Ready before any load is applied, below the minReplicas floor of $minReplicas. Fix the deployment before measuring how it scales" `
+        -Permanent
+
+    Confirm-Condition `
+        -Condition ($baseline.ScaleDesiredReplicas -eq $minReplicas) `
+        -SuccessMessage "the no-load baseline scale target is the minReplicas floor of $minReplicas" `
+        -FailureMessage "the no-load baseline scale target is $($baseline.ScaleDesiredReplicas), not the minReplicas floor of $minReplicas. Residual or externally written scale state cannot establish a clean HPA scale-up baseline" `
         -Permanent
 
     # --- 2. Load -------------------------------------------------------------
@@ -588,9 +672,9 @@ try {
 
     # --- 4. Remove load ------------------------------------------------------
     Write-Host "Removing load pods..."
+    $loadStopped = (Get-Date).ToUniversalTime()
     Stop-AutoscalingLoadPods -Namespace $Namespace -RunId $runId -LoadPodLabel $loadPodLabel
     $cleanupConfirmed = $true
-    $loadStopped = (Get-Date).ToUniversalTime()
 
     if ($IncludeScaleDown) {
         # Sampling continues until the workload is back at the floor or the
@@ -600,14 +684,36 @@ try {
         # timeout message that says nothing about the autoscaler.
         Write-Host "Waiting for the ${scaleDownWindow}s stabilization window and the return to minReplicas..."
         $scaleDownDeadline = (Get-Date).AddSeconds($ScaleDownTimeoutSeconds)
+        $floorObservedOnce = $false
+        $firstPostLoadSample = $true
         while ((Get-Date) -lt $scaleDownDeadline) {
-            Start-Sleep -Seconds $SampleIntervalSeconds
+            if ($firstPostLoadSample) {
+                # Cleanup is verified before this point and uses a one-second
+                # termination grace. Sample immediately so the beginning of a
+                # scale-in recommendation is observed rather than hidden inside
+                # an artificial cleanup-plus-sleep gap.
+                $firstPostLoadSample = $false
+            } else {
+                Start-Sleep -Seconds $SampleIntervalSeconds
+            }
             $sample = Get-Sample -TargetPercent $targetPercent
             Write-SampleLine -Sample $sample
             $samples += $sample
 
-            if ($sample.Replicas -eq $minReplicas -and $sample.ReadyReplicas -eq $minReplicas) {
-                break
+            if ($sample.ScaleDesiredReplicas -eq $minReplicas -and
+                $sample.Replicas -eq $minReplicas -and
+                $sample.ReadyReplicas -eq $minReplicas) {
+                if ($floorObservedOnce) {
+                    break
+                }
+                # The event read comes first in a sample. If the final rescale
+                # raced that read, its target-specific event can only appear in
+                # the next sample. Require one unchanged floor confirmation so
+                # legitimate one-sample-late evidence is collectable without
+                # enlarging any timing grace.
+                $floorObservedOnce = $true
+            } else {
+                $floorObservedOnce = $false
             }
         }
     } else {
@@ -706,8 +812,8 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         $head = (& git -C $PSScriptRoot rev-parse HEAD 2>$null)
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($head)) {
             $revision = ([string] $head).Trim()
-            & git -C $PSScriptRoot diff --quiet HEAD 2>$null
-            if ($LASTEXITCODE -ne 0) {
+            $gitStatus = @(& git -C $PSScriptRoot status --porcelain=v1 --untracked-files=all 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $gitStatus.Count -gt 0) {
                 $revision = "$revision (working tree dirty at run time)"
             }
         }
@@ -718,6 +824,10 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
     # Named from the last sample so the report states what the verdict actually
     # judged: every metric the HPA weighed, not just the CPU one in the timeline.
     $metricSummary = (@($samples[-1].Metrics | ForEach-Object { "``$($_.Name)`` at $($_.TargetValue)" }) -join ", ")
+    $heartbeatSummary = @($heartbeats.Keys | Sort-Object | ForEach-Object {
+            $entry = $heartbeats[$_]
+            "``$_`` advanced from ``$($entry.First)`` to ``$($entry.Last)``"
+        }) -join "; "
 
     # The scale-down assertion is anchored to the HPA's own recommendation and
     # judged on the conservative proven bound, so the report carries both ends
@@ -755,12 +865,16 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "| --- | --- |",
         "| Workload | ``$Service`` in namespace ``$Namespace`` |",
         "| Tested revision | ``$revision`` |",
+        "| Kubernetes versions | client ``$kubernetesClientVersion``; server ``$kubernetesServerVersion`` |",
+        "| HPA identity | ``$Service`` UID ``$script:hpaUid``, generation ``$hpaGenerationDisplay``; UID, generation, and spec remained fixed throughout the run |",
+        "| SuccessfulRescale baseline | Established at $($eventBaselineAt.ToString('yyyy-MM-ddTHH:mm:ssZ')); pre-existing event UIDs/counts were excluded, and collection succeeded in all $($timeline.SampleCount) samples |",
         "| HPA bounds | ``[$minReplicas, $maxReplicas]`` at a $targetPercent% CPU target |",
         "| Scale-down window | ``${scaleDownWindow}s`` (read from the applied HPA) |",
         "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, gap before the scale-in recommendation ``$($graceDecision.AnchorGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of fixed grace (ceiling ``$($graceDecision.CeilingSeconds)s``; observed gaps shrink the proven bound instead of widening the grace; consecutive samples more than ``${maxObservationGapSeconds}s`` apart stop counting as continuous observation) |",
         "| Load | $effectiveLoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, $KafkaBurstEventsPerSecond events/s for ${KafkaBurstDurationSeconds}s then $KafkaEventsPerSecond events/s per pod" }) |",
+        "| Load heartbeat | $heartbeatSummary |",
         "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first (health signal only; attribution is per scale event below) |",
-        "| HPA rescale attribution | $($timeline.ScaleEvents.Count - $timeline.UnattributedScaleEvents.Count) of $($timeline.ScaleEvents.Count) replica transitions correlated with the HPA's desiredReplicas and an advancing lastScaleTime |",
+        "| HPA rescale attribution | $($timeline.ScaleEvents.Count - $timeline.UnattributedScaleEvents.Count) of $($timeline.ScaleEvents.Count) replica transitions mapped one-to-one to post-baseline SuccessfulRescale occurrences from the exact HPA UID with an exact matching ``New size``; $($timeline.UnmatchedSuccessfulRescaleEvents.Count) unmatched occurrence(s) |",
         "| HPA metrics | $($metricSummary) (desired replicas = max across metrics, tolerance ``$HpaTolerance``) |",
         $scaleDownAnchorRow,
         "| Peak utilization | $($timeline.PeakUtilizationPercent)% |",
@@ -771,13 +885,13 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "## Timeline",
         "",
         '```text',
-        "timestamp | cpu: current/target  min  max  replicas | scale-subresource desired  HPA desired  HPA lastScaleTime  ready  hpa ScalingActive",
+        "timestamp | cpu: current/target  min  max  replicas | scale-subresource desired  HPA desired  HPA lastScaleTime  ready  hpa ScalingActive  newly observed SuccessfulRescale events",
         $rendered,
         '```',
         "",
         "## Scale events",
         "",
-        "``desired`` in the timeline is the scale subresource's requested count, which is where the HPA writes its decision; ``replicas``/``ready`` are what the workload realized, and can lag it. Each event below is timestamped from the first sampled transition of the desired count, and is credited to the HPA only on the controller's own rescale evidence.",
+        "``desired`` in the timeline is the scale subresource's requested count, which is where the HPA writes its decision; ``replicas``/``ready`` are what the workload realized, and can lag it. Each transition is credited only when one run-local SuccessfulRescale occurrence from HPA UID ``$script:hpaUid`` names its exact target count. HPA status fields remain diagnostics, not causation evidence.",
         ""
     )
 

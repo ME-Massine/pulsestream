@@ -107,7 +107,11 @@ function Stop-AutoscalingLoadPods {
         "delete", "pod",
         "--namespace", $Namespace,
         "--selector", $LoadPodLabel,
-        "--ignore-not-found", "--wait=false"
+        # Load generators hold no workload state and must stop promptly so the
+        # first post-load recommendation can be sampled instead of disappearing
+        # inside the Pod's default 30-second termination grace. Cleanup is still
+        # verified below; this changes observation coverage, not verdict grace.
+        "--grace-period=1", "--ignore-not-found", "--wait=false"
     )
     if ($delete.ExitCode -ne 0) {
         throw "Could not delete autoscaling load pods for run '$RunId'. $($delete.Output)"

@@ -208,6 +208,117 @@ function Get-HpaMetricReadings {
     return , $readings
 }
 
+# Turns successive core/v1 EventList snapshots into run-local HPA rescale
+# evidence. Kubernetes may aggregate identical events into one object and bump
+# its count, so event-object presence or timestamps alone cannot distinguish a
+# rescale from stale pre-run history. The caller owns EventCounts for the whole
+# run: -EstablishBaseline records what already existed, and later calls return
+# only new event objects or count advances.
+function Get-NewHpaSuccessfulRescaleEvents {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Events,
+        [Parameter(Mandatory)] [string] $HpaUid,
+        [Parameter(Mandatory)] [hashtable] $EventCounts,
+        [Parameter(Mandatory)] [datetime] $ObservedAt,
+        [switch] $EstablishBaseline
+    )
+
+    $newEvents = @()
+    foreach ($event in @($Events)) {
+        if ($null -eq $event -or [string] $event.reason -ne "SuccessfulRescale") {
+            continue
+        }
+
+        # UID, not name, binds the event to the exact HPA incarnation under
+        # test. A delete/recreate under the same name must not inherit evidence.
+        if ([string] $event.involvedObject.uid -ne $HpaUid -or
+            [string] $event.involvedObject.kind -ne "HorizontalPodAutoscaler") {
+            continue
+        }
+
+        $component = [string] $event.reportingComponent
+        if ([string]::IsNullOrWhiteSpace($component)) {
+            $component = [string] $event.source.component
+        }
+        if ($component -ne "horizontal-pod-autoscaler") {
+            # A same-reason event written by some other component is not HPA
+            # evidence. Ignore it so an external resize cannot borrow it.
+            continue
+        }
+
+        $eventUid = [string] $event.metadata.uid
+        if ([string]::IsNullOrWhiteSpace($eventUid)) {
+            throw "A SuccessfulRescale event for HPA UID '$HpaUid' carried no metadata.uid, so its occurrence cannot be distinguished from stale or repeated evidence."
+        }
+
+        $count = [long] 1
+        if ($null -ne $event.count) {
+            $count = [long] $event.count
+        } elseif ($null -ne $event.series.count) {
+            $count = [long] $event.series.count
+        } elseif ($null -ne $event.deprecatedCount) {
+            $count = [long] $event.deprecatedCount
+        }
+        if ($count -lt 1) {
+            throw "SuccessfulRescale event '$eventUid' for HPA UID '$HpaUid' carried invalid occurrence count $count."
+        }
+
+        $known = $EventCounts.ContainsKey($eventUid)
+        $previousCount = [long] 0
+        if ($known) {
+            $previousCount = [long] $EventCounts[$eventUid]
+            if ($count -lt $previousCount) {
+                throw "SuccessfulRescale event '$eventUid' regressed from count $previousCount to $count. Event collection is inconsistent, so attribution must fail closed."
+            }
+        }
+        $EventCounts[$eventUid] = $count
+
+        if ($EstablishBaseline) {
+            continue
+        }
+
+        $countDelta = $count - $previousCount
+        if ($known -and $countDelta -eq 0) {
+            continue
+        }
+
+        $message = [string] $event.message
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = [string] $event.note
+        }
+        if ($message -notmatch '^New size: (?<size>[0-9]+); reason: .+$') {
+            throw "New SuccessfulRescale evidence '$eventUid' for HPA UID '$HpaUid' did not carry the controller's target-specific 'New size: N; reason: ...' message: '$message'."
+        }
+
+        # Server/controller timestamps are recorded for auditability only.
+        # Attribution uses the run-local observation sample and the baseline
+        # count delta; a best-case timestamp is never promoted into causation.
+        $occurredAt = $null
+        foreach ($candidate in @($event.series.lastObservedTime, $event.lastTimestamp, $event.eventTime, $event.metadata.creationTimestamp)) {
+            if (-not [string]::IsNullOrWhiteSpace([string] $candidate)) {
+                $occurredAt = ([datetime] $candidate).ToUniversalTime()
+                break
+            }
+        }
+
+        $newEvents += [pscustomobject]@{
+            EvidenceId     = "$eventUid/$count"
+            EventUid       = $eventUid
+            EventName      = [string] $event.metadata.name
+            ResourceVersion = [string] $event.metadata.resourceVersion
+            HpaUid         = $HpaUid
+            NewSize        = [int] $Matches["size"]
+            Message        = $message
+            Count          = $count
+            CountDelta     = $countDelta
+            ObservedAt     = $ObservedAt.ToUniversalTime()
+            OccurredAt     = $occurredAt
+        }
+    }
+
+    return , $newEvents
+}
+
 # One observation of the autoscaled workload at one instant.
 #
 # UtilizationPercent is deliberately nullable and deliberately not defaulted to
@@ -259,13 +370,16 @@ function New-AutoscalingSample {
         # the sampler did not read the scale subresource; the two fields are
         # deliberately not collapsed into one.
         [nullable[int]] $ScaleDesiredReplicas = $null,
-        # The HPA's own status at the same instant. desiredReplicas is the count
-        # the HPA wants; lastScaleTime is the controller's own record of when it
-        # last changed the target's scale. Together they are what attributes a
-        # replica transition to the HPA: the transition's new count must match
-        # the HPA's desired count AND lastScaleTime must have advanced across
-        # the transition. Null means unsampled, which conservatively attributes
-        # nothing.
+        # Completion time of the scale-subresource read. The sample Timestamp
+        # is the later completion time of the whole evidence bundle and is used
+        # for recommendation anchors; scale decisions use this resource-specific
+        # time. A start-of-sample timestamp would be a best-case clock that can
+        # over-credit the stabilization bound by the read latency.
+        [nullable[datetime]] $ScaleObservedAt = $null,
+        # The HPA's own status at the same instant. These remain useful health
+        # and diagnostic fields, but are deliberately not attribution evidence:
+        # a no-scale reconcile can copy an externally written target count into
+        # desiredReplicas while preserving lastScaleTime from an older rescale.
         [nullable[int]] $HpaDesiredReplicas = $null,
         [nullable[int]] $HpaCurrentReplicas = $null,
         [nullable[datetime]] $HpaLastScaleTime = $null,
@@ -273,7 +387,14 @@ function New-AutoscalingSample {
         # ("SucceededRescale", "ReadyForNewScale", "BackoffDownscale", ...).
         # Reported as supporting evidence only: the reason is overwritten by the
         # next reconcile, so its absence at a sample proves nothing.
-        [string] $HpaAbleToScaleReason = $null
+        [string] $HpaAbleToScaleReason = $null,
+        # Identity and event evidence for the exact HPA incarnation under test.
+        # SuccessfulRescaleEvents contains only occurrences observed after the
+        # run baseline by Get-NewHpaSuccessfulRescaleEvents.
+        [string] $HpaUid = $null,
+        [nullable[long]] $HpaGeneration = $null,
+        [object[]] $HpaSuccessfulRescaleEvents = @(),
+        [bool] $HpaEventCollectionSucceeded = $false
     )
 
     $metrics = @(New-AutoscalingMetricReading `
@@ -295,6 +416,14 @@ function New-AutoscalingSample {
         # PowerShell unwraps the nullable to a plain [datetime] on binding.
         $lastScaleTime = ([datetime] $HpaLastScaleTime).ToUniversalTime()
     }
+    $scaleObservationTime = $null
+    if ($null -ne $ScaleObservedAt) {
+        $scaleObservationTime = ([datetime] $ScaleObservedAt).ToUniversalTime()
+    } elseif ($null -ne $ScaleDesiredReplicas) {
+        # Pure synthetic callers use one timestamp for every field. The live
+        # sampler always supplies the resource-specific completion time.
+        $scaleObservationTime = $Timestamp.ToUniversalTime()
+    }
 
     return [pscustomobject]@{
         Timestamp            = $Timestamp.ToUniversalTime()
@@ -306,10 +435,15 @@ function New-AutoscalingSample {
         ScalingActiveStatus  = $ScalingActiveStatus
         Metrics              = $metrics
         ScaleDesiredReplicas = $ScaleDesiredReplicas
+        ScaleObservedAt       = $scaleObservationTime
         HpaDesiredReplicas   = $HpaDesiredReplicas
         HpaCurrentReplicas   = $HpaCurrentReplicas
         HpaLastScaleTime     = $lastScaleTime
         HpaAbleToScaleReason = $HpaAbleToScaleReason
+        HpaUid               = $HpaUid
+        HpaGeneration        = $HpaGeneration
+        HpaSuccessfulRescaleEvents = @($HpaSuccessfulRescaleEvents)
+        HpaEventCollectionSucceeded = $HpaEventCollectionSucceeded
     }
 }
 
@@ -389,65 +523,82 @@ function Get-ScaleEvents {
             $decisionSource = "scale subresource"
         }
 
-        # Attribution. ScalingActive=True says the HPA COULD compute a desired
-        # count; it says nothing about who resized the workload, since a manual
-        # `kubectl scale`, a rollout, or another controller changes the same
-        # field while the HPA sits idle. A transition is credited to the HPA
-        # only on the controller's own rescale evidence:
+        # Attribution. Kubernetes v1.36.1 emits SuccessfulRescale only after a
+        # scale-subresource update succeeds, and its message names the exact
+        # target count ("New size: N"). desiredReplicas, lastScaleTime,
+        # ScalingActive, and AbleToScale are snapshots or health signals; none
+        # binds an older successful update to the count sampled here.
         #
-        #   * the HPA's status.desiredReplicas equals the transition's new
-        #     count - the HPA wanted exactly this many replicas; and
-        #   * the HPA's status.lastScaleTime ADVANCED across the transition -
-        #     the controller states it changed the target's scale in this
-        #     interval. lastScaleTime values are compared only against each
-        #     other, never against the sampler's clock, so clock skew between
-        #     the harness and the control plane cannot manufacture or destroy
-        #     an advance.
-        #
-        # The evidence may land one sample late: the HPA can rescale between
-        # one sample's HPA read and its scale read, so that sample carries the
-        # new scale count with the old HPA status. The next sample is therefore
-        # also consulted - but only while the scale target still holds this
-        # transition's count, because once it has moved on the newer evidence
-        # belongs to a different transition. Anything less than this evidence
-        # leaves the transition unattributed, which the verdict treats as a
-        # failure: ambiguity must not credit the HPA.
-        $baselineLastScale = $Samples[$i - 1].HpaLastScaleTime
+        # The collector reads Events BEFORE the other resources in a sample. A
+        # genuine event is therefore normally observed on the transition sample;
+        # if the rescale races that event read, it may arrive exactly one sample
+        # late. Late evidence is accepted only while the target remains at To.
+        # Multiple occurrences in either interval, an aggregated count jump,
+        # a different target size, a different HPA UID, or a collection hole is
+        # ambiguous and fails closed.
         $attributed = $false
         $evidence = $null
-        foreach ($j in @($i, ($i + 1))) {
-            if ($j -ge $Samples.Count) {
-                break
-            }
-            if ($j -gt $i -and (Get-ObservedDesiredReplicas -Sample $Samples[$j]) -ne $current) {
-                break
-            }
+        $evidenceId = $null
+        $attributionFailure = $null
+        $evidenceSampleIndex = $i
+        $candidates = @($Samples[$i].HpaSuccessfulRescaleEvents)
 
-            $hpaDesired = $Samples[$j].HpaDesiredReplicas
-            $lastScale = $Samples[$j].HpaLastScaleTime
-            $advanced = ($null -ne $lastScale) -and (($null -eq $baselineLastScale) -or ($lastScale -gt $baselineLastScale))
-            if ($null -ne $hpaDesired -and [int] $hpaDesired -eq $current -and $advanced) {
-                $attributed = $true
-                $evidence = "HPA desiredReplicas=$hpaDesired with lastScaleTime advanced to $($lastScale.ToString('HH:mm:ssZ')), read at the $($Samples[$j].Timestamp.ToString('HH:mm:ssZ')) sample"
-                if (-not [string]::IsNullOrWhiteSpace($Samples[$j].HpaAbleToScaleReason)) {
-                    $evidence = "$evidence (AbleToScale: $($Samples[$j].HpaAbleToScaleReason))"
+        if (-not $Samples[$i].HpaEventCollectionSucceeded) {
+            $attributionFailure = "SuccessfulRescale event collection was missing on the transition sample"
+        } elseif ($candidates.Count -eq 0 -and $i + 1 -lt $Samples.Count -and
+            (Get-ObservedDesiredReplicas -Sample $Samples[$i + 1]) -eq $current) {
+            $evidenceSampleIndex = $i + 1
+            if (-not $Samples[$i + 1].HpaEventCollectionSucceeded) {
+                $attributionFailure = "SuccessfulRescale event collection was interrupted on the only allowed late-evidence sample"
+            } else {
+                $candidates = @($Samples[$i + 1].HpaSuccessfulRescaleEvents)
+            }
+        }
+
+        if ($null -eq $attributionFailure) {
+            if ($candidates.Count -eq 0) {
+                $attributionFailure = "no post-baseline SuccessfulRescale occurrence was observed in the transition interval or its one allowed late sample"
+            } elseif ($candidates.Count -ne 1) {
+                $sizes = @($candidates | ForEach-Object { $_.NewSize }) -join ", "
+                $attributionFailure = "$($candidates.Count) SuccessfulRescale occurrences were observed in the attribution interval (New size values: $sizes), so the sampled transition is ambiguous"
+            } else {
+                $candidate = $candidates[0]
+                if ([long] $candidate.CountDelta -ne 1) {
+                    $attributionFailure = "SuccessfulRescale event '$($candidate.EventUid)' advanced by $($candidate.CountDelta) occurrences between samples, so no single occurrence can be tied to this transition"
+                } elseif ([string] $candidate.HpaUid -ne [string] $Samples[0].HpaUid) {
+                    $attributionFailure = "SuccessfulRescale event '$($candidate.EventUid)' belongs to HPA UID '$($candidate.HpaUid)', not the baseline HPA UID '$($Samples[0].HpaUid)'"
+                } elseif ([int] $candidate.NewSize -ne $current) {
+                    $attributionFailure = "SuccessfulRescale event '$($candidate.EventUid)' names New size $($candidate.NewSize), not the transition's target $current"
+                } else {
+                    $attributed = $true
+                    $evidenceId = [string] $candidate.EvidenceId
+                    $timing = "on the transition sample"
+                    if ($evidenceSampleIndex -gt $i) {
+                        $timing = "one sample late while desired remained $current"
+                    }
+                    $occurred = ""
+                    if ($null -ne $candidate.OccurredAt) {
+                        $occurred = ", controller timestamp $($candidate.OccurredAt.ToString('HH:mm:ssZ'))"
+                    }
+                    $evidence = "SuccessfulRescale event $($candidate.EventName) (event UID $($candidate.EventUid), occurrence +$($candidate.CountDelta)) names New size $current; observed $timing at $($Samples[$evidenceSampleIndex].Timestamp.ToString('HH:mm:ssZ'))$occurred"
                 }
-                break
             }
         }
 
         $events += [pscustomobject]@{
-            At               = $Samples[$i].Timestamp
+            At               = $(if ($null -ne $Samples[$i].ScaleObservedAt) { $Samples[$i].ScaleObservedAt } else { $Samples[$i].Timestamp })
             # The last sample that still showed the old count. The decision
             # happened strictly after this instant, which is what makes it the
             # conservative end of the stabilization-window bound.
-            PreviousSampleAt = $Samples[$i - 1].Timestamp
+            PreviousSampleAt = $(if ($null -ne $Samples[$i - 1].ScaleObservedAt) { $Samples[$i - 1].ScaleObservedAt } else { $Samples[$i - 1].Timestamp })
             From             = $previous
             To               = $current
             Direction        = $direction
             DecisionSource   = $decisionSource
             HpaAttributed    = $attributed
             HpaEvidence      = $evidence
+            HpaEvidenceId    = $evidenceId
+            HpaAttributionFailure = $attributionFailure
         }
     }
 
@@ -528,7 +679,20 @@ function Get-HpaScaleRecommendation {
         [double] $Tolerance = 0.1
     )
 
-    $current = [int] $Sample.Replicas
+    # The HPA reads currentReplicas from scale.spec.replicas, not from the
+    # Deployment's asynchronous status.replicas. Using status here can move a
+    # recommendation anchor by an entire rollout and manufacture stabilization
+    # time. A missing scale read is absence of evidence, never a fallback.
+    if ($null -eq $Sample.ScaleDesiredReplicas) {
+        return [pscustomobject]@{
+            DesiredReplicas     = $null
+            RecommendsDownscale = $false
+            Detail              = "the scale subresource was not sampled, so the controller's current replica input is unknown"
+            UncoveredMetric     = $null
+        }
+    }
+
+    $current = [int] $Sample.ScaleDesiredReplicas
     if ($current -le 0) {
         return [pscustomobject]@{
             DesiredReplicas     = $null
@@ -745,7 +909,11 @@ function Get-AutoscalingTimeline {
     $scaleUps = @($scaleEvents | Where-Object { $_.Direction -eq "up" })
     $scaleDowns = @($scaleEvents | Where-Object { $_.Direction -eq "down" })
 
-    $peak = ($ordered | Measure-Object -Property Replicas -Maximum).Maximum
+    # Controller decisions are counts from the scale subresource. Deployment
+    # status is retained as realized workload state only; using its delayed peak
+    # for controller bounds can miss an overshoot or timestamp it a rollout late.
+    $desiredCounts = @($ordered | ForEach-Object { Get-ObservedDesiredReplicas -Sample $_ })
+    $peak = ($desiredCounts | Measure-Object -Maximum).Maximum
     $restartDelta = Get-RestartDelta -Samples $ordered
 
     # Availability during the run is measured as ready pods, not scheduled pods.
@@ -753,14 +921,16 @@ function Get-AutoscalingTimeline {
     # than MinReplicas pods serving has broken it regardless of replica count.
     $minReadyObserved = ($ordered | Measure-Object -Property ReadyReplicas -Minimum).Minimum
 
-    # The most capacity that was ever actually serving at one instant. Capped at
-    # the sample's own replica count so a Pod that is still Ready while it
-    # terminates cannot make a scale-up look larger than it was. Compared
-    # against PeakReplicas, this is what separates "the autoscaler added four
-    # Pods" from "the autoscaler asked for four Pods and the cluster ran three".
+    # The most capacity actually serving WHILE the peak target was still the
+    # requested target. A best-case Ready snapshot after the target had already
+    # moved down cannot retroactively prove the peak scale-up succeeded.
     $peakReadyObserved = 0
     foreach ($sample in $ordered) {
+        if ((Get-ObservedDesiredReplicas -Sample $sample) -ne $peak) {
+            continue
+        }
         $serving = [math]::Min([int] $sample.ReadyReplicas, [int] $sample.Replicas)
+        $serving = [math]::Min($serving, [int] $peak)
         if ($serving -gt $peakReadyObserved) {
             $peakReadyObserved = $serving
         }
@@ -772,11 +942,10 @@ function Get-AutoscalingTimeline {
     $unknownAfterFirst = @($ordered | Select-Object -Skip 1 | Where-Object { $null -eq $_.UtilizationPercent }).Count
 
     # ScalingActive is the autoscaler stating that it computed a desired replica
-    # count from the metric and wrote it to the scale subresource. It is what
-    # attributes the replica changes below to the HPA rather than to whatever
-    # else can resize a Deployment. The first sample is excluded for the same
-    # reason as the metric: an HPA reports FailedGetResourceMetric until its
-    # first scrape lands.
+    # count from the metric. It is a health signal only; target-specific event
+    # occurrences attribute transitions below. The first sample is excluded for
+    # the same reason as the metric: an HPA reports FailedGetResourceMetric until
+    # its first scrape lands.
     $afterFirst = @($ordered | Select-Object -Skip 1)
     $scalingActiveTrue = @($afterFirst | Where-Object { $_.ScalingActiveStatus -eq "True" }).Count
     $scalingActiveNotTrue = $afterFirst.Count - $scalingActiveTrue
@@ -834,7 +1003,7 @@ function Get-AutoscalingTimeline {
             $provenStretchGapSeconds = $null
             $stretch = @($ordered | Where-Object {
                     $_.Timestamp -ge $observedRecommendationFrom.Timestamp -and
-                    $_.Timestamp -le $firstScaleDown.PreviousSampleAt
+                    $_.Timestamp -lt $firstScaleDown.At
                 })
             for ($i = $stretch.Count - 1; $i -ge 1; $i--) {
                 $spacing = ($stretch[$i].Timestamp - $stretch[$i - 1].Timestamp).TotalSeconds
@@ -901,6 +1070,25 @@ function Get-AutoscalingTimeline {
 
     $unattributedScaleEvents = @($scaleEvents | Where-Object { -not $_.HpaAttributed })
 
+    # Every post-baseline SuccessfulRescale occurrence must map to exactly one
+    # sampled transition. An unmatched event means the sampler collapsed or
+    # missed a target update (often an HPA write followed by an external write),
+    # so the observed aggregate timeline is not complete controller evidence.
+    $usedEvidenceIds = @{}
+    foreach ($event in @($scaleEvents | Where-Object { $_.HpaAttributed })) {
+        $usedEvidenceIds[[string] $event.HpaEvidenceId] = $true
+    }
+    $allRescaleEvidence = @($ordered | ForEach-Object { @($_.HpaSuccessfulRescaleEvents) })
+    $unmatchedRescaleEvidence = @($allRescaleEvidence | Where-Object {
+            -not $usedEvidenceIds.ContainsKey([string] $_.EvidenceId)
+        })
+
+    $eventCollectionFailures = @($ordered | Where-Object { -not $_.HpaEventCollectionSucceeded }).Count
+    $baselineHpaUid = [string] $ordered[0].HpaUid
+    $hpaIdentityMismatches = @($ordered | Where-Object {
+            [string]::IsNullOrWhiteSpace([string] $_.HpaUid) -or [string] $_.HpaUid -ne $baselineHpaUid
+        }).Count
+
     # Transitions this run could only see through Deployment status.replicas,
     # because one of the two samples bounding them carried no scale-subresource
     # read. status.replicas moves when the rollout catches up, so an event timed
@@ -916,15 +1104,22 @@ function Get-AutoscalingTimeline {
         EndTime                       = $ordered[-1].Timestamp
         MinReplicas                   = $MinReplicas
         MaxReplicas                   = $MaxReplicas
-        BaselineReplicas              = $ordered[0].Replicas
+        BaselineReplicas              = Get-ObservedDesiredReplicas -Sample $ordered[0]
         PeakReplicas                  = $peak
-        FinalReplicas                 = $ordered[-1].Replicas
+        FinalReplicas                 = Get-ObservedDesiredReplicas -Sample $ordered[-1]
+        PeakObservedReplicas          = ($ordered | Measure-Object -Property Replicas -Maximum).Maximum
         MinReadyObserved              = $minReadyObserved
         PeakReadyReplicas             = $peakReadyObserved
         ScaleEvents                   = $scaleEvents
         UnattributedScaleEvents       = $unattributedScaleEvents
+        UnmatchedSuccessfulRescaleEvents = $unmatchedRescaleEvidence
         UntimedScaleEvents            = $untimedScaleEvents
         ScaleSubresourceSampleCount   = @($ordered | Where-Object { $null -ne $_.ScaleDesiredReplicas }).Count
+        MissingScaleSubresourceSamples = @($ordered | Where-Object { $null -eq $_.ScaleDesiredReplicas }).Count
+        HpaEventCollectionFailureSamples = $eventCollectionFailures
+        HpaSuccessfulRescaleEventCount = $allRescaleEvidence.Count
+        BaselineHpaUid                = $baselineHpaUid
+        HpaIdentityMismatchSamples    = $hpaIdentityMismatches
         ScaleUpCount                  = $scaleUps.Count
         ScaleDownCount                = $scaleDowns.Count
         PeakUtilizationPercent        = ($ordered | Where-Object { $null -ne $_.UtilizationPercent } |
@@ -1036,6 +1231,24 @@ function Confirm-AutoscalingBehavior {
         throw "ScaleDownGraceSeconds ($ScaleDownGraceSeconds) must be non-negative and smaller than the configured stabilization window ($ExpectedScaleDownWindowSeconds)."
     }
 
+    # Collection completeness and identity precede every behavioral conclusion.
+    # A missing EventList sample can hide either the exact event needed for a
+    # transition or a second event that would make attribution ambiguous.
+    Confirm-Condition `
+        -Condition ($Timeline.HpaEventCollectionFailureSamples -eq 0) `
+        -SuccessMessage "SuccessfulRescale event collection succeeded in all $($Timeline.SampleCount) samples" `
+        -FailureMessage "SuccessfulRescale event collection was missing or interrupted in $($Timeline.HpaEventCollectionFailureSamples) of $($Timeline.SampleCount) samples. A collection hole can hide missing, different-size, or ambiguous HPA evidence, so the run fails closed"
+
+    Confirm-Condition `
+        -Condition ($Timeline.HpaIdentityMismatchSamples -eq 0 -and -not [string]::IsNullOrWhiteSpace($Timeline.BaselineHpaUid)) `
+        -SuccessMessage "every sample and every rescale event belongs to the baseline HPA UID $($Timeline.BaselineHpaUid)" `
+        -FailureMessage "the HPA UID was missing or changed in $($Timeline.HpaIdentityMismatchSamples) sample(s). Names are reusable after deletion, so evidence from a different HPA incarnation cannot prove this run"
+
+    Confirm-Condition `
+        -Condition ($Timeline.MissingScaleSubresourceSamples -eq 0) `
+        -SuccessMessage "the scale subresource was sampled in all $($Timeline.SampleCount) samples" `
+        -FailureMessage "the scale subresource was missing in $($Timeline.MissingScaleSubresourceSamples) of $($Timeline.SampleCount) samples. Deployment status.replicas is an asynchronous rollout snapshot and cannot replace the controller's current/desired replica input"
+
     Confirm-Condition `
         -Condition ($Timeline.UnknownMetricSamples -eq 0) `
         -SuccessMessage "the HPA reported a CPU utilization value in every sample after the first (peak $($Timeline.PeakUtilizationPercent)% against a $($Timeline.Samples[0].TargetPercent)% target)" `
@@ -1067,25 +1280,34 @@ function Confirm-AutoscalingBehavior {
         -SuccessMessage "every replica transition ($($Timeline.ScaleEvents.Count) of them) was timed from the scale subresource's desired count, the field the HPA writes its decision into, rather than from the workload status that trails it" `
         -FailureMessage "$($Timeline.UntimedScaleEvents.Count) of $($Timeline.ScaleEvents.Count) replica transition(s) were visible only through Deployment status.replicas: $untimedDetail. status.replicas moves when the rollout catches up with the decision, not when the decision is made, so timing an event from it credits the stabilization window with the rollout's lag. The sampler reads the workload's scale subresource on every sample (kubectl v1.27+ for --subresource=scale); a run missing that read around a transition cannot say when the decision happened"
 
-    # Attribution. Every replica transition the run recorded must correlate
-    # with the HPA's own rescale evidence: the HPA's desiredReplicas matching
-    # the transition's new count, and its lastScaleTime advancing across the
-    # transition. A transition without that evidence may be a manual resize, a
-    # rollout, or another controller - and every assertion below reads the
-    # replica numbers as the autoscaler's work, so one unattributed transition
-    # poisons the run. Ordered before the replica assertions for that reason.
+    # Attribution. Every replica transition must consume exactly one post-
+    # baseline SuccessfulRescale occurrence from the exact HPA UID whose
+    # controller message names the transition's exact target count.
     $unattributedDetail = @($Timeline.UnattributedScaleEvents | ForEach-Object {
-            "$($_.From) -> $($_.To) at $($_.At.ToString('HH:mm:ssZ'))"
+            "$($_.From) -> $($_.To) at $($_.At.ToString('HH:mm:ssZ')): $($_.HpaAttributionFailure)"
         }) -join "; "
     Confirm-Condition `
         -Condition ($Timeline.UnattributedScaleEvents.Count -eq 0) `
-        -SuccessMessage "every replica transition ($($Timeline.ScaleEvents.Count) of them) correlates with the HPA's own rescale evidence: desiredReplicas matched the new count and lastScaleTime advanced across the transition" `
-        -FailureMessage "$($Timeline.UnattributedScaleEvents.Count) of $($Timeline.ScaleEvents.Count) replica transition(s) carry no correlated successful HPA rescale evidence: $unattributedDetail. ScalingActive=True only says the HPA could compute a desired count, not that it performed these rescales; a manual 'kubectl scale', a rollout, or another controller produces the same replica change. A transition is credited to the HPA only when the HPA's desiredReplicas matches the new count and its lastScaleTime advanced across the transition, so this run cannot prove the autoscaler produced the timeline below"
+        -SuccessMessage "every replica transition ($($Timeline.ScaleEvents.Count) of them) consumed one post-baseline SuccessfulRescale occurrence from HPA UID $($Timeline.BaselineHpaUid) whose New size exactly matched the transition target" `
+        -FailureMessage "$($Timeline.UnattributedScaleEvents.Count) of $($Timeline.ScaleEvents.Count) replica transition(s) lack exact, unambiguous, target-specific HPA SuccessfulRescale evidence: $unattributedDetail. ScalingActive, desiredReplicas, lastScaleTime, workload status, and matching aggregate counts are not causation evidence; missing, stale, different-size, or ambiguous event evidence fails closed"
+
+    $unmatchedDetail = @($Timeline.UnmatchedSuccessfulRescaleEvents | ForEach-Object {
+            "event $($_.EventUid) New size $($_.NewSize) observed $($_.ObservedAt.ToString('HH:mm:ssZ'))"
+        }) -join "; "
+    Confirm-Condition `
+        -Condition ($Timeline.UnmatchedSuccessfulRescaleEvents.Count -eq 0) `
+        -SuccessMessage "all $($Timeline.HpaSuccessfulRescaleEventCount) post-baseline SuccessfulRescale occurrence(s) map one-to-one to sampled target transitions" `
+        -FailureMessage "$($Timeline.UnmatchedSuccessfulRescaleEvents.Count) post-baseline SuccessfulRescale occurrence(s) were not mapped to a sampled target transition: $unmatchedDetail. The sampler missed or collapsed a scale-target change, so its aggregate timeline cannot prove controller behavior"
+
+    Confirm-Condition `
+        -Condition ($Timeline.BaselineReplicas -eq $Timeline.MinReplicas) `
+        -SuccessMessage "the run baseline scale target was the minReplicas floor of $($Timeline.MinReplicas)" `
+        -FailureMessage "the run baseline scale target was $($Timeline.BaselineReplicas), not the minReplicas floor of $($Timeline.MinReplicas). A no-load baseline above the floor may be residual or externally written state, so it cannot establish the requested clean scale-up experiment"
 
     Confirm-Condition `
         -Condition ($Timeline.PeakReplicas -gt $Timeline.BaselineReplicas) `
-        -SuccessMessage "replicas rose under load, from $($Timeline.BaselineReplicas) to a peak of $($Timeline.PeakReplicas)" `
-        -FailureMessage "replicas never rose above the baseline of $($Timeline.BaselineReplicas). Either the load did not push utilization past the target (peak observed: $($Timeline.PeakUtilizationPercent)%) or the autoscaler did not act on it"
+        -SuccessMessage "the scale target rose under load, from $($Timeline.BaselineReplicas) to a peak desired count of $($Timeline.PeakReplicas)" `
+        -FailureMessage "the scale target never rose above the baseline desired count of $($Timeline.BaselineReplicas). Either the load did not push utilization past the target (peak observed: $($Timeline.PeakUtilizationPercent)%) or the autoscaler did not act on it"
 
     # A replica count is a request, not capacity. Pods that stay Pending for
     # want of a node, or that never pass their readiness probe, are counted by
@@ -1094,13 +1316,13 @@ function Confirm-AutoscalingBehavior {
     # the platform's ability to absorb load.
     Confirm-Condition `
         -Condition ($Timeline.PeakReadyReplicas -ge $Timeline.PeakReplicas) `
-        -SuccessMessage "all $($Timeline.PeakReplicas) replicas of the peak became Ready, so the capacity the autoscaler asked for was capacity the cluster actually served with" `
-        -FailureMessage "the workload reached $($Timeline.PeakReplicas) replicas but never had more than $($Timeline.PeakReadyReplicas) of them Ready at once. Scaled-up Pods that stay Pending or fail readiness carry no traffic, so this is a scale-up the cluster did not deliver rather than one the autoscaler got right - check node CPU/memory headroom for $($Timeline.PeakReplicas) times the pod's requests, and the readiness probe, before reading anything else in this run"
+        -SuccessMessage "all $($Timeline.PeakReplicas) replicas became Ready while the peak target of $($Timeline.PeakReplicas) was still requested, so the capacity the autoscaler asked for was capacity the cluster actually served with" `
+        -FailureMessage "the scale target reached $($Timeline.PeakReplicas), but while that peak was still requested the workload never had more than $($Timeline.PeakReadyReplicas) Ready. A later best-case Ready snapshot after the target moved down cannot prove the peak scale-up; check node CPU/memory headroom and readiness before trusting the run"
 
     Confirm-Condition `
         -Condition ($Timeline.PeakReplicas -le $Timeline.MaxReplicas) `
-        -SuccessMessage "the replica count stayed within the maxReplicas ceiling of $($Timeline.MaxReplicas)" `
-        -FailureMessage "the workload reached $($Timeline.PeakReplicas) replicas, above the maxReplicas ceiling of $($Timeline.MaxReplicas). The ceiling is a downstream-capacity decision from docs/architecture/autoscaling-strategy.md, not a soft target"
+        -SuccessMessage "the scale target stayed within the maxReplicas ceiling of $($Timeline.MaxReplicas)" `
+        -FailureMessage "the scale target reached $($Timeline.PeakReplicas), above the maxReplicas ceiling of $($Timeline.MaxReplicas). Delayed Deployment status cannot hide a target overshoot; the ceiling is a downstream-capacity decision, not a soft target"
 
     Confirm-Condition `
         -Condition ($Timeline.MinReadyObserved -ge $Timeline.MinReplicas) `
@@ -1212,7 +1434,13 @@ function Format-AutoscalingTimeline {
             $lastScale = $sample.HpaLastScaleTime.ToString("HH:mm:ssZ")
         }
 
-        $line = "{0} | cpu: {1,9}/{2}%  {3}  {4}  {5} | desired={6} hpaDesired={7} lastScale={8} ready={9} scalingActive={10}" -f `
+        $rescaleEvents = "-"
+        $sampleRescaleEvents = @($sample.HpaSuccessfulRescaleEvents)
+        if ($sampleRescaleEvents.Count -gt 0) {
+            $rescaleEvents = @($sampleRescaleEvents | ForEach-Object { "NewSize=$($_.NewSize)@$($_.EventUid)" }) -join ","
+        }
+
+        $line = "{0} | cpu: {1,9}/{2}%  {3}  {4}  {5} | desired={6} hpaDesired={7} lastScale={8} ready={9} scalingActive={10} rescaleEvents={11}" -f `
             $sample.Timestamp.ToString("HH:mm:ssZ"),
             $utilization,
             $sample.TargetPercent,
@@ -1223,7 +1451,8 @@ function Format-AutoscalingTimeline {
             $hpaDesired,
             $lastScale,
             $sample.ReadyReplicas,
-            $scalingActive
+            $scalingActive,
+            $rescaleEvents
 
         $marker = $Markers[$sample.Timestamp]
         if (-not [string]::IsNullOrWhiteSpace($marker)) {
@@ -1236,4 +1465,4 @@ function Format-AutoscalingTimeline {
     return ($lines -join [Environment]::NewLine)
 }
 
-Export-ModuleMember -Function ConvertFrom-KubernetesQuantity, New-AutoscalingMetricReading, Get-HpaMetricReadings, New-AutoscalingSample, Get-ScaleEvents, Get-HpaScaleRecommendation, Get-DownscaleRecommendationStart, Get-AutoscalingTimeline, Get-ScaleDownSamplingGrace, Confirm-AutoscalingBehavior, Format-AutoscalingTimeline
+Export-ModuleMember -Function ConvertFrom-KubernetesQuantity, New-AutoscalingMetricReading, Get-HpaMetricReadings, Get-NewHpaSuccessfulRescaleEvents, New-AutoscalingSample, Get-ScaleEvents, Get-HpaScaleRecommendation, Get-DownscaleRecommendationStart, Get-AutoscalingTimeline, Get-ScaleDownSamplingGrace, Confirm-AutoscalingBehavior, Format-AutoscalingTimeline
