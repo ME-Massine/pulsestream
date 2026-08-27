@@ -1,18 +1,32 @@
 name: CI
 
+# A feature branch only needs a full CI run once it is proposed for merge.
+# Pushes are therefore limited to the long-lived branches: a push to feature/**
+# with an open pull request used to run every job twice, once for the push and
+# once for the pull request, and the two runs never disagreed.
 on:
   push:
     branches:
       - main
       - dev
-      - "feature/**"
-      - "fix/**"
-      - "chore/**"
-      - "docs/**"
   pull_request:
     branches:
       - main
       - dev
+
+# One run per pull request, or per branch for the push events above. A new
+# commit supersedes the run it interrupted, so the older run is cancelled
+# instead of competing for runners to produce a result nobody will read.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: "17"
+  JAVA_DISTRIBUTION: temurin
 
 jobs:
   repo-sanity:
@@ -39,42 +53,96 @@ jobs:
           test -d docs/decisions
           test -d docs/diagrams
 
-  java-build-placeholder:
-    name: Java build placeholder
+  service-verify:
+    name: Service verify (${{ matrix.service }})
     runs-on: ubuntu-latest
+
+    strategy:
+      # Every service reports its own result. A failure in one must not hide
+      # whether the other two are healthy.
+      fail-fast: false
+      matrix:
+        service:
+          - ingestion-service
+          - telemetry-processor
+          - query-service
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 21
+      # Java 17 matches <java.version> in every service POM and the
+      # eclipse-temurin:17 images the Dockerfiles build on.
+      - name: Set up Java ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "21"
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          # Caches ~/.m2/repository keyed on the committed POMs. The local
+          # repository lives on the runner; none of it is committed here.
+          cache: maven
 
-      - name: Confirm Java is available
-        run: java -version
+      # verify runs the full lifecycle: compile, test, package, and the JaCoCo
+      # report and coverage-baseline check bound to the verify phase. A failing
+      # test or a coverage regression fails this step, and with it the workflow.
+      - name: Run Maven verify
+        working-directory: services/${{ matrix.service }}
+        run: ./mvnw --batch-mode --no-transfer-progress verify
 
-  telemetry-processor-docker:
-    name: Telemetry Processor Docker image
+      - name: Summarise coverage
+        if: always()
+        run: |
+          report="services/${{ matrix.service }}/target/site/jacoco/jacoco.csv"
+          if [ ! -f "${report}" ]; then
+            echo "No JaCoCo report at ${report}: the build failed before reporting." >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          python3 scripts/ci/summarise-coverage.py \
+            "${report}" "${{ matrix.service }}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-${{ matrix.service }}
+          path: services/${{ matrix.service }}/target/site/jacoco/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  service-image:
+    name: Service image (${{ matrix.service }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - ingestion-service
+          - telemetry-processor
+          - query-service
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build telemetry-processor image
-        run: docker build -t pulsestream/telemetry-processor:ci services/telemetry-processor
+      - name: Build ${{ matrix.service }} image
+        run: docker build -t pulsestream/${{ matrix.service }}:ci services/${{ matrix.service }}
 
       - name: Assert image runs as non-root
         run: |
-          user="$(docker inspect --format '{{.Config.User}}' pulsestream/telemetry-processor:ci)"
+          user="$(docker inspect --format '{{.Config.User}}' pulsestream/${{ matrix.service }}:ci)"
           echo "Configured image user: '${user}'"
           if [ -z "${user}" ] || [ "${user}" = "root" ] || [ "${user}" = "0" ] || [ "${user}" = "0:0" ]; then
             echo "::error::Image must not run as root (got '${user}')"
             exit 1
           fi
 
+      # telemetry-processor is the one service whose container reaches a started
+      # Spring context with no broker and no database in front of it, so it is
+      # the only image smoke-tested here. The other two are covered by the build
+      # and by the non-root assertion above.
       - name: Start container and verify Spring Boot startup
+        if: matrix.service == 'telemetry-processor'
         run: |
           docker run -d --name tp-ci -p 8082:8082 pulsestream/telemetry-processor:ci
 
@@ -117,5 +185,97 @@ jobs:
           fi
 
       - name: Tear down container
-        if: always()
+        if: always() && matrix.service == 'telemetry-processor'
         run: docker rm -f tp-ci || true
+
+  compose-config:
+    name: Docker Compose configuration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # `config` resolves interpolation, merge keys and the compose schema on the
+      # client side. Every variable in the file has a default, so no .env is
+      # needed; an undefined variable or a malformed service definition fails.
+      - name: Validate compose file
+        run: docker compose -f infrastructure/docker/docker-compose.yml config --quiet
+
+      - name: Report resolved services
+        run: docker compose -f infrastructure/docker/docker-compose.yml config --services
+
+  kubernetes-manifests:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+
+    env:
+      KUBECONFORM_VERSION: v0.6.7
+      KUBERNETES_VERSION: "1.30.0"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSfL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+
+      # -strict rejects unknown fields, and -ignore-missing-schemas is
+      # deliberately not passed: a manifest whose schema cannot be resolved is an
+      # error rather than a silent skip. Strimzi's Kafka, KafkaNodePool and
+      # KafkaTopic schemas come from the CRDs catalog, so the custom resources
+      # are checked like built-in kinds instead of being waved through.
+      # prometheus-adapter-values.yaml is a Helm values file, not a manifest.
+      - name: Validate manifests
+        run: |
+          mapfile -t manifests < <(
+            find infrastructure/kubernetes -type f -name '*.yaml' \
+              ! -name 'prometheus-adapter-values.yaml' | sort
+          )
+          echo "Validating ${#manifests[@]} manifest file(s)"
+          kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version "${KUBERNETES_VERSION}" \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            "${manifests[@]}"
+
+  powershell-checks:
+    name: PowerShell checks (${{ matrix.edition }})
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Operators run the validation scripts on both editions, and the helpers
+        # have already diverged once between them (the exception type raised by
+        # Invoke-WebRequest on a non-2xx response), so both are exercised.
+        edition:
+          - pwsh
+          - powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # run-all-tests.ps1 parses every script and module under scripts\ and then
+      # runs the regression tests. Two of them turn a committed manifest into
+      # JSON with `kubectl create --dry-run=client`, which still resolves the
+      # kind through API discovery; with no cluster behind the runner those two
+      # report as skipped and are named in the job output. The manifests they
+      # cover are schema-checked by the kubernetes-manifests job instead.
+      - name: Parse helpers and run regression tests (PowerShell 7)
+        if: matrix.edition == 'pwsh'
+        shell: pwsh
+        run: ./scripts/tests/run-all-tests.ps1
+
+      - name: Parse helpers and run regression tests (Windows PowerShell 5.1)
+        if: matrix.edition == 'powershell'
+        shell: powershell
+        run: ./scripts/tests/run-all-tests.ps1
