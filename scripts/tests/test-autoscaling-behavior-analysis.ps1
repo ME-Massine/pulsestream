@@ -35,6 +35,7 @@ $script:Origin = [datetime]::SpecifyKind([datetime]"2026-01-01T12:00:00", [Syste
 # a transition receives one exact-New-size event occurrence. The adversarial
 # tests override with:
 #   ScaleDesired       - scale subresource desired count (decouple from status)
+#   EvidenceStartedOffset - start of an asynchronous sample completed at Offset
 #   RescaleEvents      - @(@{ NewSize=n; CountDelta=1; HpaUid='...' })
 #   EventCollectionSucceeded - false reproduces an interrupted collector
 # HpaDesired/lastScaleTime remain available as adversarial non-causal snapshots.
@@ -189,8 +190,14 @@ function New-Timeline {
         }
         $previousScaleDesired = $scaleDesired
 
+        $recommendationEvidenceStartedAt = $script:Origin.AddSeconds($step.Offset)
+        if ($step.ContainsKey("EvidenceStartedOffset")) {
+            $recommendationEvidenceStartedAt = $script:Origin.AddSeconds($step.EvidenceStartedOffset)
+        }
+
         New-AutoscalingSample `
             -Timestamp $script:Origin.AddSeconds($step.Offset) `
+            -RecommendationEvidenceStartedAt $recommendationEvidenceStartedAt `
             -Replicas $step.Replicas `
             -ReadyReplicas $ready `
             -TargetPercent $TargetPercent `
@@ -1115,6 +1122,66 @@ Assert-BehaviorRejects `
     -ExpectedMessage "does not establish the configured 300s stabilization window" `
     -Description "a window provable only by crediting the optimistic side of the anchor gap was rejected"
 
+# A sample is an interval, not a point. The final old-count sample read the HPA
+# at 320s but completed at 330s after its other resource reads. Treating that
+# completion as the HPA observation scores 330 - 60 = 270s and passes with the
+# fixed 30s grace. The actual recommendation snapshots establish only 260s, so
+# the in-sample latency must be removed from the conservative proof endpoint.
+$delayedSampleCollection = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 60; Replicas = 6; Cpu = 8 },
+    @{ Offset = 120; Replicas = 6; Cpu = 8 },
+    @{ Offset = 180; Replicas = 6; Cpu = 8 },
+    @{ Offset = 240; Replicas = 6; Cpu = 8 },
+    @{ Offset = 300; Replicas = 6; Cpu = 8 },
+    @{ Offset = 330; EvidenceStartedOffset = 320; Replicas = 6; Cpu = 8 },
+    @{ Offset = 345; Replicas = 5; Cpu = 6 },
+    @{ Offset = 405; Replicas = 4; Cpu = 5 },
+    @{ Offset = 465; Replicas = 3; Cpu = 4 },
+    @{ Offset = 525; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected 10 -Actual $delayedSampleCollection.WidestRecommendationEvidenceCollectionSeconds `
+    -Description "the recommendation evidence collection interval is retained"
+Assert-Equal -Expected 260 -Actual $delayedSampleCollection.ProvenScaleDownDelaySeconds `
+    -Description "in-sample latency does not move stale recommendation evidence forward"
+Assert-Equal -Expected ($script:Origin.AddSeconds(320)) -Actual $delayedSampleCollection.ProvenRecommendationThrough `
+    -Description "the proof ends at the early edge of the last recommending bundle"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $delayedSampleCollection `
+    -ExpectedMessage "does not establish the configured 300s stabilization window" `
+    -Description "a delayed sample collection that formerly passed on 270s but proves only 260s was rejected"
+
+# A longer delay inside a middle sample is also an observation hole. Completion
+# timestamps remain at most 60s apart here, but the 240s sample began at 170s;
+# the widest possible separation to the next bundle is therefore 130s. The
+# proven stretch must restart at 300s instead of carrying stale evidence across
+# that hidden gap.
+$longInSampleGap = New-Timeline -Steps @(
+    @{ Offset = 0; Replicas = 2; Cpu = 3 },
+    @{ Offset = 30; Replicas = 6; Cpu = 300 },
+    @{ Offset = 60; Replicas = 6; Cpu = 8 },
+    @{ Offset = 120; Replicas = 6; Cpu = 8 },
+    @{ Offset = 180; Replicas = 6; Cpu = 8 },
+    @{ Offset = 240; EvidenceStartedOffset = 170; Replicas = 6; Cpu = 8 },
+    @{ Offset = 300; Replicas = 6; Cpu = 8 },
+    @{ Offset = 330; Replicas = 6; Cpu = 8 },
+    @{ Offset = 345; Replicas = 5; Cpu = 6 },
+    @{ Offset = 405; Replicas = 4; Cpu = 5 },
+    @{ Offset = 465; Replicas = 3; Cpu = 4 },
+    @{ Offset = 525; Replicas = 2; Cpu = 4 }
+)
+Assert-Equal -Expected 130 -Actual $longInSampleGap.ProvenStretchGapSeconds `
+    -Description "a long in-sample collection is exposed as an observation gap"
+Assert-Equal -Expected ($script:Origin.AddSeconds(300)) -Actual $longInSampleGap.DownscaleRecommendedAt `
+    -Description "the proven stretch restarts after a hidden in-sample gap"
+Assert-BehaviorRejects `
+    -RequireReturnToFloor `
+    -Timeline $longInSampleGap `
+    -ExpectedMessage "widest possible spacing between two consecutive recommendation-evidence intervals was 130s" `
+    -Description "a long in-sample evidence gap is trimmed rather than credited"
+
 # The same shape sampled well: the recommendation turnover is bracketed by a
 # 15s gap and the stabilization stretch is observed continuously, so even the
 # conservative bound proves the window.
@@ -1574,6 +1641,11 @@ if ($secondLine -notmatch "scalingActive=True") {
     throw "Expected the rendered timeline to show ScalingActive=True once the HPA reports it, got: $secondLine"
 }
 Write-Host "[ok] the rendered timeline records the HPA's ScalingActive status on every sample"
+
+if ($firstLine -notmatch "evidenceStart=12:00:00Z") {
+    throw "Expected the rendered timeline to carry the recommendation evidence interval per sample, got: $firstLine"
+}
+Write-Host "[ok] the rendered timeline records the recommendation evidence interval on every sample"
 
 Assert-Equal -Expected 3 -Actual @($rendered -split "`r?`n").Count -Description "the rendered timeline has one line per sample"
 

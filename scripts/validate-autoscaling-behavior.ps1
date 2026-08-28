@@ -201,7 +201,7 @@ done | {{BIN}}/kafka-console-producer.sh \
 # ready count, the pods carry restart counts, and `kubectl top` says how many
 # pods metrics-server had a CPU reading for. They are read back to back; the
 # scale read keeps its own completion timestamp for decision bounds, and the
-# completed evidence bundle receives the later recommendation timestamp.
+# recommendation evidence bundle keeps both edges of its collection interval.
 
 function Get-SuccessfulRescaleEvidenceSnapshot {
     param(
@@ -257,6 +257,7 @@ function Get-Sample {
     $eventObservedAt = (Get-Date).ToUniversalTime()
     $successfulRescaleEvents = Get-SuccessfulRescaleEvidenceSnapshot -ObservedAt $eventObservedAt
 
+    $recommendationEvidenceStartedAt = (Get-Date).ToUniversalTime()
     $hpa = Invoke-KubectlJsonChecked `
             -KubectlArgs @("get", "hpa", $Service, "--namespace", $Namespace, "-o", "json") `
             -ErrorContext "HorizontalPodAutoscaler '$Service' disappeared mid-run"
@@ -400,12 +401,14 @@ function Get-Sample {
         -SpecMetrics @($hpa.spec.metrics) `
         -CurrentMetrics @($hpa.status.currentMetrics)
 
-    # Timestamp the recommendation evidence when the complete asynchronous
-    # bundle has been collected, never at the optimistic start of the reads.
+    # Keep both edges of the asynchronous bundle. Its completion remains the
+    # sample timestamp and the conservative recommendation anchor; its start is
+    # the conservative endpoint when proving how long the recommendation held.
     $timestamp = (Get-Date).ToUniversalTime()
 
     return New-AutoscalingSample `
         -Timestamp $timestamp `
+        -RecommendationEvidenceStartedAt $recommendationEvidenceStartedAt `
         -Replicas $replicas `
         -ReadyReplicas $ready `
         -TargetPercent $TargetPercent `
@@ -781,15 +784,9 @@ Write-Host ""
 # Get-ScaleDownSamplingGrace, which owns this rule so that
 # test-autoscaling-behavior-analysis.ps1 can hold it to it offline.
 #
-# The widest gap is still computed, but only to be reported: it describes how
-# the run was sampled, not how much of the window the verdict may forgive.
-$observedGapSeconds = 0
-for ($i = 1; $i -lt $timeline.Samples.Count; $i++) {
-    $gap = ($timeline.Samples[$i].Timestamp - $timeline.Samples[$i - 1].Timestamp).TotalSeconds
-    if ($gap -gt $observedGapSeconds) {
-        $observedGapSeconds = $gap
-    }
-}
+# The widest conservative evidence gap and widest in-sample collection interval
+# are still reported, but never widen the verdict's grace.
+$observedGapSeconds = $timeline.WidestRecommendationEvidenceGapSeconds
 
 $graceDecision = Get-ScaleDownSamplingGrace `
     -Timeline $timeline `
@@ -838,10 +835,10 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
     # belongs next to it.
     $trimNote = ""
     if ($null -ne $timeline.ProvenStretchGapSeconds) {
-        $trimNote = " The stretch starts there rather than at the first recommending sample ($($timeline.DownscaleRecommendationObservedFrom.ToString('HH:mm:ssZ'))): the run left a ``$($timeline.ProvenStretchGapSeconds)s`` spacing between consecutive samples inside it, wider than the ``$($timeline.MaxObservationGapSeconds)s`` this harness treats as continuous observation."
+        $trimNote = " The stretch starts there rather than at the first recommending sample ($($timeline.DownscaleRecommendationObservedFrom.ToString('HH:mm:ssZ'))): the widest possible spacing between two consecutive recommendation-evidence intervals was ``$($timeline.ProvenStretchGapSeconds)s``, wider than the ``$($timeline.MaxObservationGapSeconds)s`` this harness treats as continuous observation."
     }
     if ($null -ne $timeline.ProvenScaleDownDelaySeconds) {
-        $scaleDownAnchorRow = "| Scale-down window | proven recommendation duration ``>= $($timeline.ProvenScaleDownDelaySeconds)s``: recommended continuously from $($timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($timeline.DownscaleRecommendationDetail)) through the last old-count sample at $($timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')); decision observed at $($timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) (anchor-to-observation spacing ``$($timeline.ObservedScaleDownDelaySeconds)s``, recommendation turnover uncertain by the ``$($graceDecision.AnchorGapSeconds)s`` gap ending at the anchor).$trimNote |"
+        $scaleDownAnchorRow = "| Scale-down window | proven recommendation duration ``>= $($timeline.ProvenScaleDownDelaySeconds)s``: from completion of the anchor evidence bundle at $($timeline.DownscaleRecommendedAt.ToString('HH:mm:ssZ')) ($($timeline.DownscaleRecommendationDetail)) through the start of the last recommending bundle at $($timeline.ProvenRecommendationThrough.ToString('HH:mm:ssZ')); its old desired count was observed at $($timeline.FirstScaleDownPreviousSampleAt.ToString('HH:mm:ssZ')), and the decision at $($timeline.FirstScaleDownAt.ToString('HH:mm:ssZ')) (anchor-to-observation spacing ``$($timeline.ObservedScaleDownDelaySeconds)s``, recommendation turnover uncertain by the ``$($graceDecision.AnchorGapSeconds)s`` conservative evidence gap ending at the anchor).$trimNote |"
     } else {
         $scaleDownAnchorRow = "| Scale-down window | not measured: this run recorded no scale-in preceded by a scale-in recommendation |"
     }
@@ -870,7 +867,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "| SuccessfulRescale baseline | Established at $($eventBaselineAt.ToString('yyyy-MM-ddTHH:mm:ssZ')); pre-existing event UIDs/counts were excluded, and collection succeeded in all $($timeline.SampleCount) samples |",
         "| HPA bounds | ``[$minReplicas, $maxReplicas]`` at a $targetPercent% CPU target |",
         "| Scale-down window | ``${scaleDownWindow}s`` (read from the applied HPA) |",
-        "| Sampling | requested every ``${SampleIntervalSeconds}s``, widest observed gap ``$([int] $observedGapSeconds)s``, gap before the scale-in recommendation ``$($graceDecision.AnchorGapSeconds)s``, window judged with ``${effectiveGraceSeconds}s`` of fixed grace (ceiling ``$($graceDecision.CeilingSeconds)s``; observed gaps shrink the proven bound instead of widening the grace; consecutive samples more than ``${maxObservationGapSeconds}s`` apart stop counting as continuous observation) |",
+        "| Sampling | requested every ``${SampleIntervalSeconds}s``; recommendation evidence collected over intervals shown below (widest ``$($timeline.WidestRecommendationEvidenceCollectionSeconds)s``); widest conservative evidence gap ``$([int] $observedGapSeconds)s``, gap before the scale-in recommendation ``$($graceDecision.AnchorGapSeconds)s``; window judged with ``${effectiveGraceSeconds}s`` of fixed grace (ceiling ``$($graceDecision.CeilingSeconds)s``; observed gaps shrink the proven bound instead of widening the grace; evidence intervals separated by more than ``${maxObservationGapSeconds}s`` stop counting as continuous observation) |",
         "| Load | $effectiveLoadPodCount pod(s), $(if ($Service -eq 'ingestion-service') { "$LoadConcurrency concurrent POST /api/v1/events loops each" } else { "one kafka-console-producer each into $RawTopic, $KafkaBurstEventsPerSecond events/s for ${KafkaBurstDurationSeconds}s then $KafkaEventsPerSecond events/s per pod" }) |",
         "| Load heartbeat | $heartbeatSummary |",
         "| HPA ScalingActive | ``True`` in all $($timeline.ScalingActiveTrueSamples) samples after the first (health signal only; attribution is per scale event below) |",
@@ -885,7 +882,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
         "## Timeline",
         "",
         '```text',
-        "timestamp | cpu: current/target  min  max  replicas | scale-subresource desired  HPA desired  HPA lastScaleTime  ready  hpa ScalingActive  newly observed SuccessfulRescale events",
+        "completed | evidence started | cpu: current/target  min  max  replicas | scale-subresource desired  HPA desired  HPA lastScaleTime  ready  hpa ScalingActive  newly observed SuccessfulRescale events",
         $rendered,
         '```',
         "",
