@@ -4,7 +4,7 @@
 
 PulseStream uses Redis as a lightweight in-memory data store for local development and future platform capabilities.
 
-At the current stage of the project, Redis is provisioned as part of the local platform environment but is not yet heavily used by application services.
+At the current stage of the project, Redis is provisioned as part of the local platform environment but is not used by any application service, and is not deployed to Kubernetes.
 
 ---
 

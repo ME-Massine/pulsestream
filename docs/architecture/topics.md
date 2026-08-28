@@ -25,7 +25,7 @@ Raw telemetry data ingested from devices.
 
 **Producers**
 - ingestion-service
-- device-simulator (planned)
+- telemetry-processor, when republishing operator-selected dead-letter records during replay
 
 **Consumers**
 - telemetry-processor
@@ -46,8 +46,7 @@ Processed telemetry data after enrichment and anomaly detection.
 - telemetry-processor
 
 **Consumers**
-- query-service (planned)
-- downstream consumers (planned)
+- none today. query-service is a scaffold ([#266](https://github.com/ME-Massine/pulsestream/issues/266)) and no other downstream consumer exists
 
 **Configuration**
 - partitions: 3
@@ -65,8 +64,7 @@ Detected anomalies from telemetry data.
 - telemetry-processor
 
 **Consumers**
-- query-service (planned)
-- future alerting consumers
+- none today. Anomaly persistence and querying are planned ([#267](https://github.com/ME-Massine/pulsestream/issues/267)); alerting consumers are planned ([#276](https://github.com/ME-Massine/pulsestream/issues/276))
 
 **Configuration**
 - partitions: 3
@@ -78,13 +76,15 @@ Detected anomalies from telemetry data.
 ## telemetry.events.dlq
 
 **Description**  
-Dead-letter queue for failed events.
+Dead-letter queue for failed events. Each record is a `DeadLetterEvent` wrapper: the nested original event plus failure metadata, including the `sourceService` that routed it.
 
 **Producers**
-- telemetry-processor
+- ingestion-service — when publishing an accepted event to `telemetry.events.raw` fails
+- telemetry-processor — on the first processing failure; no retry policy is configured on the listener container
 
 **Consumers**
-- monitoring / manual inspection
+- telemetry-processor's `dlq-replay-listener`, which is registered with `autoStartup=false` and runs only while an operator has started a replay. See [event-replay-strategy.md](./event-replay-strategy.md)
+- manual inspection
 
 **Configuration**
 - partitions: 1

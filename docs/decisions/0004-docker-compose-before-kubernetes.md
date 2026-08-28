@@ -1,7 +1,10 @@
 # ADR 0004: Use Docker Compose for local platform delivery before Kubernetes
 
 ## Status
-Accepted
+Accepted. Still in force for local development. The Kubernetes work this ADR deferred has since
+landed in Phase 6 — manifests live under `infrastructure/kubernetes/` and the operator choice is
+recorded in [ADR 0005](./0005-kafka-on-kubernetes-with-strimzi.md). Docker Compose remains the local
+development environment; Kubernetes is the deployment target.
 
 ## Context
 

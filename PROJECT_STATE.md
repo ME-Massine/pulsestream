@@ -1,135 +1,172 @@
 # PulseStream — Project State
 
-This document serves as the official record for tracking the current engineering state and development progress of the PulseStream platform. PulseStream is a cloud-native event processing platform engineered for the ingestion, streaming, processing, and analysis of IoT telemetry events.
+This document is the **authoritative record of the current engineering state** of the PulseStream platform. When `README.md`, `docs/roadmap.md`, or any architecture document disagrees with this file about what exists, this file wins and the other document is the defect.
 
-### Progress Tracker
+PulseStream is a cloud-native event processing platform engineered for the ingestion, streaming, processing, and analysis of IoT telemetry events.
+
+**Current phase:** Phase 7 — Production Readiness and Platform Hardening.
+
+---
+
+## Status Vocabulary
+
+Every capability statement in this repository uses one of three words. They are not interchangeable.
+
+| Term | Meaning |
+| :--- | :--- |
+| **Implemented** | Code, manifests, or configuration are committed to this repository and covered by unit or structural tests. Nothing is claimed about running it. |
+| **Validated** | Implemented, *and* exercised end to end against a running platform by a named script or recorded evidence document. The evidence is linked wherever the claim is made. |
+| **Planned** | Not implemented. A GitHub issue exists and is linked. |
+
+A capability that is implemented but never run against a live platform is **implemented, not validated**. Documents must not blur the two.
+
+---
+
+## Progress Tracker
 
 | Phase | Description | Status |
 | :--- | :--- | :--- |
-| **Phase 1** | Architecture and Design | ✅ Completed |
-| **Phase 2** | Local Development Platform | ✅ Completed |
-| **Phase 3** | Core Event Pipeline | 🚧 In Progress |
-| **Phase 4** | Observability and Monitoring | 🚧 Foundations Started |
-| **Phase 5** | Reliability and Resilience | ⏳ Planned |
-| **Phase 6** | Kubernetes Deployment | ⏳ Planned |
+| **Phase 1** | Architecture and Design | ✅ Complete |
+| **Phase 2** | Local Development Platform | ✅ Complete |
+| **Phase 3** | Core Event Pipeline | ✅ Complete (read side deferred to Phase 7) |
+| **Phase 4** | Observability and Monitoring | ✅ Complete for the local stack |
+| **Phase 5** | Reliability and Resilience | ✅ Complete |
+| **Phase 6** | Kubernetes Deployment | 🚧 Complete except the in-cluster observability stack ([#32](https://github.com/ME-Massine/pulsestream/issues/32)) |
+| **Phase 7** | Production Readiness and Platform Hardening | 🚧 In Progress ([#254](https://github.com/ME-Massine/pulsestream/issues/254)) |
 
 ---
 
-# Current Phase
+## Current Phase
 
-### Phase 3 — Core Event Pipeline (In Progress)
+### Phase 7 — Production Readiness and Platform Hardening ([#254](https://github.com/ME-Massine/pulsestream/issues/254))
 
-The project has implemented the first functional telemetry path from HTTP ingestion through Kafka processing to PostgreSQL persistence for normal processed telemetry events. The current focus is on closing remaining pipeline gaps, especially documented failure handling, DLQ workflows, anomaly persistence, and query APIs.
+The platform deploys to Kubernetes, ingests telemetry, processes and persists it, routes failures to a dead-letter queue, and replays them on demand. Phase 7 turns that into something operable and releasable: the read side (query APIs and anomaly projections), enforceable CI quality gates, schema migrations, versioned event contracts, correctness under horizontal scaling, transport and ingestion security, SLOs and runbooks, and a versioned release.
+
+Work is grouped under five sub-parents:
+
+| Parent | Scope |
+| :--- | :--- |
+| [#255](https://github.com/ME-Massine/pulsestream/issues/255) | Engineering quality and release foundations |
+| [#256](https://github.com/ME-Massine/pulsestream/issues/256) | Production data contracts and query capabilities |
+| [#257](https://github.com/ME-Massine/pulsestream/issues/257) | Distributed processing correctness and scalability |
+| [#258](https://github.com/ME-Massine/pulsestream/issues/258) | Runtime observability, security, and operations |
+| [#259](https://github.com/ME-Massine/pulsestream/issues/259) | Release validation and publication |
 
 ---
 
-# Completed Work
+## Implemented Platform Capabilities
 
 ### Repository Foundation
-The initial repository structure and engineering workflows have been established to support collaborative development. This includes the implementation of GitHub project boards, standardized issue and pull request templates, comprehensive contribution guidelines, and a baseline CI workflow under the MIT license.
 
-### Architecture Design
-The core architecture of PulseStream has been fully defined and documented. This foundational work includes the platform overview, service boundary definitions, event schema specifications, and a comprehensive C4 architecture model. Detailed documentation is available in the following locations:
-*   [Architecture Documentation](docs/architecture/)
-*   [System Diagrams](docs/diagrams/)
-*   [Platform Overview](docs/platform-overview.md)
-*   [Development Roadmap](docs/roadmap.md)
+GitHub project board, issue forms and pull request templates, contribution guidelines, and a CI workflow, under the MIT license.
 
-### Architecture Decision Records (ADRs)
-Key architectural choices have been formalized through ADRs to ensure transparency and long-term maintainability:
-*   **ADR 0001**: Selection of Apache Kafka as the primary event streaming backbone.
-*   **ADR 0002**: Adoption of Spring Boot for building platform microservices.
-*   **ADR 0003**: Utilization of PostgreSQL as the primary persistence layer for the MVP.
-*   **ADR 0004**: Implementation of Docker Compose for local development prior to Kubernetes orchestration.
-*   **ADR 0005**: Selection of the Strimzi operator for deploying Kafka on Kubernetes.
+### Architecture and Decisions (Phase 1)
 
-Detailed records are maintained in the [Decisions](docs/decisions/) directory.
+Platform overview, service boundaries, event schema, Kafka topic definitions, and a C4 model, in [docs/architecture/](docs/architecture/) and [docs/diagrams/](docs/diagrams/).
+
+Architecture Decision Records in [docs/decisions/](docs/decisions/):
+
+* **ADR 0001** — Apache Kafka as the event streaming backbone.
+* **ADR 0002** — Spring Boot for platform microservices.
+* **ADR 0003** — PostgreSQL as the MVP persistence layer.
+* **ADR 0004** — Docker Compose for local development before Kubernetes.
+* **ADR 0005** — Strimzi operator for Kafka on Kubernetes.
 
 ### Local Development Platform (Phase 2)
-The goal of creating a reproducible local platform environment has been achieved. Developers can now instantiate the entire infrastructure stack, including Kafka, Zookeeper, PostgreSQL, Redis, Prometheus, and Grafana, using a single command:
-```bash
-docker compose up -d
-```
-The configuration is managed via the [infrastructure/docker/docker-compose.yml](infrastructure/docker/docker-compose.yml) file.
 
-### Core Event Pipeline Implemented So Far
-The current checkout includes:
-*   `ingestion-service` with `POST /api/v1/events` and request validation.
-*   Kafka producer configuration for publishing raw telemetry to `telemetry.events.raw`.
-*   `telemetry-processor` Kafka consumer configuration for `telemetry.events.raw`.
-*   Telemetry normalization and basic anomaly detection.
-*   Processed event publishing to `telemetry.events.processed`.
-*   Anomaly event publishing to `telemetry.events.anomalies`.
-*   PostgreSQL persistence for normal processed telemetry in `platform.processed_telemetry`.
-*   Spring Boot actuator Prometheus endpoints in both services.
+`docker compose up -d` in [infrastructure/docker/](infrastructure/docker/) brings up Kafka, Zookeeper, PostgreSQL, Redis, Prometheus, Grafana, and Jaeger. Topics are provisioned by `infrastructure/docker/kafka/init-topics.sh`; the PostgreSQL schema is created by `infrastructure/docker/postgres/init.sql`. Spring Boot services run from their service directories against that infrastructure.
 
----
+### Core Event Pipeline (Phase 3)
 
-# Current Work
+* `ingestion-service` — `POST /api/v1/events` with request validation and a global exception handler.
+* Kafka producer publishing raw telemetry to `telemetry.events.raw`.
+* `telemetry-processor` — consumes `telemetry.events.raw`, normalizes, applies anomaly detection.
+* Processed events published to `telemetry.events.processed`; anomaly events to `telemetry.events.anomalies`.
+* PostgreSQL persistence of normal processed telemetry in `platform.processed_telemetry`, idempotent by unique `event_id` under at-least-once redelivery.
 
-### Phase 3 — Core Event Pipeline
-The objective of this phase is to complete the first functional end-to-end telemetry pipeline. Several critical components are already implemented:
-*   **Ingestion-service foundation**: Implemented.
-*   **Telemetry ingestion API**: Implemented as `POST /api/v1/events`.
-*   **Kafka producer integration**: Implemented for raw telemetry publishing.
-*   **Telemetry-processor service**: Implemented for Kafka consumption, normalization, anomaly detection, and downstream publishing.
-*   **PostgreSQL persistence**: Implemented for normal processed telemetry records.
+### Observability (Phase 4)
 
-Remaining Phase 3 gaps include:
-*   Persisting anomaly records from application code.
-*   Defining and implementing DLQ routing behavior.
-*   Adding query APIs or a query service for persisted telemetry.
-*   Confirming schema initialization behavior for local PostgreSQL environments.
+* Spring Boot actuator health and Prometheus endpoints in `ingestion-service` and `telemetry-processor`.
+* Prometheus scrape configuration in the local stack, and a Grafana instance provisioned with a Prometheus datasource plus version-controlled dashboards from `observability/grafana/dashboards/`.
+* Distributed tracing **implemented**: both services carry the OpenTelemetry Spring Boot starter and export OTLP over `http/protobuf`, to Jaeger locally and to the in-cluster collector on Kubernetes.
+* **Validated locally** by `scripts/validate-prometheus-metrics.ps1`, `scripts/validate-grafana-datasource.ps1`, and `scripts/validate-distributed-tracing.ps1` (the last asserting spans from both services land in Jaeger).
 
-**Target Outcome:**
-```text
-API → Kafka → Processor → PostgreSQL
-```
+### Reliability and Resilience (Phase 5)
+
+* Dead-letter routing from **both** services into `telemetry.events.dlq`, sharing the `DeadLetterEvent` wrapper and identifying themselves through `sourceService`. `ingestion-service` routes an accepted event whose raw-topic publish failed; `telemetry-processor` routes on first processing failure — no retry policy is configured on the listener container, so a processor-sourced record means "failed once", not "retries exhausted".
+* DLQ records carry error metadata (failure reason, source service, timestamps).
+* Selective DLQ replay: a `dlq-replay-listener` registered with `autoStartup=false`, started and stopped through an actuator endpoint on a management port bound to loopback by default (`9083`/`127.0.0.1`). Only operator-selected `eventId`s are republished to `telemetry.events.raw`; a `start` without a non-empty selection is rejected.
+* Replay safeguards: replay markers in Kafka headers, and upsert-by-`event_id` persistence so a replayed projection replaces rather than duplicates.
+* **Validated end to end** by `scripts/validate-dlq-pipeline.ps1` and `scripts/validate-event-replay.ps1`. Strategy: [docs/architecture/event-replay-strategy.md](docs/architecture/event-replay-strategy.md).
+
+### Kubernetes Deployment (Phase 6)
+
+* Production Dockerfiles for all three services under a shared build standard, published to a container registry by CI.
+* Deployment manifests for `ingestion-service`, `telemetry-processor`, and `query-service`, with liveness and readiness probes, and configuration externalized to ConfigMaps and Secrets.
+* Kafka deployed by the Strimzi operator in KRaft mode with persistent storage; platform topics provisioned as `KafkaTopic` resources.
+* Internal ClusterIP services plus a NodePort for external ingestion; DNS conventions documented in [infrastructure/kubernetes/service-discovery.md](infrastructure/kubernetes/service-discovery.md).
+* NetworkPolicies isolating each service to its required ingress and egress paths.
+* Horizontal Pod Autoscalers: CPU-based for `ingestion-service` and `telemetry-processor`, plus a custom-metrics HPA definition for `ingestion-service`.
+* An OpenTelemetry Collector in the `observability` namespace receiving OTLP from both instrumented services.
+* **Validated** by `scripts/validate-kafka-broker-health.ps1`, `scripts/validate-service-connectivity.ps1`, `scripts/validate-ingestion-external-access.ps1`, `scripts/validate-network-policies.ps1`, and `scripts/validate-autoscaling-behavior.ps1`, with recorded evidence in [docs/architecture/autoscaling-validation.md](docs/architecture/autoscaling-validation.md) and the `hpa-*-runtime-verification.md` notes under `infrastructure/kubernetes/`.
 
 ---
 
-# Upcoming Phases
+## Known Gaps
 
-### Phase 4 — Observability
-This phase will expand the current observability foundation. The services already expose Spring Boot actuator health and Prometheus endpoints, and the local Docker platform includes Prometheus and Grafana. Remaining deliverables include complete scrape coverage, dashboard configuration, distributed tracing via OpenTelemetry, and automated service health monitoring.
+These are the capabilities a reader might reasonably expect and will not find. Each is either tracked or explicitly untracked.
 
-### Phase 5 — Reliability and Resilience
-The focus will shift toward enhancing the platform's fault tolerance. This includes the implementation of dead-letter queues (DLQs), event replay capabilities, robust retry mechanisms, and failure isolation patterns to ensure system stability under stress.
-
-### Phase 6 — Kubernetes Deployment
-The final phase involves transitioning the platform to a production-grade Kubernetes environment. This includes the development of Kubernetes manifests, service deployment strategies, and the orchestration of the Kafka cluster and observability stack within the cluster.
-
----
-
-# Next Immediate Task
-
-The current priority is to close the remaining Phase 3 pipeline gaps and keep documentation synchronized with implementation.
-
-**Current Focus Areas:**
-*   Anomaly persistence and schema alignment.
-*   DLQ behavior and failure routing.
-*   Query API or query service design.
-*   Local PostgreSQL schema initialization flow.
-*   Observability scrape coverage and dashboard setup.
+| Gap | Status |
+| :--- | :--- |
+| Anomaly records are published to Kafka but never persisted. `platform.anomalies` exists in `init.sql` and is never written by application code | Planned — [#267](https://github.com/ME-Massine/pulsestream/issues/267) |
+| `query-service` is a scaffold: application class, configuration, and a context-load test. No endpoints, no data access, no datasource | Planned — [#266](https://github.com/ME-Massine/pulsestream/issues/266) |
+| PostgreSQL schema is applied by an init script, not by versioned migrations | Planned — [#265](https://github.com/ME-Massine/pulsestream/issues/265) |
+| No consumer-lag or custom processing metrics are exported, so the custom-metrics HPA has no series to scale on and `telemetry-processor` scales on CPU only | Planned — [#272](https://github.com/ME-Massine/pulsestream/issues/272) |
+| `ingestion-service` emits no Kafka producer span; its hand-built `ProducerFactory` beans are not auto-instrumented | Bug — [#294](https://github.com/ME-Massine/pulsestream/issues/294) |
+| In-cluster Prometheus, Grafana, and tracing backend are not deployed. Traces terminate in the collector's `debug` exporter | Planned — [#32](https://github.com/ME-Massine/pulsestream/issues/32) (Phase 6 carry-over: [#154](https://github.com/ME-Massine/pulsestream/issues/154), [#155](https://github.com/ME-Massine/pulsestream/issues/155), [#156](https://github.com/ME-Massine/pulsestream/issues/156), [#158](https://github.com/ME-Massine/pulsestream/issues/158), [#159](https://github.com/ME-Massine/pulsestream/issues/159)) |
+| PostgreSQL itself is not provisioned in Kubernetes. `telemetry-processor` is configured for `postgres:5432` and the NetworkPolicy allows that port, but no manifest creates the workload | Untracked gap |
+| External ingestion has no TLS or authentication; Kafka clients are unauthenticated and unencrypted | Planned — [#273](https://github.com/ME-Massine/pulsestream/issues/273), [#275](https://github.com/ME-Massine/pulsestream/issues/275) |
+| Anomaly detection is not deterministic under horizontal scaling | Planned — [#269](https://github.com/ME-Massine/pulsestream/issues/269) |
+| PostgreSQL and Kafka writes are not transactionally consistent | Planned — [#270](https://github.com/ME-Massine/pulsestream/issues/270) |
+| No device simulator exists in the repository | Not scheduled |
 
 ---
 
-# Repository Structure
+## Next Immediate Work
+
+Phase 7 opens on the read side and the quality gates, because everything else in the phase is validated through them:
+
+* Complete CI quality gates for every service and infrastructure component ([#262](https://github.com/ME-Massine/pulsestream/issues/262)).
+* Version-controlled PostgreSQL schema migrations ([#265](https://github.com/ME-Massine/pulsestream/issues/265)), which the query and anomaly work builds on.
+* Processed telemetry query API ([#266](https://github.com/ME-Massine/pulsestream/issues/266)) and anomaly persistence ([#267](https://github.com/ME-Massine/pulsestream/issues/267)).
+* Close out the in-cluster observability stack ([#32](https://github.com/ME-Massine/pulsestream/issues/32)) carried over from Phase 6.
+
+---
+
+## Repository Structure
 
 ```text
 docs/
 ├─ architecture/
-├─ diagrams/
 ├─ decisions/
+├─ diagrams/
 ├─ platform-overview.md
 └─ roadmap.md
 
 infrastructure/
-└─ docker/
+├─ docker/
+└─ kubernetes/
+
+observability/
+scripts/
+services/
+├─ ingestion-service/
+├─ query-service/
+└─ telemetry-processor/
 ```
 
 ---
 
-# Long-Term Vision
+## Long-Term Vision
 
-PulseStream is designed to serve as a reference implementation for modern distributed systems. The project aims to demonstrate best practices in event-driven microservices, scalable streaming pipelines, cloud-native deployment patterns, and production-grade observability. It provides a practical framework for building resilient and scalable event-processing systems.
+PulseStream is designed to serve as a reference implementation for modern distributed systems: event-driven microservices, scalable streaming pipelines, cloud-native deployment patterns, and production-grade observability.
