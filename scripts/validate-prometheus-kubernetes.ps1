@@ -189,7 +189,13 @@ foreach ($jobName in Get-PrometheusServiceJobNames) {
         -FailureMessage "job '$jobName' did not have a healthy target for every Ready pod within $TimeoutSeconds seconds." `
         -Operation {
             $targets = Invoke-PrometheusApi -Path "/api/v1/targets?state=active"
-            $jobTargets = @($targets.data.activeTargets | Where-Object { $_.labels.job -eq $jobName })
+            # Pod names are unique only inside a namespace. The same service
+            # can be deployed in another namespace with identical generated
+            # pod names, so job+pod alone can falsely satisfy this workload's
+            # coverage check with targets from that other deployment.
+            $jobTargets = @($targets.data.activeTargets | Where-Object {
+                $_.labels.job -eq $jobName -and $_.labels.namespace -eq $WorkloadNamespace
+            })
 
             foreach ($target in $jobTargets) {
                 Confirm-Condition `
@@ -199,7 +205,7 @@ foreach ($jobName in Get-PrometheusServiceJobNames) {
             }
 
             $targetPodNames = @($jobTargets | ForEach-Object { $_.labels.pod })
-            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $targetPodNames -MetricName "job '$jobName' active targets"
+            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $targetPodNames -MetricName "job '$jobName' active targets in namespace '$WorkloadNamespace'"
         } | Out-Null
 
     # up == 1 proves collection, not just target registration: a target is
@@ -207,10 +213,11 @@ foreach ($jobName in Get-PrometheusServiceJobNames) {
     # a reader would run to confirm the same thing by hand.
     Invoke-WithRetry `
         -TimeoutSeconds $TimeoutSeconds `
-        -FailureMessage "up{job=""$jobName""} = 1 did not cover every Ready pod within $TimeoutSeconds seconds." `
+        -FailureMessage "up{job=""$jobName"",namespace=""$WorkloadNamespace""} = 1 did not cover every Ready pod within $TimeoutSeconds seconds." `
         -Operation {
-            $upPodNames = @(Invoke-PrometheusQuery "up{job=""$jobName""}" | Where-Object { $_.value[1] -eq "1" } | ForEach-Object { $_.metric.pod })
-            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $upPodNames -MetricName "up{job=""$jobName""}=1"
+            $upQuery = "up{job=""$jobName"",namespace=""$WorkloadNamespace""}"
+            $upPodNames = @(Invoke-PrometheusQuery $upQuery | Where-Object { $_.value[1] -eq "1" } | ForEach-Object { $_.metric.pod })
+            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $upPodNames -MetricName "$upQuery=1"
         } | Out-Null
 
     # Application-level series, not just the scrape's own `up`: this is what
@@ -219,9 +226,10 @@ foreach ($jobName in Get-PrometheusServiceJobNames) {
     # validator (validate-prometheus-metrics.ps1) checks.
     Invoke-WithRetry `
         -TimeoutSeconds $TimeoutSeconds `
-        -FailureMessage "jvm_info{job=""$jobName""} did not cover every Ready pod within $TimeoutSeconds seconds." `
+        -FailureMessage "jvm_info{job=""$jobName"",namespace=""$WorkloadNamespace""} did not cover every Ready pod within $TimeoutSeconds seconds." `
         -Operation {
-            $series = Invoke-PrometheusQuery "jvm_info{job=""$jobName""}"
+            $jvmInfoQuery = "jvm_info{job=""$jobName"",namespace=""$WorkloadNamespace""}"
+            $series = Invoke-PrometheusQuery $jvmInfoQuery
 
             # The labels prometheus-adapter maps a metric onto a pod with. A
             # series without them is collected but invisible to the custom
@@ -235,7 +243,7 @@ foreach ($jobName in Get-PrometheusServiceJobNames) {
             }
 
             $jvmInfoPodNames = @($series | ForEach-Object { $_.metric.pod })
-            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $jvmInfoPodNames -MetricName "jvm_info{job=""$jobName""}"
+            Confirm-PodsMetricCoverage -ReadyPodNames $readyPodNames -MetricPodNames $jvmInfoPodNames -MetricName $jvmInfoQuery
         } | Out-Null
 }
 

@@ -77,3 +77,21 @@ spec:
       ports:
         - port: 5432
           protocol: TCP
+    # OTLP trace export (#157). Cross-namespace to the collector in
+    # `observability`, matched by the automatic `kubernetes.io/metadata.name`
+    # label plus the collector's own name label, so this opens a path to that
+    # workload and not to the whole namespace. Without this rule the egress
+    # default-deny above drops every span on an enforcing CNI, and the failure
+    # is quiet: the service keeps serving traffic and only its own log shows the
+    # export timing out. Port 4318 is OTLP over HTTP, which is the protocol the
+    # services are configured for (see ../telemetry-processor/configmap.yaml).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - port: 4318
+          protocol: TCP

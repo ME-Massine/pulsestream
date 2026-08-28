@@ -1,0 +1,42 @@
+# ClusterIP Service in front of the OpenTelemetry Collector (#157).
+#
+# THE NAME AND NAMESPACE ARE A CONTRACT. The exporting services are configured
+# against `http://otel-collector.observability.svc.cluster.local:4318`
+# (../ingestion-service/configmap.yaml, ../telemetry-processor/configmap.yaml),
+# and the NetworkPolicy egress holes in ../network-policies/ name the same
+# namespace. Renaming this Service or moving it breaks trace export silently:
+# the SDK logs an export failure inside the service's own logs and everything
+# else keeps working.
+#
+# ClusterIP, not NodePort. An OTLP receiver is unauthenticated and accepts
+# arbitrary spans, so anything that could reach it from outside the cluster could
+# inject telemetry. Producers are in-cluster; a developer inspecting the
+# collector goes through `kubectl logs` or `kubectl port-forward`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: otel-collector
+  ports:
+    # The port numbers match the container ports deliberately. OTLP clients
+    # assume 4317/4318, so remapping them here would mean every exporter needs
+    # an explicit port that differs from every OTLP example.
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+      protocol: TCP
+    # 13133 is deliberately absent: the health endpoint exists for kubelet,
+    # which reaches the pod directly. Publishing it through the Service would
+    # add a routable surface with no consumer.

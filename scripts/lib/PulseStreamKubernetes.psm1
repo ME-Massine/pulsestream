@@ -48,6 +48,50 @@ function Invoke-KubectlChecked {
     return $result.Output
 }
 
+function Invoke-KubectlJsonChecked {
+    param(
+        [Parameter(Mandatory)] [string[]] $KubectlArgs,
+        [Parameter(Mandatory)] [string] $ErrorContext,
+        [ValidateRange(1, 10)] [int] $MaxAttempts = 3,
+        [ValidateRange(0, 30)] [int] $RetryDelaySeconds = 2
+    )
+
+    $lastFailure = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $result = Invoke-Kubectl -KubectlArgs $KubectlArgs
+        if ($result.ExitCode -eq 0) {
+            $raw = $result.Output.Trim()
+            try {
+                return $raw | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+                # kubectl can emit a client warning on stderr while returning
+                # valid JSON on stdout. Invoke-Kubectl merges those streams for
+                # Windows PowerShell 5.1, so recover the JSON object if present.
+                $firstBrace = $raw.IndexOf("{")
+                $lastBrace = $raw.LastIndexOf("}")
+                if ($firstBrace -ge 0 -and $lastBrace -gt $firstBrace) {
+                    try {
+                        return $raw.Substring($firstBrace, $lastBrace - $firstBrace + 1) |
+                            ConvertFrom-Json -ErrorAction Stop
+                    } catch {
+                        # Retry below, preserving the full output for diagnosis.
+                    }
+                }
+
+                $lastFailure = "kubectl returned invalid JSON: $raw"
+            }
+        } else {
+            $lastFailure = "kubectl exited $($result.ExitCode): $($result.Output.Trim())"
+        }
+
+        if ($attempt -lt $MaxAttempts -and $RetryDelaySeconds -gt 0) {
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
+    }
+
+    throw "$ErrorContext after $MaxAttempts attempt(s). $lastFailure"
+}
+
 # Pods matching `app.kubernetes.io/name=$AppName` whose Ready condition is
 # True. Used everywhere a check needs to compare "what should be scraped/
 # metriced" against the workload's actual Ready replicas, rather than trusting
@@ -60,13 +104,13 @@ function Get-ReadyPodNames {
         [Parameter(Mandatory)] [string] $AppName
     )
 
-    $podsJson = Invoke-KubectlChecked `
+    $pods = Invoke-KubectlJsonChecked `
         -KubectlArgs @("get", "pods", "--namespace", $Namespace, "-l", "app.kubernetes.io/name=$AppName", "-o", "json") `
         -ErrorContext "Could not list '$AppName' pods in namespace '$Namespace'"
 
-    return @(($podsJson | ConvertFrom-Json).items | Where-Object {
-        $readyCondition = @($_.status.conditions | Where-Object { $_.type -eq 'Ready' }) | Select-Object -First 1
-        $null -ne $readyCondition -and $readyCondition.status -eq 'True'
+    return @($pods.items | Where-Object {
+        $readyCondition = @($_.status.conditions | Where-Object { $_.type -eq "Ready" }) | Select-Object -First 1
+        $null -ne $readyCondition -and $readyCondition.status -eq "True"
     } | ForEach-Object { $_.metadata.name })
 }
 
@@ -182,4 +226,4 @@ function Invoke-KafkaClientCommand {
     }
 }
 
-Export-ModuleMember -Function Invoke-Kubectl, Invoke-KubectlChecked, Get-KubectlJsonPath, Get-ReadyPodNames, Get-ServiceConnectivityProbeLabels, Invoke-KafkaClientCommand
+Export-ModuleMember -Function Invoke-Kubectl, Invoke-KubectlChecked, Invoke-KubectlJsonChecked, Get-KubectlJsonPath, Get-ReadyPodNames, Get-ServiceConnectivityProbeLabels, Invoke-KafkaClientCommand

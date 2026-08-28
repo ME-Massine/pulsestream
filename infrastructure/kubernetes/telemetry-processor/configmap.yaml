@@ -32,6 +32,15 @@ data:
   # In-cluster Postgres endpoint (no credentials in the URL). Adjust to match
   # the Postgres Service. The username/password are in secret.yaml.
   PULSESTREAM_POSTGRES_URL: "jdbc:postgresql://postgres:5432/pulsestream"
+  # OTLP endpoint for trace export (#157). Overrides the localhost default in
+  # application.yml, which is correct for Compose (the service and Jaeger share
+  # a host) and reaches nothing in a pod.
+  #
+  # Cross-namespace, so the name is fully qualified per ../service-discovery.md.
+  # The port is the OTLP HTTP receiver: application.yml sets
+  # `otel.exporter.otlp.protocol: http/protobuf`, so pointing this at 4317
+  # (gRPC) would fail every export with a protocol mismatch.
+  PULSESTREAM_OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc.cluster.local:4318"
   # Root and application log levels. Tunable per environment without an image
   # rebuild. LOGGING_LEVEL_COM_PULSESTREAM_PROCESSOR maps to
   # logging.level.com.pulsestream.processor via Spring relaxed binding.

@@ -1,0 +1,133 @@
+# OpenTelemetry Collector for in-cluster trace collection (#157).
+#
+# Deployment, not DaemonSet. A DaemonSet (agent per node) is the shape for
+# collecting node-local signals - host metrics, container logs off the node's
+# filesystem - none of which this pipeline does. The services push OTLP over the
+# pod network, so a Service-fronted deployment is the smaller thing that does
+# the job, and it scales with trace volume rather than with node count.
+#
+# TWO REPLICAS. The collector is stateless here: every batch is received,
+# processed and exported independently, so two pods behind one ClusterIP need no
+# coordination and a rolling update always leaves an endpoint accepting spans.
+# This stops being true if tail-based sampling is introduced, because that needs
+# every span of a trace to reach the same instance - which is why sampling is
+# out of scope for this issue and would come with a load-balancing exporter.
+#
+# WHAT IS LOST IF BOTH PODS ARE DOWN: spans, for the duration. Nothing buffers
+# them - the SDKs drop after their own retry, and the collector holds only the
+# in-flight batch. Traces are diagnostic data, so this is accepted; the telemetry
+# pipeline itself (Kafka) is unaffected because the exporters are non-blocking.
+#
+# Third-party image, so it is pinned to an upstream version tag rather than the
+# sha-<short> convention in docs/architecture/container-image-registry.md, which
+# covers images this repository builds.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+        app.kubernetes.io/component: tracing
+        app.kubernetes.io/part-of: pulsestream
+      annotations:
+        # A config change must actually restart the pods: the collector reads
+        # collector.yaml once at start and does not watch the mounted file, so
+        # without this the ConfigMap would change and the running pipeline would
+        # not. Update this value when configmap.yaml changes (or run
+        # `kubectl rollout restart`), which is the same manual step the
+        # Prometheus manifests document.
+        pulsestream.io/config-revision: "1"
+    spec:
+      serviceAccountName: otel-collector
+      securityContext:
+        # The upstream image runs as uid/gid 10001. Kubelet can only verify
+        # runAsNonRoot against a numeric user, so the UID is pinned explicitly.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          # Pinned by digest, with the tag kept alongside it so the version is
+          # readable at a glance. When both are present the digest is what is
+          # resolved, so the tag cannot drift the deployed bytes: a retagged or
+          # republished 0.159.0 upstream would be rejected rather than rolled
+          # out silently. The digest is the multi-arch manifest LIST, so each
+          # node still resolves its own architecture.
+          #
+          # To update, take the new list digest and change both halves together:
+          #   docker buildx imagetools inspect \
+          #     otel/opentelemetry-collector-contrib:<tag>
+          image: otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
+          imagePullPolicy: IfNotPresent
+          # The image's default command points at its own bundled config path.
+          # This overrides it with the mounted pipeline; leaving the default in
+          # place would start a collector with an empty pipeline that accepts
+          # nothing.
+          args:
+            - --config=/conf/collector.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: health
+              containerPort: 13133
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              # memory_limiter's percentages in configmap.yaml are read against
+              # this limit. Change the two together.
+              memory: 512Mi
+          # Both probes hit the health_check extension. The collector builds its
+          # pipeline before this endpoint reports healthy, so readiness is what
+          # keeps the Service from sending spans to a pod whose receivers are not
+          # listening yet.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Nothing in this pipeline writes to disk: the debug exporter writes
+            # to stdout and no queueing or file-storage component is configured.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config

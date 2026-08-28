@@ -19,6 +19,7 @@ $ErrorActionPreference = "Stop"
 $validator = Join-Path $PSScriptRoot "..\validate-prometheus-kubernetes.ps1"
 
 $Namespace = "monitoring"
+$WorkloadNamespace = "workloads"
 $ReleaseName = "prometheus"
 $serverName = "$ReleaseName-server"
 $proxyBase = "/api/v1/namespaces/$Namespace/services/$($serverName):80/proxy"
@@ -98,10 +99,15 @@ function New-TargetsJson {
     $activeTargets = @()
     foreach ($jobName in $PodsByJob.Keys) {
         foreach ($podName in $PodsByJob[$jobName]) {
+            $targetNamespace = if ($global:PulseStreamTargetNamespaceOverrides.ContainsKey("$jobName/$podName")) {
+                $global:PulseStreamTargetNamespaceOverrides["$jobName/$podName"]
+            } else {
+                $global:PulseStreamWorkloadNamespace
+            }
             $activeTargets += [pscustomobject]@{
                 scrapeUrl = "http://$podName/actuator/prometheus"
                 health    = "up"
-                labels    = [pscustomobject]@{ job = $jobName; pod = $podName }
+                labels    = [pscustomobject]@{ job = $jobName; namespace = $targetNamespace; pod = $podName }
             }
         }
     }
@@ -113,14 +119,15 @@ function New-VectorJson {
     param([object[]] $Samples)
     $result = @($Samples | ForEach-Object {
         [pscustomobject]@{
-            metric = [pscustomobject]@{ namespace = $global:PulseStreamNamespace; pod = $_.pod }
+            metric = [pscustomobject]@{ namespace = $global:PulseStreamWorkloadNamespace; pod = $_.pod }
             value  = @(0, $_.value)
         }
     })
     return [pscustomobject]@{ status = "success"; data = [pscustomobject]@{ resultType = "vector"; result = $result } } | ConvertTo-Json -Depth 10
 }
 
-$global:PulseStreamNamespace = $Namespace
+$global:PulseStreamWorkloadNamespace = $WorkloadNamespace
+$global:PulseStreamTargetNamespaceOverrides = @{}
 $global:PulseStreamReadyPods = @{
     "ingestion-service" = @("ingestion-service-a", "ingestion-service-b")
     "query-service"     = @("query-service-a", "query-service-b")
@@ -130,6 +137,7 @@ $global:PulseStreamReadyPods = @{
 $global:PulseStreamCoverage = $null
 
 function Reset-PulseStreamCoverage {
+    $global:PulseStreamTargetNamespaceOverrides = @{}
     $global:PulseStreamCoverage = @{
         "ingestion-service" = @{
             Targets = @("ingestion-service-a", "ingestion-service-b")
@@ -208,7 +216,7 @@ function global:kubectl {
 }
 
 function Invoke-Validator {
-    & $validator -Namespace $Namespace -ReleaseName $ReleaseName -TimeoutSeconds 3
+    & $validator -Namespace $Namespace -WorkloadNamespace $WorkloadNamespace -ReleaseName $ReleaseName -TimeoutSeconds 3
 }
 
 try {
@@ -234,6 +242,27 @@ try {
     }
     if (-not $rejectedMissingTarget) {
         throw "validate-prometheus-kubernetes.ps1 accepted a job missing a target for a Ready pod."
+    }
+
+    # --- Namespace collision: same pod name, wrong workload namespace -------
+    # Kubernetes permits identical pod names in different namespaces. Without
+    # a namespace constraint, the target below would appear to cover pod B.
+    Reset-PulseStreamCoverage
+    $global:PulseStreamTargetNamespaceOverrides["ingestion-service/ingestion-service-b"] = "other-workloads"
+
+    $rejectedWrongNamespaceTarget = $false
+    try {
+        Invoke-Validator | Out-Null
+    } catch {
+        if ($_.Exception.Message -match "missing for 1 of 2 Ready pod\(s\): ingestion-service-b") {
+            $rejectedWrongNamespaceTarget = $true
+            Write-Host "[ok] a same-named target from another namespace was rejected"
+        } else {
+            throw
+        }
+    }
+    if (-not $rejectedWrongNamespaceTarget) {
+        throw "validate-prometheus-kubernetes.ps1 accepted a same-named target from another namespace as coverage for a Ready pod."
     }
 
     # --- Duplicate pod: jvm_info reports one Ready query-service pod twice --
@@ -275,7 +304,7 @@ try {
     }
 } finally {
     Remove-Item -LiteralPath Function:\kubectl -ErrorAction SilentlyContinue
-    Remove-Variable -Name PulseStreamReadyPods, PulseStreamCoverage, PulseStreamNamespace -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name PulseStreamReadyPods, PulseStreamCoverage, PulseStreamWorkloadNamespace, PulseStreamTargetNamespaceOverrides -Scope Global -ErrorAction SilentlyContinue
 }
 
 Write-Host "[ok] Prometheus target/pod coverage checks behave consistently on $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."

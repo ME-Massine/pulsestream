@@ -1,0 +1,18 @@
+# Namespace for the platform's trace collection (#157).
+#
+# The collector is infrastructure, not a platform service, so it does not live
+# in `default` alongside the workloads that export to it. A separate namespace
+# is also what lets the service NetworkPolicies in ../network-policies/ name it
+# as an egress peer: Kubernetes sets `kubernetes.io/metadata.name` on every
+# namespace automatically, and that is the label those rules match on. Renaming
+# this namespace therefore breaks two things at once - the egress holes in
+# ../network-policies/{ingestion-service,telemetry-processor}.yaml and the OTLP
+# endpoint in ../{ingestion-service,telemetry-processor}/configmap.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/name: observability
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/part-of: pulsestream
