@@ -8,7 +8,8 @@ param(
     [string] $DeploymentName = "grafana",
     [string] $ServiceName = "grafana",
     [string] $PvcName = "grafana-data",
-    [int] $RolloutTimeoutSeconds = 1500,
+    [int] $RolloutTimeoutSeconds = 2400,
+    [ValidateRange(5, 300)] [int] $EndpointTimeoutSeconds = 60,
     [ValidateRange(5, 300)] [int] $StabilityWindowSeconds = 20
 )
 
@@ -16,6 +17,7 @@ $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamGrafana.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
 
 function Assert-LiveCondition {
     param(
@@ -152,21 +154,30 @@ Assert-LiveCondition `
 
 $firstSnapshot = Get-GrafanaPodSnapshot
 
-$endpointSliceJson = Invoke-KubectlChecked `
-    -KubectlArgs @(
-        "get", "endpointslices", "--namespace", $Namespace,
-        "--selector", "kubernetes.io/service-name=$ServiceName", "-o", "json"
-    ) `
-    -ErrorContext "Could not read EndpointSlices for Service/$ServiceName"
-$endpointSlices = @(($endpointSliceJson | ConvertFrom-Json).items)
-$readyEndpoints = @(
-    $endpointSlices.endpoints |
-        Where-Object { $_.conditions.ready -eq $true }
-)
-Assert-LiveCondition `
-    -Condition ($readyEndpoints.Count -eq 1 -and $readyEndpoints[0].targetRef.name -eq $firstSnapshot.Name) `
-    -SuccessMessage "Service/$ServiceName has exactly one Ready endpoint for pod '$($firstSnapshot.Name)'" `
-    -FailureMessage "Service/$ServiceName must have exactly one Ready endpoint targeting '$($firstSnapshot.Name)'; found $($readyEndpoints.Count)."
+# Deployment readiness and EndpointSlice publication are reconciled by
+# different controllers. Poll the exact routing contract so a healthy rollout
+# does not fail only because the EndpointSlice controller is briefly behind.
+Invoke-WithRetry `
+    -TimeoutSeconds $EndpointTimeoutSeconds `
+    -FailureMessage "Service/$ServiceName did not publish exactly one Ready endpoint for pod '$($firstSnapshot.Name)' within $EndpointTimeoutSeconds seconds." `
+    -Operation {
+        $endpointSliceJson = Invoke-KubectlChecked `
+            -KubectlArgs @(
+                "get", "endpointslices", "--namespace", $Namespace,
+                "--selector", "kubernetes.io/service-name=$ServiceName", "-o", "json"
+            ) `
+            -ErrorContext "Could not read EndpointSlices for Service/$ServiceName"
+        $endpointSlices = @(($endpointSliceJson | ConvertFrom-Json).items)
+        $readyEndpoints = @(
+            $endpointSlices |
+                ForEach-Object { $_.endpoints } |
+                Where-Object { $_.conditions.ready -eq $true }
+        )
+        Confirm-Condition `
+            -Condition ($readyEndpoints.Count -eq 1 -and $readyEndpoints[0].targetRef.name -eq $firstSnapshot.Name) `
+            -SuccessMessage "Service/$ServiceName has exactly one Ready endpoint for pod '$($firstSnapshot.Name)'" `
+            -FailureMessage "Service/$ServiceName must have exactly one Ready endpoint targeting '$($firstSnapshot.Name)'; found $($readyEndpoints.Count)."
+    }
 
 $health = Get-GrafanaHealth
 Assert-LiveCondition `

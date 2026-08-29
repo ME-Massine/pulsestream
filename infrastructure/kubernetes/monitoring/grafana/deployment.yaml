@@ -18,9 +18,9 @@ spec:
   strategy:
     type: Recreate
   revisionHistoryLimit: 3
-  # Cold image pulls plus first-start SQLite migrations can take several
-  # minutes on development clusters backed by slow host-path storage.
-  progressDeadlineSeconds: 1500
+  # Keep the rollout deadline twenty minutes beyond the startup-probe budget
+  # for scheduling, PVC attachment, and cold image pulls on slow clusters.
+  progressDeadlineSeconds: 2400
   selector:
     matchLabels:
       app.kubernetes.io/name: grafana

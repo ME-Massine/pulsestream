@@ -11,6 +11,8 @@ Import-Module (Join-Path $PSScriptRoot "..\lib\PulseStreamGrafana.psm1") -Force
 $script:DeploymentManifest = Join-Path $PSScriptRoot "..\..\infrastructure\kubernetes\monitoring\grafana\deployment.yaml"
 $script:ServiceManifest = Join-Path $PSScriptRoot "..\..\infrastructure\kubernetes\monitoring\grafana\service.yaml"
 $script:PvcManifest = Join-Path $PSScriptRoot "..\..\infrastructure\kubernetes\monitoring\grafana\pvc.yaml"
+$script:DeploymentGuide = Join-Path $PSScriptRoot "..\..\infrastructure\kubernetes\monitoring\grafana\DEPLOYMENT.md"
+$script:LiveValidator = Join-Path $PSScriptRoot "..\validate-grafana-deployment.ps1"
 
 function Assert-ValidatorRejects {
     param(
@@ -68,6 +70,11 @@ Assert-ValidatorRejects -Manifest Deployment `
     -Description "a rolling update against the single-writer volume was rejected"
 
 Assert-ValidatorRejects -Manifest Deployment `
+    -Mutation { param($deployment) $deployment.spec.progressDeadlineSeconds = 2399 } `
+    -ExpectedMessage "another 1200 seconds in progressDeadlineSeconds" `
+    -Description "a rollout deadline without the required startup overhead was rejected"
+
+Assert-ValidatorRejects -Manifest Deployment `
     -Mutation { param($deployment) $deployment.spec.template.spec.containers[0].image = "grafana/grafana:latest" } `
     -ExpectedMessage "must use grafana/grafana:<version>@sha256:<digest>" `
     -Description "a mutable Grafana image was rejected"
@@ -110,5 +117,39 @@ Assert-ValidatorRejects -Manifest Pvc `
     -Mutation { param($pvc) $pvc.spec.accessModes = @("ReadWriteMany") } `
     -ExpectedMessage "must use only ReadWriteOnce" `
     -Description "a PVC contract inconsistent with the SQLite deployment was rejected"
+
+$deploymentGuide = Get-Content -Raw $script:DeploymentGuide
+if ($deploymentGuide -match '--from-literal') {
+    throw "Grafana bootstrap documentation must not place credentials in kubectl process arguments."
+}
+if ($deploymentGuide -notmatch 'ConvertTo-Json[\s\S]*kubectl apply -f -') {
+    throw "Grafana bootstrap documentation must send an in-memory Secret manifest to kubectl over stdin."
+}
+if ($deploymentGuide -notmatch '\$OutputEncoding = \[Text\.UTF8Encoding\]::new\(\$false\)') {
+    throw "Grafana bootstrap documentation must preserve non-ASCII credentials when writing to native stdin."
+}
+Write-Host "[ok] Grafana bootstrap credentials are documented without password-bearing process arguments"
+
+$tokens = $null
+$parseErrors = $null
+$validatorAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $script:LiveValidator,
+    [ref] $tokens,
+    [ref] $parseErrors
+)
+if ($parseErrors.Count -gt 0) {
+    throw "Grafana live validator has parser errors: $($parseErrors.Message -join '; ')"
+}
+$endpointRetries = @($validatorAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+        $node.GetCommandName() -eq "Invoke-WithRetry" -and
+        $node.Extent.Text -match 'EndpointTimeoutSeconds' -and
+        $node.Extent.Text -match 'endpointslices'
+}, $true))
+if ($endpointRetries.Count -ne 1) {
+    throw "Grafana live validator must poll EndpointSlices once with the bounded endpoint timeout."
+}
+Write-Host "[ok] Grafana live validation polls EndpointSlices with a bounded timeout"
 
 Write-Host "[ok] Grafana deployment structure checks behave consistently on $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."

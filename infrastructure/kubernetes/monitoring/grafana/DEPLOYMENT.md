@@ -33,20 +33,37 @@ Create the namespace first:
 kubectl apply -f infrastructure/kubernetes/monitoring/namespace.yaml
 ```
 
-Create the bootstrap credentials without committing a Secret manifest or
-putting the password in shell history:
+Create the bootstrap credentials without committing a Secret manifest, putting
+the password in shell history or process arguments, or writing it to disk. The
+Secret manifest exists only in memory and is sent to `kubectl apply` over stdin:
 
 ```powershell
 $grafanaSecurePassword = Read-Host "Grafana admin password" -AsSecureString
-$grafanaAdminPassword = [System.Net.NetworkCredential]::new("", $grafanaSecurePassword).Password
+$grafanaCredential = [PSCredential]::new("admin", $grafanaSecurePassword)
+$previousOutputEncoding = $OutputEncoding
+$OutputEncoding = [Text.UTF8Encoding]::new($false)
+$grafanaSecret = [ordered]@{
+  apiVersion = "v1"
+  kind = "Secret"
+  metadata = [ordered]@{ name = "grafana"; namespace = "monitoring" }
+  type = "Opaque"
+  stringData = [ordered]@{
+    "admin-user" = $grafanaCredential.UserName
+    "admin-password" = $grafanaCredential.GetNetworkCredential().Password
+  }
+}
 
-kubectl create secret generic grafana `
-  --namespace monitoring `
-  --from-literal=admin-user=admin `
-  --from-literal="admin-password=$grafanaAdminPassword" `
-  --dry-run=client -o yaml | kubectl apply -f -
-
-Remove-Variable grafanaAdminPassword, grafanaSecurePassword
+try {
+  $grafanaSecret | ConvertTo-Json -Depth 4 -Compress | kubectl apply -f -
+  if ($LASTEXITCODE -ne 0) {
+    throw "kubectl failed to apply Secret/grafana."
+  }
+} finally {
+  $grafanaSecret.stringData["admin-password"] = $null
+  $OutputEncoding = $previousOutputEncoding
+  Remove-Variable grafanaSecret, grafanaCredential, grafanaSecurePassword
+  Remove-Variable previousOutputEncoding
+}
 ```
 
 Then apply every deployable manifest in this directory:

@@ -105,13 +105,13 @@ function Confirm-GrafanaDeployment {
         -FailureMessage "Grafana container must publish TCP 3000 as the named port 'http'."
 
     $adminUser = Get-GrafanaNamedItem -Items @($container.env) -Name "GF_SECURITY_ADMIN_USER"
-    $adminPassword = Get-GrafanaNamedItem -Items @($container.env) -Name "GF_SECURITY_ADMIN_PASSWORD"
+    $environmentSetting = Get-GrafanaNamedItem -Items @($container.env) -Name "GF_SECURITY_ADMIN_PASSWORD"
     Assert-GrafanaCondition `
         -Condition ($adminUser.valueFrom.secretKeyRef.name -eq "grafana" -and $adminUser.valueFrom.secretKeyRef.key -eq "admin-user" -and -not $adminUser.PSObject.Properties['value']) `
         -SuccessMessage "Admin username comes from Secret/grafana key admin-user" `
         -FailureMessage "GF_SECURITY_ADMIN_USER must come only from Secret/grafana key 'admin-user'."
     Assert-GrafanaCondition `
-        -Condition ($adminPassword.valueFrom.secretKeyRef.name -eq "grafana" -and $adminPassword.valueFrom.secretKeyRef.key -eq "admin-password" -and -not $adminPassword.PSObject.Properties['value']) `
+        -Condition ($environmentSetting.valueFrom.secretKeyRef.name -eq "grafana" -and $environmentSetting.valueFrom.secretKeyRef.key -eq "admin-password" -and -not $environmentSetting.PSObject.Properties['value']) `
         -SuccessMessage "Admin password comes from Secret/grafana key admin-password" `
         -FailureMessage "GF_SECURITY_ADMIN_PASSWORD must come only from Secret/grafana key 'admin-password'."
 
@@ -144,10 +144,11 @@ function Confirm-GrafanaDeployment {
         Confirm-GrafanaProbe -Container $container -PropertyName $probeName
     }
     $startupBudgetSeconds = [int] $container.startupProbe.periodSeconds * [int] $container.startupProbe.failureThreshold
+    $rolloutOverheadSeconds = 1200
     Assert-GrafanaCondition `
-        -Condition ($startupBudgetSeconds -ge 1200 -and $Deployment.spec.progressDeadlineSeconds -ge $startupBudgetSeconds) `
-        -SuccessMessage "Startup and rollout deadlines cover slow first-start migrations" `
-        -FailureMessage "Grafana needs at least a 1200-second startup budget and a progressDeadlineSeconds no shorter than that budget."
+        -Condition ($startupBudgetSeconds -ge 1200 -and $Deployment.spec.progressDeadlineSeconds -ge ($startupBudgetSeconds + $rolloutOverheadSeconds)) `
+        -SuccessMessage "Startup and rollout deadlines cover migrations plus scheduling, storage, and image-pull overhead" `
+        -FailureMessage "Grafana needs at least a 1200-second startup budget and another $rolloutOverheadSeconds seconds in progressDeadlineSeconds for rollout overhead."
 
     Assert-GrafanaCondition `
         -Condition ($container.resources.requests.cpu -and $container.resources.requests.memory -and $container.resources.limits.cpu -and $container.resources.limits.memory) `
