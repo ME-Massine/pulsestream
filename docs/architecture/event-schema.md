@@ -181,6 +181,8 @@ Events are routed through Kafka topics.
 
 Event schemas may evolve over time. To support backward compatibility, each event includes a version field.
 
+The guidelines below are **conventions, not enforced contracts**. Nothing in the platform validates a schema change against previous versions today; versioned event contracts and compatibility validation are planned (#268).
+
 Guidelines:
 
 *   Schema changes must be backward compatible whenever possible
@@ -208,7 +210,9 @@ Events received by the ingestion service must pass basic validation checks:
 
 Metric-specific bounds are handled by the telemetry processor anomaly detection rules rather than by the ingestion API.
 
-Invalid HTTP ingestion requests are rejected by the ingestion service validation layer. The dead-letter topic is provisioned for failed asynchronous processing, but explicit DLQ routing is not implemented yet.
+Invalid HTTP ingestion requests are rejected by the ingestion service validation layer and never reach Kafka.
+
+Dead-letter routing is implemented in both services. A record on `telemetry.events.dlq` is a `DeadLetterEvent` **wrapper**: the original event nested inside failure metadata, including the `sourceService` that produced it (`ingestion-service` when an accepted event could not be published, `telemetry-processor` when processing threw). A consumer of the dead-letter topic must unwrap the nested event before republishing it; that is what DLQ replay does. See [event-replay-strategy.md](./event-replay-strategy.md).
 
 ## Summary
 

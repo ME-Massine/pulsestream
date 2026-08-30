@@ -4,14 +4,16 @@
 
 This document defines the strategy for replaying events in PulseStream. Replay is used to recover from failed event processing or to reprocess historical telemetry after a downstream fix, reusing the existing `telemetry.events.raw` topic and consumer rather than introducing new infrastructure (see [Alignment with Architecture](#alignment-with-architecture)).
 
-This document covers **strategy and scope only**. Implementation is tracked separately:
+This document defines the **strategy and scope**. The DLQ half of it is now implemented and validated end-to-end by `scripts/validate-event-replay.ps1`:
 
-- **#123** — Implement DLQ consumer for event replay
-- **#124** — Republish replayed events to `telemetry.events.raw`
-- **#126** — Add safeguards for replayed events (the replay marker, the upsert-by-`event_id`
-  persistence change, replay-metadata transport, and consumer-side dedup contract described below are
-  the *design* those safeguards will implement; this doc intentionally defines their strategy, and #126
-  owns the implementation)
+- **#123** — DLQ consumer for event replay — implemented
+- **#124** — Republish replayed events to `telemetry.events.raw` — implemented
+- **#125** — Actuator trigger for DLQ replay — implemented
+- **#126** — Safeguards for replayed events: the replay marker, the upsert-by-`event_id` persistence
+  change, replay-metadata transport, and the consumer-side dedup contract described below — implemented
+
+Raw-topic replay, described under [Replay Sources](#2-raw-topic-telemetryeventsraw), remains **design only**: no
+trigger or listener for it exists. Replay reclassification consistency is open (#271).
 
 ---
 

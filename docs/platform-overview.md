@@ -2,7 +2,9 @@
 
 PulseStream is a cloud-native event processing platform designed to ingest, process, and analyze IoT telemetry data at scale.
 
-The platform currently enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, and persistence of normal processed telemetry records. Query APIs and anomaly persistence are planned follow-up work.
+The platform ingests telemetry over HTTP, transports it through Kafka, normalizes it and detects anomalies, persists normal processed telemetry to PostgreSQL, routes failures to a dead-letter queue with operator-triggered replay, emits metrics and distributed traces, and deploys to Kubernetes with horizontal autoscaling. Query APIs and anomaly persistence are planned follow-up work (#266, #267).
+
+[PROJECT_STATE.md](../PROJECT_STATE.md) is the authoritative record of platform status; where this overview disagrees with it, that file is correct.
 
 The system is designed using an event-driven architecture built around Apache Kafka.
 
@@ -16,8 +18,10 @@ PulseStream provides the following capabilities:
 *   Event stream processing
 *   Anomaly detection pipelines
 *   Durable processed telemetry storage
-*   Planned real-time querying APIs
-*   Foundational observability and monitoring
+*   Dead-letter routing and bounded, operator-triggered event replay
+*   Metrics, health endpoints and distributed tracing
+*   Kubernetes deployment with horizontal autoscaling
+*   Planned real-time querying APIs (#266)
 
 ---
 
@@ -81,7 +85,7 @@ Processing services consume telemetry streams and perform transformations.
 **Example processors:**
 
 *   telemetry-processor
-*   planned alerting or aggregation consumers
+*   planned alerting or aggregation consumers (#276); nothing consumes the processed or anomalies topics today
 
 These services read from Kafka topics and produce new events downstream.
 
@@ -89,24 +93,26 @@ These services read from Kafka topics and produce new events downstream.
 
 ### Storage Layer
 
-Normal processed telemetry records are stored in PostgreSQL. The schema script defines an anomalies table, but the current application code publishes anomaly events to Kafka and does not persist them yet.
+Normal processed telemetry records are stored in PostgreSQL, upserted by `event_id`. The schema script defines an `anomalies` table, but application code publishes anomaly events to Kafka and does not persist them (#267).
+
+The schema is applied by an init script; there is no versioned migration tool yet (#265), and no PostgreSQL is provisioned inside Kubernetes.
 
 The database supports:
 
-*   Future query APIs
-*   Future dashboards
-*   Future anomaly analysis
+*   Planned query APIs
+*   Planned dashboards
+*   Planned anomaly analysis
 *   Device history
 
-Redis may be used as a caching layer for frequently requested data.
+Redis is provisioned in the local stack as a future caching layer. No service uses it today.
 
 ---
 
 ### Query Service
 
-**Status:** Planned. There is no query service module in the current checkout.
+**Status:** Scaffold only. `services/query-service` runs and exposes actuator endpoints, and has container and Kubernetes manifests, but has no REST endpoints and no database access (#266).
 
-The query service exposes APIs to retrieve processed telemetry data.
+The responsibilities below describe the intended service.
 
 **Responsibilities:**
 
@@ -118,12 +124,15 @@ The query service exposes APIs to retrieve processed telemetry data.
 
 ### Observability Stack
 
-The local platform includes a foundational observability stack:
+Observability is implemented in both environments:
 
-*   Prometheus for metrics
-*   Grafana for future dashboards
-*   OpenTelemetry for planned distributed tracing
+*   Prometheus for metrics, locally and in cluster, and as the metric source for custom autoscaling
+*   Grafana dashboards for service health and ingestion metrics locally; a base deployment in cluster without a datasource yet (#156)
+*   OpenTelemetry instrumentation in the services, with an in-cluster Collector; traces stop at the HTTP boundary until the Kafka producer path is instrumented (#294)
+*   Jaeger as the local trace backend; no in-cluster tracing backend yet (#158)
 *   Centralized logging as planned follow-up work
+
+`telemetry-processor` is deliberately not scraped: its actuator surface, which includes the state-changing `dlqreplay` endpoint, is bound to loopback on a separate management port.
 
 ---
 
@@ -137,11 +146,12 @@ Local environments run using **Docker Compose**.
 
 This provides:
 
-*   Kafka
+*   Kafka and Zookeeper
 *   PostgreSQL
 *   Redis
 *   Prometheus
 *   Grafana
+*   Jaeger
 
 Spring Boot platform services are run from their service directories on the host during local development.
 
@@ -149,7 +159,7 @@ Spring Boot platform services are run from their service directories on the host
 
 ### Production Deployment
 
-Production deployments are planned to target **Kubernetes**.
+Production deployments target **Kubernetes**, and the manifests exist in `infrastructure/kubernetes/`: Deployments, Services and ConfigMaps for all three services, Kafka in KRaft mode via the Strimzi operator, ClusterIP service discovery with a NodePort for external ingestion, NetworkPolicies, and HorizontalPodAutoscalers on CPU and on a Prometheus custom metric.
 
 Kubernetes provides:
 
@@ -157,6 +167,8 @@ Kubernetes provides:
 *   Service orchestration
 *   Rolling deployments
 *   Resilience and recovery
+
+A PostgreSQL instance is a prerequisite: the platform does not provision one in cluster.
 
 ---
 
@@ -183,12 +195,13 @@ These include:
 
 The platform is developed in structured phases.
 
-1.  System Architecture
-2.  Local Development Platform
-3.  Core Event Pipeline
-4.  Observability
-5.  Reliability and Resilience
-6.  Kubernetes Deployment
+1.  System Architecture — complete
+2.  Local Development Platform — complete
+3.  Core Event Pipeline — complete
+4.  Observability — complete for the local platform
+5.  Reliability and Resilience — complete
+6.  Kubernetes Deployment — in progress
+7.  Production Readiness and Platform Hardening — current phase
 
 The development roadmap is documented in:
 

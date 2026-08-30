@@ -25,7 +25,8 @@ Raw telemetry data ingested from devices.
 
 **Producers**
 - ingestion-service
-- device-simulator (planned)
+- telemetry-processor, when republishing selected dead-letter records during a replay run
+- device-simulator (planned; no simulator exists in this repository)
 
 **Consumers**
 - telemetry-processor
@@ -46,7 +47,8 @@ Processed telemetry data after enrichment and anomaly detection.
 - telemetry-processor
 
 **Consumers**
-- query-service (planned)
+- none today
+- query-service (planned, #266)
 - downstream consumers (planned)
 
 **Configuration**
@@ -65,8 +67,9 @@ Detected anomalies from telemetry data.
 - telemetry-processor
 
 **Consumers**
-- query-service (planned)
-- future alerting consumers
+- none today; anomalies are published but neither persisted nor consumed
+- anomaly persistence and querying (planned, #267)
+- alerting consumers (planned, #276)
 
 **Configuration**
 - partitions: 3
@@ -78,12 +81,14 @@ Detected anomalies from telemetry data.
 ## telemetry.events.dlq
 
 **Description**  
-Dead-letter queue for failed events.
+Dead-letter queue for failed events. Each record is a `DeadLetterEvent` wrapper: the original event, error metadata, and the `sourceService` that dead-lettered it.
 
 **Producers**
-- telemetry-processor
+- ingestion-service — when publishing an accepted event to `telemetry.events.raw` fails
+- telemetry-processor — when processing a raw event throws, on first failure
 
 **Consumers**
+- telemetry-processor `dlq-replay-listener`, under consumer group `telemetry-processor-dlq-replay`. It is registered with `autoStartup=false` and runs only while an operator-triggered replay is in progress; see [event-replay-strategy.md](./event-replay-strategy.md).
 - monitoring / manual inspection
 
 **Configuration**
