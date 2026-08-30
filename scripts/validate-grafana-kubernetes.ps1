@@ -48,7 +48,7 @@ param(
     [int] $LocalPort = 3000,
     [string] $DatasourceUid = "prometheus",
     [string] $GrafanaUser = "admin",
-    [string] $GrafanaPassword = "admin",
+    [string] $GrafanaPassword = "",
     [int] $TimeoutSeconds = 120
 )
 
@@ -69,6 +69,15 @@ Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamGrafanaDashboards.psm1") 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $grafanaRoot = Join-Path $repositoryRoot "infrastructure/kubernetes/monitoring/grafana"
 $dashboardsManifest = Join-Path $grafanaRoot "dashboards-configmap.yaml"
+
+# Read password from Secret if not provided
+if ([string]::IsNullOrEmpty($GrafanaPassword)) {
+    $GrafanaPassword = kubectl get secret grafana -n $Namespace -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null
+    if ([string]::IsNullOrEmpty($GrafanaPassword)) {
+        Write-Error "Grafana password not provided and cannot read from Secret 'grafana' in namespace '$Namespace'. Pass -GrafanaPassword or ensure the Secret exists."
+        exit 1
+    }
+}
 
 $authHeader = @{
     Authorization = "Basic " + [Convert]::ToBase64String(
