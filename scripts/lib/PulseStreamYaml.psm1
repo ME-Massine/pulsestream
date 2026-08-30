@@ -306,4 +306,91 @@ function ConvertFrom-KubernetesYaml {
     return $document
 }
 
-Export-ModuleMember -Function ConvertFrom-KubernetesYaml
+# --- ConfigMap literal blocks ------------------------------------------------
+#
+# ConvertFrom-KubernetesYaml deliberately refuses block scalars, and it must
+# keep refusing them: it strips '#' comments, so a `data` value containing JSON
+# or a scrape config would be mangled rather than rejected. But a ConfigMap
+# whose values are embedded files is exactly what the Grafana provisioning
+# manifests are (#156), and both the cluster validator and the structural test
+# have to read those values.
+#
+# So they are handled separately and narrowly. These two do not parse the
+# embedded document - they return it verbatim, for the caller to hand to
+# ConvertFrom-Json or to match against - and they only recognise the one shape
+# the committed manifests use: a `key: |` line at two-space indentation, with
+# the body indented by four.
+
+# The names of every `key: |` entry under a manifest's top-level `data:`.
+function Get-ConfigMapDataKey {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $keys = [System.Collections.Generic.List[string]]::new()
+    $inData = $false
+
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        if ($line -match '^data:\s*$') {
+            $inData = $true
+            continue
+        }
+
+        if (-not $inData) {
+            continue
+        }
+
+        # A non-indented, non-blank line ends the `data` mapping.
+        if ($line.Trim().Length -gt 0 -and $line -notmatch '^\s') {
+            break
+        }
+
+        if ($line -match '^  (?<key>[A-Za-z0-9][A-Za-z0-9._-]*):\s*\|\s*$') {
+            $keys.Add($Matches['key']) | Out-Null
+        }
+    }
+
+    return $keys.ToArray()
+}
+
+# The body of one `key: |` entry, dedented, with its blank lines preserved.
+function Get-ConfigMapDataValue {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Key
+    )
+
+    $lines = @(Get-Content -LiteralPath $Path)
+    $start = -1
+
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match ('^  ' + [regex]::Escape($Key) + ':\s*\|\s*$')) {
+            $start = $index + 1
+            break
+        }
+    }
+
+    if ($start -lt 0) {
+        throw "ConfigMap '$Path' has no literal block entry named '$Key'."
+    }
+
+    $collected = [System.Collections.Generic.List[string]]::new()
+
+    for ($index = $start; $index -lt $lines.Count; $index++) {
+        $line = $lines[$index]
+
+        # A blank line inside a block belongs to it; it does not end it.
+        if ($line.Trim().Length -eq 0) {
+            $collected.Add("") | Out-Null
+            continue
+        }
+
+        if ($line -notmatch '^    ') {
+            break
+        }
+
+        $collected.Add($line.Substring(4)) | Out-Null
+    }
+
+    return [string]::Join([Environment]::NewLine, $collected.ToArray())
+}
+
+Export-ModuleMember -Function ConvertFrom-KubernetesYaml, Get-ConfigMapDataKey, Get-ConfigMapDataValue

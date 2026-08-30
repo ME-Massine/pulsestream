@@ -31,6 +31,25 @@ cd infrastructure/docker
 docker compose up -d
 ```
 
+### In Kubernetes
+
+These files are the `Docker Compose` set. The cluster loads its own copies from
+`infrastructure/kubernetes/monitoring/grafana/dashboards-configmap.yaml`, because
+`Grafana` in the cluster reads its dashboards from a `ConfigMap` and cannot mount
+this directory off the host.
+
+The selector is the same in both. Compose scrapes one static target per service
+and the cluster (`infrastructure/kubernetes/monitoring/prometheus-values.yaml`)
+defines one `role: pod` scrape job per service, so a workload is `job="ingestion-service"`
+either way. What the cluster adds is `namespace`, `pod` and `node` on every series,
+and the cluster copy of `service-health.json` uses `pod` to break the per-pod panels
+out by replica — a `Compose` service has one container, so those panels stay summed
+here.
+
+Everything else is shared. Both sets keep the same UIDs, titles and panel IDs, and
+`scripts/tests/test-grafana-dashboard-provisioning.ps1` fails if they drift, so a
+panel added here needs the same panel added there.
+
 ### Re-importing a dashboard manually
 
 Any dashboard here can be re-imported into a running `Grafana` without the
