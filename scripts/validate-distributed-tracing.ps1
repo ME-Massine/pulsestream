@@ -4,6 +4,10 @@ param(
     [string] $JaegerBaseUrl = "http://localhost:16686",
     [string] $IngestionServiceName = "ingestion-service",
     [string] $ProcessorServiceName = "telemetry-processor",
+    # The topic ingestion publishes to and the processor consumes from. The
+    # consumer span is checked against it so a DLQ or replay record, which
+    # carries the same message key, cannot satisfy the correlation.
+    [string] $RawTopic = "telemetry.events.raw",
     # How far back (seconds) the Jaeger searches look. The window also bounds how
     # long we wait for the processor to consume the generated event and emit its
     # own trace.
@@ -14,6 +18,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamTracing.psm1") -Force
 
 # Fixed lower bound captured before we send traffic so the generated spans always
 # fall inside the search window. The upper bound is recomputed per attempt so
@@ -46,16 +51,6 @@ function Invoke-JaegerTraceSearch {
 function Get-TraceServiceNames {
     param([Parameter(Mandatory)] $Trace)
     @($Trace.processes.PSObject.Properties | ForEach-Object { $_.Value.serviceName })
-}
-
-function Test-SpanKind {
-    param(
-        [Parameter(Mandatory)] $Trace,
-        [Parameter(Mandatory)] [string] $Kind
-    )
-    [bool](@($Trace.spans | Where-Object {
-        $_.tags | Where-Object { $_.key -eq "span.kind" -and $_.value -eq $Kind }
-    }).Count)
 }
 
 Write-Host "Validating distributed tracing end to end..."
@@ -115,43 +110,68 @@ Write-Host "[ok] Generated telemetry request (eventId: $eventId)"
 # 4. The ingestion trace for this request must be complete: the HTTP entry span,
 #    the application span, and the Kafka publish span must all be present. Search
 #    by the event id tag so we assert against the exact trace we generated.
+#
+#    Completeness is waited for inside the retry, not asserted after it. The
+#    spans of one trace reach Jaeger in separate exported batches - the
+#    collector's `batch` processor flushes on size or on its 5s timeout - so the
+#    first result that comes back is routinely the server span alone. Asserting
+#    against that reports "missing the Kafka producer span" for a trace that is
+#    merely still arriving.
+$requiredOperation = "TelemetryController.ingestTelemetry"
 $ingestionTrace = Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
-    -FailureMessage "No ingestion-service trace was found for eventId $eventId within $TimeoutSeconds seconds." `
+    -FailureMessage "No complete ingestion-service trace was found for eventId $eventId within $TimeoutSeconds seconds." `
     -Operation {
         $traces = Invoke-JaegerTraceSearch `
             -ServiceName $IngestionServiceName `
             -Tags @{ "pulsestream.event.id" = $eventId }
 
-        Confirm-Condition `
-            -Condition ($traces.Count -gt 0) `
-            -SuccessMessage "Ingestion trace is visible in Jaeger for eventId $eventId" `
-            -FailureMessage "Ingestion trace is not yet visible in Jaeger for eventId $eventId"
+        if ($traces.Count -eq 0) {
+            throw "Ingestion trace is not yet visible in Jaeger for eventId $eventId"
+        }
 
-        $traces[0]
+        $trace = $traces[0]
+
+        $missing = @()
+        if (@($trace.spans | ForEach-Object { $_.operationName }) -notcontains $requiredOperation) {
+            $missing += "the $requiredOperation span"
+        }
+        if (-not (Test-TraceSpanKind -Trace $trace -Kind "server")) { $missing += "the HTTP server span" }
+        if (-not (Test-TraceSpanKind -Trace $trace -Kind "producer")) { $missing += "the Kafka producer span" }
+
+        if ($missing.Count -gt 0) {
+            throw "Ingestion trace for eventId $eventId is still partial; missing $($missing -join ', ')"
+        }
+
+        $trace
     }
+
+Confirm-Condition `
+    -Condition ($ingestionTrace.spans.Count -gt 0) `
+    -SuccessMessage "Ingestion trace is visible in Jaeger for eventId $eventId" `
+    -FailureMessage "Ingestion trace is not visible in Jaeger for eventId $eventId"
 
 $operationNames = @($ingestionTrace.spans | ForEach-Object { $_.operationName })
 
 Confirm-Condition `
-    -Condition ($operationNames -contains "TelemetryController.ingestTelemetry") `
-    -SuccessMessage "Ingestion trace contains the TelemetryController.ingestTelemetry span" `
-    -FailureMessage "Ingestion trace is missing the TelemetryController.ingestTelemetry span"
+    -Condition ($operationNames -contains $requiredOperation) `
+    -SuccessMessage "Ingestion trace contains the $requiredOperation span" `
+    -FailureMessage "Ingestion trace is missing the $requiredOperation span"
 
 Confirm-Condition `
-    -Condition (Test-SpanKind -Trace $ingestionTrace -Kind "server") `
+    -Condition (Test-TraceSpanKind -Trace $ingestionTrace -Kind "server") `
     -SuccessMessage "Ingestion trace contains the HTTP server span" `
     -FailureMessage "Ingestion trace is missing the HTTP server span"
 
 Confirm-Condition `
-    -Condition (Test-SpanKind -Trace $ingestionTrace -Kind "producer") `
+    -Condition (Test-TraceSpanKind -Trace $ingestionTrace -Kind "producer") `
     -SuccessMessage "Ingestion trace contains the Kafka producer span" `
     -FailureMessage "Ingestion trace is missing the Kafka producer span"
 
 # 5. The telemetry-processor must independently participate in tracing. HTTP-only
-#    context propagation means it does not yet share the ingestion trace id, so we
-#    assert it registers with Jaeger and emits its own consumer trace after
-#    consuming the event we just published.
+#    context propagation means it does not yet share the ingestion trace id, so it
+#    is asserted to register with Jaeger and to emit its own consumer trace for
+#    the event we just published.
 Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
     -FailureMessage "telemetry-processor did not register with Jaeger within $TimeoutSeconds seconds." `
@@ -163,22 +183,54 @@ Invoke-WithRetry `
             -FailureMessage "telemetry-processor is not yet registered as a Jaeger service"
     }
 
-Invoke-WithRetry `
+#    The consumer trace is correlated to THIS run's event. The processor does
+#    not set `pulsestream.event.id` - that attribute is written by the ingestion
+#    controller - but ingestion publishes each event under a Kafka message key
+#    equal to its event id (KafkaProducerService.resolveMessageKey), and the
+#    spring-kafka instrumentation records that key on the consumer span as
+#    `messaging.kafka.message.key`. That is the handle: it identifies the exact
+#    record this run produced.
+#
+#    Accepting any recent consumer trace instead would pass on traffic this run
+#    never generated - a neighbouring producer, a replayed DLQ record, or a
+#    trace still in the lookback window from an earlier run - and would report
+#    the processor as tracing correctly even when the event under test was never
+#    consumed at all.
+#
+#    Kind, key and destination topic are matched together on one span, inside
+#    the retry. Splitting them - taking the first same-key trace here and
+#    checking its topic afterwards - fails a run in which Jaeger listed a
+#    same-key DLQ trace ahead of the raw-topic trace, because the check never
+#    looks past the trace it already picked. Both traces are legitimately
+#    present whenever the event has also been replayed, and their order in the
+#    response is not something this run controls.
+$correlation = Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
-    -FailureMessage "No telemetry-processor consumer trace was found within $TimeoutSeconds seconds." `
+    -FailureMessage "No telemetry-processor consumer trace was found for eventId $eventId on $RawTopic within $TimeoutSeconds seconds. The processor consumes from Kafka, so this lags the ingestion trace by the consumer poll and any partition backlog." `
     -Operation {
-        $processorTraces = Invoke-JaegerTraceSearch -ServiceName $ProcessorServiceName
+        $processorTraces = Invoke-JaegerTraceSearch `
+            -ServiceName $ProcessorServiceName `
+            -Tags @{ "messaging.kafka.message.key" = $eventId }
 
-        Confirm-Condition `
-            -Condition ($processorTraces.Count -gt 0) `
-            -SuccessMessage "telemetry-processor traces are visible in Jaeger" `
-            -FailureMessage "telemetry-processor traces are not yet visible in Jaeger"
+        $match = Select-CorrelatedConsumerSpan `
+            -Traces $processorTraces `
+            -MessageKey $eventId `
+            -DestinationTopic $RawTopic
 
-        $hasConsumerSpan = $processorTraces | Where-Object { Test-SpanKind -Trace $_ -Kind "consumer" }
-        Confirm-Condition `
-            -Condition ([bool]$hasConsumerSpan) `
-            -SuccessMessage "telemetry-processor trace contains a Kafka consumer span" `
-            -FailureMessage "telemetry-processor trace is missing a Kafka consumer span"
+        if ($null -eq $match.Span) {
+            # Naming the topics that WERE seen separates "the processor never
+            # consumed this event" from "it consumed it, but off the DLQ".
+            # Both are still retried: the raw-topic trace may not have been
+            # exported yet, and a DLQ trace present now does not rule it out.
+            if ($match.ObservedDestinations.Count -gt 0) {
+                throw "telemetry-processor consumer spans for eventId $eventId name only $($match.ObservedDestinations -join ', '); no span names $RawTopic yet"
+            }
+            throw "No telemetry-processor consumer span keyed to eventId $eventId is visible in Jaeger yet"
+        }
+
+        $match
     }
+
+Write-Host "[ok] telemetry-processor consumed eventId $eventId from $RawTopic (trace $($correlation.Trace.traceID))"
 
 Write-Host "[ok] Distributed tracing validation completed."

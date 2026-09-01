@@ -1,0 +1,148 @@
+# Jaeger tracing backend for the platform (#158).
+#
+# all-in-one: the collector, query service and UI in one process. The production
+# shape splits them and puts Elasticsearch or Cassandra behind the collector,
+# which is a storage decision this repository has not made - the platform's own
+# Postgres is not in Kubernetes either. all-in-one is the shape that makes traces
+# inspectable now, and it is the same image and tag the Compose stack already
+# runs (infrastructure/docker/docker-compose.yml), so a developer sees the same
+# UI in both environments.
+#
+# IN-MEMORY STORAGE, so traces are lost on every restart and reschedule.
+# `MEMORY_MAX_TRACES` bounds how MANY traces are retained, not how many bytes
+# they occupy, so it is not a memory guarantee - see the env var below.
+# Long-term retention is explicitly out of scope for #158; it is a
+# storage-backend decision, not a tuning knob on this Deployment.
+#
+# ONE REPLICA, ON PURPOSE. With in-memory storage each replica would hold a
+# different subset of the traces, and the query API answers from whichever pod
+# the request lands on - so a second replica does not add availability, it makes
+# search results depend on load balancing. Availability here requires shared
+# storage, which is the same decision as retention.
+#
+# Third-party image, so it carries an upstream version tag plus a registry
+# digest rather than the sha-<short> convention in
+# docs/architecture/container-image-registry.md, which covers images this
+# repository builds.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: tracing-backend
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: two pods would split incoming spans between two
+  # separate in-memory stores during the rollout, and the new pod starts empty
+  # regardless, so there is nothing to keep warm by overlapping them.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jaeger
+        app.kubernetes.io/component: tracing-backend
+        app.kubernetes.io/part-of: pulsestream
+    spec:
+      serviceAccountName: jaeger
+      securityContext:
+        # The upstream image runs as uid/gid 10001. Kubelet can only verify
+        # runAsNonRoot against a numeric user, so the UID is pinned explicitly.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: jaeger
+          # Pinned by digest, with the tag kept alongside it so the version is
+          # readable at a glance - the same convention as the collector in
+          # deployment.yaml. When both are present the digest is what resolves,
+          # so a retagged or republished upstream 1.60 is rejected rather than
+          # rolled out silently. The digest is the multi-arch manifest LIST
+          # (an OCI image index covering linux/amd64, arm64, s390x and
+          # ppc64le), so each node still resolves its own architecture.
+          #
+          # To update, take the new list digest and change both halves together:
+          #   docker buildx imagetools inspect jaegertracing/all-in-one:<tag>
+          image: jaegertracing/all-in-one:1.60@sha256:4fd2d70fa347d6a47e79fcb06b1c177e6079f92cba88b083153d56263082135e
+          imagePullPolicy: IfNotPresent
+          env:
+            # Enables the OTLP receivers. This is the only ingest path used
+            # here: the collector exports OTLP, and the legacy Jaeger protocols
+            # (14250 gRPC, 14268 thrift-HTTP) are left off the container ports
+            # and the Service because nothing speaks them.
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+            - name: SPAN_STORAGE_TYPE
+              value: "memory"
+            # Caps the in-memory store at 50 000 TRACES. The unit is traces,
+            # not bytes: Jaeger counts entries and evicts the oldest once the
+            # count is reached, and it never measures their size. A trace's
+            # footprint varies with its span count and attribute payload, so no
+            # value here guarantees the pod stays under the 1Gi limit below -
+            # 50 000 unusually large traces still OOM.
+            #
+            # What the cap does buy is a bound that does not depend on traffic
+            # volume: without it the store grows with every trace received
+            # until the limit kills the pod, which with in-memory storage
+            # discards everything retained. With it, steady-state usage is
+            # bounded by 50 000 x average trace size, which is a quantity that
+            # can be observed. Treat the pair as empirical - watch the pod's
+            # working set under real traffic and lower this number if it trends
+            # toward the limit.
+            - name: MEMORY_MAX_TRACES
+              value: "50000"
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: query
+              containerPort: 16686
+            - name: admin
+              containerPort: 14269
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              # The hard stop, and the only one enforced in bytes -
+              # MEMORY_MAX_TRACES above counts traces and cannot express this.
+              # Exceeding it is an OOM kill, which with in-memory storage loses
+              # every retained trace, so raising the trace cap without raising
+              # this limit trades retention for that.
+              memory: 1Gi
+          # 14269 is Jaeger's admin port, which is where all-in-one serves its
+          # health status. The query UI on 16686 answers before the collector
+          # side is ready, so probing it would report healthy too early.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: admin
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Memory storage writes nothing to disk.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
