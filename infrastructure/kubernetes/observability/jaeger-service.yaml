@@ -1,0 +1,42 @@
+# ClusterIP Service in front of Jaeger (#158).
+#
+# THE NAME IS A CONTRACT: the collector's `otlp/jaeger` exporter is configured
+# against `jaeger.observability.svc.cluster.local:4317` (configmap.yaml).
+# Renaming this Service breaks trace forwarding in a way that does not surface
+# in the UI - the UI simply stays empty while the collector logs export failures.
+#
+# ClusterIP, not NodePort. The Jaeger UI has no authentication and the OTLP
+# receivers accept arbitrary spans, so neither is published outside the cluster.
+# A developer reaches the UI with `kubectl port-forward` (see README.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: tracing-backend
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: jaeger
+  ports:
+    # OTLP gRPC: the collector's export path, and the only ingest port with a
+    # consumer in the cluster. The pod also listens on 4318 (OTLP HTTP), which
+    # is deliberately not published here - the platform services export to the
+    # collector, never directly to the backend, and publishing it would create a
+    # second, unmonitored way in.
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+      protocol: TCP
+    # The query API and UI. `kubectl port-forward` targets this port, and it is
+    # what scripts/validate-distributed-tracing.ps1 reads through its
+    # -JaegerBaseUrl parameter.
+    - name: query
+      port: 16686
+      targetPort: query
+      protocol: TCP
+    # 14269 (admin) is absent: it exists for kubelet, which reaches the pod
+    # directly.
