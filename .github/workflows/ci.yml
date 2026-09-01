@@ -55,6 +55,27 @@ jobs:
       - name: Confirm Java is available
         run: java -version
 
+  release-manifests:
+    name: Release manifest consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Catches the two ways a manifest set stops describing one tested build:
+      # a service pinned to a different commit than its neighbours, and a
+      # manifest left on the digest of a previous release. Neither needs a
+      # cluster or a registry - the committed files are compared with each
+      # other - so this runs on every pull request. See
+      # docs/architecture/release-and-promotion.md.
+      - name: Validate deployment image references
+        shell: pwsh
+        run: ./scripts/validate-release-manifests.ps1
+
+      - name: Run the release promotion unit tests
+        shell: pwsh
+        run: ./scripts/tests/test-release-promotion.ps1
+
   telemetry-processor-docker:
     name: Telemetry Processor Docker image
     runs-on: ubuntu-latest
