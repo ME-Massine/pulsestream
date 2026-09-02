@@ -12,10 +12,11 @@ flowchart LR
     C --> T2[(telemetry.events.processed)]
     C --> T3[(telemetry.events.anomalies)]
     C --> T4[(telemetry.events.dlq)]
+    T4 --> C
 
-    T2 --> D[Query Service / Downstream Consumers planned]
-    T3 --> E[Alerting / Dashboard / Query Service planned]
-    T4 --> F[DLQ Inspection / Replay Tools planned]
+    T2 --> D[Query Service scaffold / downstream consumers]
+    T3 --> E[Alerting / Dashboard / Query Service scaffold]
+    T4 --> F[DLQ replay endpoint on telemetry-processor]
 ```
 
 ### Topic Definitions
@@ -23,13 +24,13 @@ flowchart LR
 | Topic                | Producer                                | Consumer                                  | Purpose                           |
 |----------------------|-----------------------------------------|-------------------------------------------|-----------------------------------|
 | `telemetry.events.raw`      | Ingestion Service                       | telemetry-processor                       | Raw incoming telemetry events     |
-| `telemetry.events.processed`| telemetry-processor                     | Planned Query Service / downstream consumers | Normalized and enriched telemetry data |
-| `telemetry.events.anomalies`| telemetry-processor                     | Planned dashboard / alerting / query service | Detected anomaly events           |
-| `telemetry.events.dlq`| Planned failure-routing producers | Planned replay or inspection tools        | Invalid or failed events          |
+| `telemetry.events.processed`| telemetry-processor                     | Query Service (scaffold) / downstream consumers | Normalized and enriched telemetry data |
+| `telemetry.events.anomalies`| telemetry-processor                     | Query Service (scaffold) / future alerting consumers | Detected anomaly events           |
+| `telemetry.events.dlq`| telemetry-processor | telemetry-processor replay endpoint / inspection | Invalid or failed events          |
 
 ### Notes
 
 *   `telemetry.events.raw` is the primary ingestion topic.
 *   `telemetry.events.processed` allows downstream consumers to use cleaned telemetry without duplicating processing logic.
 *   `telemetry.events.anomalies` isolates anomaly events from normal telemetry flow.
-*   `telemetry.events.dlq` is provisioned for future resilience and recovery workflows.
+*   `telemetry.events.dlq` captures failed events. The telemetry processor routes failures here and can replay them back into the pipeline via a management endpoint (bounded, snapshot-based replay sessions).

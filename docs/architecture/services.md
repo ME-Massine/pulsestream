@@ -32,7 +32,7 @@ Each service can scale independently depending on workload demands.
 
 ## Core Services
 
-The current PulseStream checkout includes the ingestion service and telemetry processor. Query APIs, simulator tooling, tracing, and additional consumers are planned extensions unless noted otherwise.
+The current PulseStream checkout includes the ingestion service, the telemetry processor, and a query-service scaffold. Distributed tracing, dead-letter routing, and event replay are implemented. Query APIs, simulator tooling, and additional downstream consumers are planned extensions unless noted otherwise.
 
 ### Ingestion Service
 
@@ -68,12 +68,14 @@ The telemetry-processor consumes raw telemetry events and performs real-time ana
 *   Apply anomaly detection rules
 *   Generate anomaly events when necessary
 *   Persist processed telemetry records
+*   Route failed events to the dead-letter topic and replay them on demand
 
 **Primary Kafka interaction:**
 
 *   Consumes from `telemetry.events.raw`
 *   Produces to `telemetry.events.processed`
 *   Produces to `telemetry.events.anomalies`
+*   Routes failures to `telemetry.events.dlq` and consumes it during replay
 
 **Key characteristics:**
 
@@ -141,9 +143,9 @@ PulseStream integrates observability tools to monitor system health and performa
 | Component     | Role                                  |
 |---------------|---------------------------------------|
 | Prometheus    | Collect system and application metrics |
-| Grafana       | Visualize metrics and dashboards      |
-| OpenTelemetry | Planned distributed tracing instrumentation |
-| Jaeger        | Planned trace visualization           |
+| Grafana       | Visualize metrics via version-controlled dashboards |
+| OpenTelemetry | Distributed tracing instrumentation (OTLP export); an OpenTelemetry Collector runs in Kubernetes |
+| Jaeger        | Trace visualization in the local stack |
 
 **Responsibilities:**
 

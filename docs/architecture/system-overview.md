@@ -51,11 +51,11 @@ Normal processed telemetry readings are stored in PostgreSQL for historical quer
 
 ### Query APIs
 
-Dedicated query APIs are planned. There is no query service in the current checkout.
+Dedicated query APIs are planned (Phase 7). A deployable `services/query-service` scaffold exists, but its REST endpoints and data access are not yet implemented.
 
 ### Observability
 
-The services expose health and Prometheus metrics endpoints. Distributed tracing and full dashboard coverage are planned.
+The services expose health and Prometheus metrics endpoints, ship version-controlled Grafana dashboards, and are instrumented with OpenTelemetry, exporting OTLP traces to Jaeger (local) or an OpenTelemetry Collector (Kubernetes).
 
 ---
 
@@ -69,10 +69,10 @@ The platform is composed of several distributed components that communicate thro
 |----------|-------------|
 | Ingestion Service | Accepts telemetry events from devices and publishes them to Kafka |
 | Kafka Cluster | Central streaming backbone responsible for event transport and buffering |
-| Telemetry Processor | Consumes telemetry streams and performs anomaly detection |
-| Query Service | Planned API for processed telemetry and anomaly data |
-| PostgreSQL | Stores processed telemetry data; anomaly table exists in schema script |
-| Observability Stack | Prometheus and Grafana locally; tracing is planned |
+| Telemetry Processor | Consumes telemetry streams, performs anomaly detection, and handles dead-letter routing and replay |
+| Query Service | Deployable scaffold; query APIs for processed telemetry and anomaly data are Phase 7 work |
+| PostgreSQL | Stores processed telemetry data; anomaly table exists in schema script (application-level anomaly persistence is Phase 7 work) |
+| Observability Stack | Prometheus, Grafana dashboards, and OpenTelemetry tracing (Jaeger locally, OpenTelemetry Collector in Kubernetes) |
 | Device Simulator | Planned generator for synthetic telemetry |
 
 ---
@@ -96,12 +96,12 @@ Kafka Topics:
 ↓
 PostgreSQL
 ↓
-Query Service (planned)
+Query Service (scaffold)
 ↓
 Dashboard / API Clients
 
 ```
-During processing, anomaly detection logic may publish events to dedicated Kafka topics for downstream consumers.
+During processing, anomaly detection logic may publish events to dedicated Kafka topics for downstream consumers. Events that fail processing are routed to `telemetry.events.dlq` and can be replayed back into the pipeline.
 
 ---
 
@@ -116,10 +116,10 @@ PulseStream uses the following core technologies:
 | PostgreSQL | Persistent storage for processed data |
 | Redis | Optional caching layer |
 | Docker | Containerization for local development |
-| Kubernetes | Planned cloud-native deployment platform |
+| Kubernetes | Cluster deployment target; manifests committed under `infrastructure/kubernetes/` |
 | Prometheus | Metrics collection |
 | Grafana | Observability dashboards |
-| OpenTelemetry | Planned distributed tracing |
+| OpenTelemetry | Distributed tracing instrumentation (OTLP export) |
 
 ---
 
@@ -159,14 +159,13 @@ The initial version of PulseStream focuses on a minimal but complete pipeline:
 - PostgreSQL persistence
 - foundational observability through actuator and Prometheus endpoints
 
-Current MVP gaps include:
+Current gaps (addressed in Phase 7) include:
 
 - anomaly persistence from application code
-- query API for telemetry analytics
-- explicit DLQ routing
+- query API for telemetry analytics (the `query-service` is a scaffold)
 - simulated IoT devices
 
-Future iterations may expand into advanced analytics, device management, and large-scale telemetry simulations.
+Dead-letter routing and event replay are implemented. Future iterations may expand into advanced analytics, device management, and large-scale telemetry simulations.
 
 ---
 
