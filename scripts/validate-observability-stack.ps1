@@ -370,9 +370,13 @@ $components = @(
 
 # The Ready pods of each component, keyed '<namespace>/<deployment>', taken from
 # the Deployment's own selector. Step 3 requires one Prometheus target and one
-# sample per name in here, and step 7 requires its log selector to match exactly
-# these pods.
+# sample per name in here, and step 7 sweeps the logs of exactly these pods.
 $readyPodsByDeployment = @{}
+
+# The selector each of those pod lists came from, under the same key. Step 7
+# reuses it for `kubectl logs -l` rather than guessing a label of its own, so
+# the sweep reads the pods this step verified and nothing else.
+$selectorByDeployment = @{}
 
 foreach ($component in $components) {
     # `readyReplicas >= 1` would pass here on a Deployment that is half-way
@@ -380,7 +384,14 @@ foreach ($component in $components) {
     # all. Every replica the spec asks for has to be updated, Ready and
     # available before the assertions below describe the fleet the manifests
     # declare rather than whichever pod happens to be up.
-    $deployment = Invoke-WithRetry `
+    #
+    # The Deployment read, its selector and the pod list all sit inside one
+    # retry. The replica count and the pod names are two reads of a moving
+    # target: with the telemetry-processor HPA (#151/#152) among these
+    # components, a scale event in between leaves them disagreeing, and that is
+    # a stale pair of reads rather than a broken stack - the next attempt sees
+    # the scaled Deployment and its own pods.
+    $resolved = Invoke-WithRetry `
         -TimeoutSeconds $TimeoutSeconds `
         -FailureMessage "Deployment '$($component.Deployment)' in namespace '$($component.Namespace)' did not finish rolling out within $TimeoutSeconds seconds." `
         -Operation {
@@ -392,22 +403,24 @@ foreach ($component in $components) {
                 -SuccessMessage "$($component.Deployment) is fully rolled out in '$($component.Namespace)': $($rollout.Ready)/$($rollout.Desired) Ready, updated and available" `
                 -FailureMessage "$($component.Deployment) in '$($component.Namespace)' is not fully rolled out: $($rollout.Reason)"
 
-            $object
+            $componentSelector = Get-DeploymentSelector -Deployment $object
+            $componentPods = @(Get-ReadyPodName -Namespace $component.Namespace -Selector $componentSelector)
+
+            # The Deployment reports counts; this is the list of names those
+            # counts stand for, and the two can disagree while a terminating
+            # pod is still Ready. Everything downstream matches against the
+            # names.
+            Confirm-Condition `
+                -Condition ($componentPods.Count -eq $rollout.Desired) `
+                -SuccessMessage "$($component.Deployment) has $($componentPods.Count) Ready pod(s): $($componentPods -join ', ')" `
+                -FailureMessage "$($component.Deployment) wants $($rollout.Desired) replica(s) but selector '$componentSelector' matches $($componentPods.Count) Ready pod(s)"
+
+            @{ Selector = $componentSelector; Pods = $componentPods }
         }
 
-    $rolloutState = Get-DeploymentRolloutState -Deployment $deployment
-    $selector = Get-DeploymentSelector -Deployment $deployment
-    $pods = @(Get-ReadyPodName -Namespace $component.Namespace -Selector $selector)
-
-    # The Deployment reports counts; this is the list of names those counts
-    # stand for, and the two can disagree while a terminating pod is still
-    # Ready. Everything downstream matches against the names.
-    Confirm-Condition `
-        -Condition ($pods.Count -eq $rolloutState.Desired) `
-        -SuccessMessage "$($component.Deployment) has $($pods.Count) Ready pod(s): $($pods -join ', ')" `
-        -FailureMessage "$($component.Deployment) wants $($rolloutState.Desired) replica(s) but selector '$selector' matches $($pods.Count) Ready pod(s)"
-
-    $readyPodsByDeployment["$($component.Namespace)/$($component.Deployment)"] = $pods
+    $componentKey = "$($component.Namespace)/$($component.Deployment)"
+    $readyPodsByDeployment[$componentKey] = $resolved.Pods
+    $selectorByDeployment[$componentKey] = $resolved.Selector
 }
 
 # ---------------------------------------------------------------------------
@@ -783,12 +796,18 @@ Write-Host "7. No major telemetry pipeline errors remain."
 
 # Run last, and over a window that covers everything above, so it sees the
 # errors the traffic this script generated would have produced.
+#
+# No selector is written out here. A hand-written `app.kubernetes.io/...` label
+# is not the Deployment's own selector, and for a Helm sub-chart it is not even
+# close: `app.kubernetes.io/instance=$PrometheusRelease` matches node-exporter,
+# kube-state-metrics, alertmanager and pushgateway as well as the server. Each
+# sweep reuses the selector step 1 read off the Deployment, so it covers that
+# Deployment's pods and nothing else.
 $errorSources = @(
     @{
         Component = "otel-collector"
         Namespace = $ObservabilityNamespace
         Deployment = $CollectorDeployment
-        Selector  = "app.kubernetes.io/name=$CollectorDeployment"
         # The collector logs its level as a bare tab-separated field.
         Pattern   = '(?m)\s(error|fatal|dpanic|panic)\s'
     },
@@ -796,38 +815,46 @@ $errorSources = @(
         Component = "jaeger"
         Namespace = $ObservabilityNamespace
         Deployment = $JaegerService
-        Selector  = "app.kubernetes.io/name=$JaegerService"
         Pattern   = '(?m)"level"\s*:\s*"(error|fatal|dpanic|panic)"'
     },
     @{
         Component = "prometheus"
         Namespace = $MonitoringNamespace
         Deployment = $prometheusServer
-        Selector  = "app.kubernetes.io/instance=$PrometheusRelease"
         Pattern   = '(?m)level=(error|fatal)'
     },
     @{
         Component = "grafana"
         Namespace = $MonitoringNamespace
         Deployment = $GrafanaService
-        Selector  = "app.kubernetes.io/name=$GrafanaService"
         Pattern   = '(?m)level=(error|eror|crit)'
     }
 )
 
 foreach ($source in $errorSources) {
-    # The selector is verified before the sweep runs, because a selector that
-    # matches nothing produces the same empty output as a component that logged
-    # no errors. `kubectl logs -l` exits 0 on a selector matching no pods, so
-    # the quietest possible result here is also the least trustworthy one: this
-    # requires the selector to resolve to exactly the Ready pods step 1 found
-    # for that Deployment.
-    $expectedPods = @($readyPodsByDeployment["$($source.Namespace)/$($source.Deployment)"])
-    $selectedPods = @(Get-ReadyPodName -Namespace $source.Namespace -Selector $source.Selector)
+    $sourceKey = "$($source.Namespace)/$($source.Deployment)"
+    $sourceSelector = $selectorByDeployment[$sourceKey]
+
+    # Step 1 covers every Deployment swept here, so a missing entry means this
+    # list and $components have drifted apart, not that the cluster is unwell.
+    Confirm-Condition `
+        -Condition (-not [string]::IsNullOrWhiteSpace($sourceSelector)) `
+        -SuccessMessage "the $($source.Component) log sweep uses its Deployment's own selector '$sourceSelector'" `
+        -FailureMessage "no selector was recorded for '$sourceKey' in step 1, so the $($source.Component) log sweep has no pods to read"
+
+    # The selector is still re-resolved before the sweep runs, because a
+    # selector that matches nothing produces the same empty output as a
+    # component that logged no errors. `kubectl logs -l` exits 0 on a selector
+    # matching no pods, so the quietest possible result here is also the least
+    # trustworthy one: this requires the selector to still resolve to exactly
+    # the Ready pods step 1 found, which a pod replaced part-way through the
+    # run would not.
+    $expectedPods = @($readyPodsByDeployment[$sourceKey])
+    $selectedPods = @(Get-ReadyPodName -Namespace $source.Namespace -Selector $sourceSelector)
 
     $coverage = @(Compare-PodCoverage `
         -Expected $expectedPods -Observed $selectedPods `
-        -Subject "the $($source.Component) log selector '$($source.Selector)'")
+        -Subject "the $($source.Component) log selector '$sourceSelector'")
 
     Confirm-Condition `
         -Condition ($coverage.Count -eq 0) `
@@ -838,7 +865,7 @@ foreach ($source in $errorSources) {
     # rotated container log. A sweep that returns "no errors" because it read
     # nothing is the failure mode this step exists to avoid.
     $errorLines = @(Get-ComponentErrorLines `
-        -Namespace $source.Namespace -Selector $source.Selector `
+        -Namespace $source.Namespace -Selector $sourceSelector `
         -Pattern $source.Pattern -Component $source.Component)
 
     if ($errorLines.Count -gt 0) {
