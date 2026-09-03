@@ -2,9 +2,9 @@
 
 PulseStream is a cloud-native event processing platform designed to ingest, process, and analyze IoT telemetry data at scale.
 
-The platform currently enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, and persistence of normal processed telemetry records. Query APIs and anomaly persistence are planned follow-up work.
+The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence of normal processed telemetry records, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for all workloads. Query APIs and application-level anomaly persistence are the primary remaining gaps, addressed in Phase 7.
 
-The system is designed using an event-driven architecture built around Apache Kafka.
+The system is designed using an event-driven architecture built around Apache Kafka. The authoritative platform status is maintained in [PROJECT_STATE.md](../PROJECT_STATE.md).
 
 ---
 
@@ -16,8 +16,9 @@ PulseStream provides the following capabilities:
 *   Event stream processing
 *   Anomaly detection pipelines
 *   Durable processed telemetry storage
+*   Dead-letter routing and event replay
+*   Distributed tracing, metrics, and dashboards
 *   Planned real-time querying APIs
-*   Foundational observability and monitoring
 
 ---
 
@@ -104,7 +105,7 @@ Redis may be used as a caching layer for frequently requested data.
 
 ### Query Service
 
-**Status:** Planned. There is no query service module in the current checkout.
+**Status:** Scaffold. A deployable `services/query-service` module and its Kubernetes manifests exist, but the REST query endpoints and data access are Phase 7 work.
 
 The query service exposes APIs to retrieve processed telemetry data.
 
@@ -118,11 +119,11 @@ The query service exposes APIs to retrieve processed telemetry data.
 
 ### Observability Stack
 
-The local platform includes a foundational observability stack:
+The platform includes an observability stack:
 
 *   Prometheus for metrics
-*   Grafana for future dashboards
-*   OpenTelemetry for planned distributed tracing
+*   Grafana with version-controlled dashboards (provisioned locally and in-cluster)
+*   OpenTelemetry instrumentation exporting OTLP traces to Jaeger (local) or an OpenTelemetry Collector (Kubernetes)
 *   Centralized logging as planned follow-up work
 
 ---
@@ -142,6 +143,7 @@ This provides:
 *   Redis
 *   Prometheus
 *   Grafana
+*   Jaeger
 
 Spring Boot platform services are run from their service directories on the host during local development.
 
@@ -149,7 +151,7 @@ Spring Boot platform services are run from their service directories on the host
 
 ### Production Deployment
 
-Production deployments are planned to target **Kubernetes**.
+Cluster deployment targets **Kubernetes**. Manifests for all workloads — the platform services, Kafka (via the Strimzi operator), observability, autoscaling, and network policies — are committed under `infrastructure/kubernetes/`. End-to-end validation against a live target cluster is completed as part of Phase 7.
 
 Kubernetes provides:
 
@@ -181,7 +183,7 @@ These include:
 
 ## Engineering Phases
 
-The platform is developed in structured phases.
+The platform is developed in structured phases. Phases 1 through 6 are complete; Phase 7 is in progress.
 
 1.  System Architecture
 2.  Local Development Platform
@@ -189,6 +191,7 @@ The platform is developed in structured phases.
 4.  Observability
 5.  Reliability and Resilience
 6.  Kubernetes Deployment
+7.  Production Readiness and Platform Hardening
 
 The development roadmap is documented in:
 

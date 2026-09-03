@@ -5,14 +5,16 @@
 ![Last Commit](https://img.shields.io/github/last-commit/ME-Massine/pulsestream)
 ![Repo Size](https://img.shields.io/github/repo-size/ME-Massine/pulsestream)
 
-PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, Redis provisioning, and a local Prometheus/Grafana stack. Kubernetes deployment, distributed tracing, query APIs, and simulator tooling are planned platform extensions.
+PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the full platform. A `query-service` scaffold exists; query APIs, anomaly persistence, and simulator tooling are the primary remaining gaps addressed in Phase 7.
+
+> **Project status.** The platform is at the start of **Phase 7 — Production Readiness and Platform Hardening**; Phases 1 through 6 are complete. The authoritative, up-to-date status is maintained in [PROJECT_STATE.md](./PROJECT_STATE.md).
 
 The project is engineered with a primary focus on several critical domains of modern software development:
 *   **Event-driven architecture** for decoupled and scalable service interaction.
 *   **Distributed systems design** to ensure high availability and fault tolerance.
 *   **Scalable data pipelines** capable of handling high-velocity telemetry streams.
-*   **Observability and resilience** through local metrics, health endpoints, and planned tracing/replay workflows.
-*   **Cloud-native infrastructure** through Docker Compose today and Kubernetes planning for later phases.
+*   **Observability and resilience** through metrics, health endpoints, distributed tracing, dead-letter routing, and event replay.
+*   **Cloud-native infrastructure** through Docker Compose for local development and committed Kubernetes manifests for cluster deployment.
 
 ---
 
@@ -27,29 +29,32 @@ flowchart LR
 
     C --> D[Telemetry Processor]
     D --> E[(PostgreSQL)]
-    E --> F[Query Service planned]
+    E --> F[Query Service scaffold]
     F --> G[API Clients / Dashboards]
 
     D --> H[(telemetry.events.processed)]
     D --> I[(telemetry.events.anomalies)]
     D --> J[(telemetry.events.dlq)]
+    J --> D
 
     subgraph Observability
         K[Prometheus]
         L[Grafana]
-        M[OpenTelemetry planned]
+        M[OpenTelemetry]
+        N[Jaeger]
     end
 
     B --> K
     D --> K
-    F --> K
 
     B --> M
     D --> M
-    F --> M
 
     K --> L
+    M --> N
 ```
+
+The dead-letter topic (`telemetry.events.dlq`) captures failed events; a management endpoint on the telemetry processor replays them back into the pipeline. The `query-service` is a deployable scaffold — its REST query logic is Phase 7 work.
 
 Comprehensive documentation regarding the system's architecture and visual representations can be found in the following directories:
 *   [Architecture Documentation](./docs/architecture/)
@@ -80,11 +85,12 @@ The platform utilizes a curated selection of industry-standard technologies to a
 | **Spring Boot** | Provides the framework for building robust backend microservices. |
 | **PostgreSQL** | Used for persistent storage of processed telemetry records. |
 | **Redis** | Provisioned locally for future caching and rate-limiting capabilities. |
-| **Prometheus** | Collects local metrics from configured scrape targets. |
-| **Grafana** | Provisioned locally for future dashboards and metric visualization. |
+| **Prometheus** | Collects metrics from configured scrape targets. |
+| **Grafana** | Version-controlled dashboards, provisioned locally and deployed in-cluster. |
+| **OpenTelemetry** | Instrumentation for distributed tracing, exporting OTLP traces. |
 | **Jaeger** | Local distributed tracing backend for collecting and visualizing OpenTelemetry traces. |
 | **Docker** | Facilitates a consistent local development environment. |
-| **Kubernetes** | Planned production orchestration target. |
+| **Kubernetes** | Cluster deployment target; manifests for all workloads are committed under `infrastructure/kubernetes/`. |
 
 ---
 
@@ -94,31 +100,25 @@ The repository is organized to maintain a clear separation between documentation
 
 ```text
 docs/
-├─ architecture/
-│  ├─ c4-model.md
-│  ├─ cache-strategy.md
-│  ├─ event-schema.md
-│  ├─ services.md
-│  ├─ system-overview.md
-│  └─ topics.md
-│
-├─ diagrams/
-│  ├─ system-architecture.md
-│  ├─ event-flow.md
-│  ├─ kafka-topology.md
-│  └─ kubernetes-deployment.md
-│
-├─ decisions/
-│  ├─ 0001-use-kafka.md
-│  ├─ 0002-use-spring-boot.md
-│  ├─ 0003-use-postgresql-for-mvp.md
-│  └─ 0004-docker-compose-before-kubernetes.md
-│
+├─ architecture/          # system overview, services, event schema, topics,
+│                         # C4 model, autoscaling, container/registry standards, replay
+├─ diagrams/              # system architecture, event flow, Kafka topology, Kubernetes deployment
+├─ decisions/             # ADRs 0001–0005
 ├─ platform-overview.md
 └─ roadmap.md
 
 infrastructure/
-└─ docker/
+├─ docker/                # local Docker Compose stack
+└─ kubernetes/            # committed manifests for all workloads (services, Kafka/Strimzi,
+                          # monitoring, observability, autoscaling, network policies)
+
+observability/
+└─ grafana/dashboards/    # version-controlled Grafana dashboard definitions
+
+services/
+├─ ingestion-service/     # REST ingest gateway
+├─ telemetry-processor/   # stream processor, anomaly detection, DLQ + replay
+└─ query-service/         # deployable scaffold (query APIs are Phase 7 work)
 ```
 
 ---
@@ -141,14 +141,15 @@ The following table provides a quick reference to the primary documentation avai
 
 The PulseStream platform is being developed through a series of structured phases to ensure a robust and scalable implementation:
 
-1.  **System Architecture Definition**
-2.  **Local Development Platform Setup**
-3.  **Core Event Pipeline Implementation**
-4.  **Observability Integration**
-5.  **Reliability and Resilience Enhancements**
-6.  **Kubernetes Deployment Orchestration**
+1.  **System Architecture Definition** — ✅ Complete
+2.  **Local Development Platform Setup** — ✅ Complete
+3.  **Core Event Pipeline Implementation** — ✅ Complete
+4.  **Observability Integration** — ✅ Complete
+5.  **Reliability and Resilience Enhancements** — ✅ Complete
+6.  **Kubernetes Deployment Orchestration** — ✅ Complete
+7.  **Production Readiness and Platform Hardening** — 🚧 In Progress
 
-For a more detailed breakdown of these phases, please refer to the [full roadmap](./docs/roadmap.md).
+For a more detailed breakdown of these phases, please refer to the [full roadmap](./docs/roadmap.md). Current status is tracked in [PROJECT_STATE.md](./PROJECT_STATE.md).
 
 ---
 

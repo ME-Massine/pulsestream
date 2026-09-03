@@ -84,6 +84,7 @@ Dead-letter queue for failed events.
 - telemetry-processor
 
 **Consumers**
+- telemetry-processor replay endpoint (bounded, snapshot-based replay)
 - monitoring / manual inspection
 
 **Configuration**

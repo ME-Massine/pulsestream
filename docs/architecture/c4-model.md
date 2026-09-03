@@ -53,7 +53,7 @@ The Container view shows the major deployable/runtime building blocks of the pla
 
 Description
 
-PulseStream is composed of services and infrastructure that work together to ingest, process, and store telemetry data. Query and tracing containers are planned extensions.
+PulseStream is composed of services and infrastructure that work together to ingest, process, and store telemetry data. Distributed tracing is implemented; the query container exists as a scaffold whose APIs are Phase 7 work.
 
 Container Diagram
 
@@ -64,27 +64,26 @@ flowchart LR
 
     C --> D[Telemetry Processor]
     D --> E[(PostgreSQL)]
-    E --> F[Query Service planned]
+    E --> F[Query Service scaffold]
     F --> G[API Clients / Dashboards]
 
     D --> H[(telemetry.events.processed)]
     D --> I[(telemetry.events.anomalies)]
     D --> J[(telemetry.events.dlq)]
+    J --> D
 
     subgraph Observability
         K[Prometheus]
         L[Grafana]
-        M[OpenTelemetry planned]
-        N[Jaeger planned]
+        M[OpenTelemetry]
+        N[Jaeger]
     end
 
     B --> K
     D --> K
-    F --> K
 
     B --> M
     D --> M
-    F --> M
 
     M --> N
     K --> L
@@ -96,10 +95,10 @@ flowchart LR
 | ------------------- | ---------------------------------------------------------- | ------------------------------------------ |
 | Ingestion Service   | Accept telemetry events and publish them to Kafka          | Spring Boot                                |
 | Kafka Cluster       | Event streaming backbone                                   | Apache Kafka                               |
-| Telemetry Processor | Consume telemetry events, normalize data, detect anomalies | Spring Boot                                |
-| Query Service       | Planned API for processed telemetry and anomaly data       | Spring Boot                                |
+| Telemetry Processor | Consume telemetry events, normalize data, detect anomalies, route to DLQ and replay | Spring Boot                       |
+| Query Service       | Deployable scaffold; APIs for processed telemetry and anomaly data are Phase 7 work | Spring Boot                       |
 | PostgreSQL          | Persist processed telemetry records                        | PostgreSQL                                 |
-| Observability Stack | Metrics today; dashboards and tracing planned              | Prometheus, Grafana, OpenTelemetry, Jaeger |
+| Observability Stack | Metrics, version-controlled dashboards, and distributed tracing | Prometheus, Grafana, OpenTelemetry, Jaeger |
 | Device Simulator    | Planned synthetic telemetry traffic generator              | Spring Boot or lightweight simulator       |
 
 
@@ -107,7 +106,7 @@ Notes
 - Kafka is the central asynchronous communication layer.
 - Services are loosely coupled and communicate primarily through events.
 - PostgreSQL stores processed results, not the full streaming backbone.
-- Prometheus and Grafana are provisioned locally; tracing is planned.
+- Prometheus, Grafana dashboards, and OpenTelemetry tracing are implemented; traces export to Jaeger (local) or an OpenTelemetry Collector (Kubernetes).
 
 ## Level 3 — Component View
 
