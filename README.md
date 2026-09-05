@@ -160,6 +160,16 @@ The local development environment is defined with Docker Compose. Configuration 
 
 The local environment includes pre-configured instances of **Kafka**, **Zookeeper**, **PostgreSQL**, **Redis**, **Prometheus**, **Grafana**, and **Jaeger**.
 
+### Operations Console
+
+The anomaly-first PulseStream interface lives in [`apps/console`](./apps/console). It provides a unified view of pipeline health, anomaly triage, signal evidence, and per-event processing history. Until the query service exposes telemetry APIs, the console runs against realistic in-memory operational data.
+
+```bash
+cd apps/console
+npm install
+npm run dev
+```
+
 ---
 
 ## Contributing
