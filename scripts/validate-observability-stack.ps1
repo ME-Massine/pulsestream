@@ -188,10 +188,13 @@ function Get-SpansWithTag {
 
 # Pods matching a label selector whose Ready condition is True.
 #
-# Deliberately local rather than shared: #154 adds an equivalent
-# Get-ReadyPodNames to PulseStreamKubernetes.psm1, and adding a second copy of
-# the same function to that module here would collide with it on merge. Once
-# #154 lands, this can be deleted and the module helper used instead.
+# Deliberately local, and not a candidate for the module helper it resembles.
+# #154's Get-ReadyPodNames in PulseStreamKubernetes.psm1 takes an $AppName and
+# hard-codes the selector `app.kubernetes.io/name=$AppName` - the label-guessing
+# this validator intentionally replaced with each Deployment's own
+# spec.selector.matchLabels. This function takes an arbitrary $Selector so the
+# caller can pass exactly that computed selector, so the two are not
+# interchangeable and this one stays.
 function Get-ReadyPodName {
     param(
         [Parameter(Mandatory)] [string] $Namespace,
