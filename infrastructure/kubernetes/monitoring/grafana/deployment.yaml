@@ -123,6 +123,20 @@ spec:
               mountPath: /var/lib/grafana
             - name: tmp
               mountPath: /tmp
+            # Provisioning Grafana reads once at startup. Without these three the
+            # datasource and dashboard ConfigMaps (#156) are applied but never
+            # loaded, and the end-to-end validator's step 6 fails with "no
+            # dashboards loaded". Paths are the contract in README.md.
+            - name: datasource
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: dashboards
+              # Must match `options.path` in dashboard-provider-configmap.yaml.
+              mountPath: /etc/grafana/dashboards
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -135,3 +149,12 @@ spec:
             claimName: grafana-data
         - name: tmp
           emptyDir: {}
+        - name: datasource
+          configMap:
+            name: grafana-datasource
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
