@@ -1,0 +1,184 @@
+# Helm values for the in-cluster Prometheus (#154).
+#
+# Prometheus is installed as an add-on from the prometheus-community chart
+# rather than vendored as raw manifests, matching how metrics-server, the
+# Strimzi operator and prometheus-adapter are handled elsewhere in this
+# repository:
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install prometheus prometheus-community/prometheus \
+#     --namespace monitoring --create-namespace \
+#     --values infrastructure/kubernetes/monitoring/prometheus-values.yaml
+#
+# The release name `prometheus` in namespace `monitoring` produces the Service
+# `prometheus-server.monitoring.svc`, which is the URL
+# ../autoscaling/prometheus-adapter-values.yaml already points at. Renaming
+# either the release or the namespace breaks that pointer silently: the adapter
+# keeps running and every custom metric turns into <unknown>.
+#
+# The Compose configuration (infrastructure/docker/prometheus/prometheus.yml)
+# is unchanged and stays the local-development path. It scrapes a static host
+# target, which produces no `namespace`/`pod` labels and is therefore unusable
+# in a cluster - the pod discovery below exists for that reason, not as a
+# stylistic preference.
+
+# Sub-charts. All disabled: this issue deploys Prometheus and nothing else.
+# Alertmanager is explicitly out of scope, and the node/cluster-state exporters
+# collect host and API-object metrics that nothing in this repository reads yet.
+alertmanager:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+
+server:
+  global:
+    # Matches the Compose configuration, and gives the 2m rate window the
+    # prometheus-adapter rules use eight samples instead of the two the chart's
+    # 1m default would produce.
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    evaluation_interval: 1m
+
+  # Cluster-internal only. Validation goes through the API server proxy or
+  # `kubectl port-forward` (README.md in this directory); there is no NodePort
+  # or Ingress, because the expression browser is unauthenticated and would
+  # otherwise be reachable by anything that can reach a node.
+  service:
+    type: ClusterIP
+    servicePort: 80
+
+  # No PersistentVolumeClaim: on a dev cluster with no default StorageClass the
+  # pod would stay Pending forever waiting for a volume to bind, which is a
+  # worse failure than losing history on restart. The metrics here back
+  # autoscaling decisions and short-window validation queries, both of which
+  # read minutes of data. Enable persistence before treating this instance as a
+  # source of historical truth.
+  persistentVolume:
+    enabled: false
+  retention: 24h
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# The complete scrape configuration.
+#
+# `scrapeConfigs` is a MAP keyed by job name, and Helm merges maps key by key:
+# the chart's own entries survive unless they are named and disabled here. The
+# defaults are cluster-wide collection (API server, kubelet, cAdvisor,
+# annotation-driven pod and endpoint discovery) which nothing in this repository
+# consumes, so they are turned off one by one and the platform jobs are added
+# explicitly. Everything scraped by this instance is listed in this file.
+scrapeConfigs:
+  # Prometheus scraping itself, kept from the chart defaults and restated here
+  # so the file describes the whole target set. Its own /metrics is what proves
+  # the server is collecting at all, independently of any platform workload.
+  prometheus:
+    enabled: true
+
+  kubernetes-api-servers:
+    enabled: false
+  kubernetes-nodes:
+    enabled: false
+  kubernetes-nodes-cadvisor:
+    enabled: false
+  kubernetes-service-endpoints:
+    enabled: false
+  kubernetes-service-endpoints-slow:
+    enabled: false
+  kubernetes-services:
+    enabled: false
+  kubernetes-pods:
+    enabled: false
+  kubernetes-pods-slow:
+    enabled: false
+  prometheus-pushgateway:
+    enabled: false
+
+  # ingestion-service. Pod discovery (not a static target, and not the ClusterIP
+  # Service) so every replica is scraped individually and each series carries
+  # the `namespace` and `pod` labels prometheus-adapter needs to map a metric
+  # onto a pod. A Service target would load-balance across replicas and produce
+  # one anonymous series.
+  ingestion-service:
+    enabled: true
+    metrics_path: /actuator/prometheus
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      # Discovery returns every pod in every namespace the ServiceAccount can
+      # see; these two keeps reduce that to the ingestion-service pods, one
+      # target per pod. Without the port-name keep, a pod exposing more than one
+      # container port becomes one target per port and the extra targets fail
+      # every scrape.
+      - source_labels:
+          - __meta_kubernetes_pod_label_app_kubernetes_io_name
+        action: keep
+        regex: ingestion-service
+      - source_labels:
+          - __meta_kubernetes_pod_container_port_name
+        action: keep
+        regex: http
+      # Terminated pods stay in discovery for a while. They are unreachable, so
+      # scraping them only produces target errors.
+      - source_labels:
+          - __meta_kubernetes_pod_phase
+        action: drop
+        regex: (Succeeded|Failed)
+      # The labels prometheus-adapter matches its pod rules on. Discovery meta
+      # labels are dropped after relabeling, so they have to be copied onto real
+      # label names here or they never reach the stored series.
+      - source_labels:
+          - __meta_kubernetes_namespace
+        target_label: namespace
+      - source_labels:
+          - __meta_kubernetes_pod_name
+        target_label: pod
+      - source_labels:
+          - __meta_kubernetes_pod_node_name
+        target_label: node
+
+  # query-service. Same shape as above; the read API exposes the identical
+  # actuator surface on its own port (8083, named `http`).
+  query-service:
+    enabled: true
+    metrics_path: /actuator/prometheus
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels:
+          - __meta_kubernetes_pod_label_app_kubernetes_io_name
+        action: keep
+        regex: query-service
+      - source_labels:
+          - __meta_kubernetes_pod_container_port_name
+        action: keep
+        regex: http
+      - source_labels:
+          - __meta_kubernetes_pod_phase
+        action: drop
+        regex: (Succeeded|Failed)
+      - source_labels:
+          - __meta_kubernetes_namespace
+        target_label: namespace
+      - source_labels:
+          - __meta_kubernetes_pod_name
+        target_label: pod
+      - source_labels:
+          - __meta_kubernetes_pod_node_name
+        target_label: node
+
+  # telemetry-processor is deliberately NOT scraped. Its actuator surface
+  # (including the state-changing dlqreplay endpoint, #125) is served on a
+  # separate management port bound to loopback by default, so
+  # /actuator/prometheus is unreachable from the pod network and a job here
+  # would be a permanently failing target. Exposing that port is a service and
+  # network-policy change, not a Prometheus change - see README.md.

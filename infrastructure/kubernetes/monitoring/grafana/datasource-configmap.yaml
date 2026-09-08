@@ -1,0 +1,73 @@
+# The Prometheus datasource Grafana is provisioned with in the cluster (#156).
+#
+# Provisioning, not the UI. A datasource added through the Grafana UI lives in
+# Grafana's SQLite database, which is on an emptyDir in this deployment - it
+# disappears on the first restart or reschedule, and it is not reviewable. This
+# ConfigMap is the source of truth instead: Grafana reads every file under
+# /etc/grafana/provisioning/datasources at startup and reconciles what it finds
+# there against its database.
+#
+# THE UID IS A CONTRACT. Every dashboard in dashboards-configmap.yaml (and in
+# observability/grafana/dashboards/) references its datasource as
+# `{"type": "prometheus", "uid": "prometheus"}` rather than by name, because the
+# name is display text and the UID is what a saved panel actually resolves.
+# Changing `uid` below leaves every dashboard pointing at a datasource that no
+# longer exists, and the panels fail with "Datasource prometheus was not found"
+# rather than with an empty graph.
+#
+# THE URL IS THE #154 SERVICE. ../prometheus-values.yaml installs the
+# prometheus-community chart as release `prometheus` in namespace `monitoring`,
+# which publishes Service `prometheus-server` on port 80. The fully-qualified
+# name is used rather than the short `prometheus-server` so this file keeps
+# working if Grafana is later moved out of the `monitoring` namespace. Renaming
+# that release or namespace changes this URL.
+#
+# Grafana does not watch this ConfigMap. A kubelet refreshes the mounted file
+# within a minute or so of an edit, but Grafana only re-reads provisioning at
+# startup, so applying a change here means `kubectl rollout restart deployment/grafana`
+# (or an admin POST to /api/admin/provisioning/datasources/reload).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: visualization
+    app.kubernetes.io/part-of: pulsestream
+    # Picked up by the grafana chart's provisioning sidecar, which watches for
+    # this label cluster-wide. Harmless on a plain Deployment that mounts this
+    # ConfigMap by name; see README.md for both wiring options.
+    grafana_datasource: "1"
+data:
+  # The file name matters only in that it ends in .yaml - Grafana loads every
+  # file in the provisioning directory. The key becomes the file name when this
+  # ConfigMap is mounted.
+  prometheus.yaml: |
+    # Provisioning file format version, not a Grafana version.
+    apiVersion: 1
+
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        # proxy: queries go browser -> Grafana -> Prometheus. `direct` would
+        # have the browser call the URL itself, which no browser outside the
+        # cluster can resolve, and which would expose a Prometheus that has no
+        # authentication to anything that can reach Grafana's origin.
+        access: proxy
+        url: http://prometheus-server.monitoring.svc:80
+        isDefault: true
+        # Read-only in the UI, unlike the Compose copy in
+        # infrastructure/docker/grafana/provisioning/datasources/prometheus.yml.
+        # A UI edit here would be written to a database that is discarded on the
+        # next restart, so the setting that silently reverts is worse than the
+        # one that refuses up front.
+        editable: false
+        jsonData:
+          # Matches `server.global.scrape_interval` in
+          # ../prometheus-values.yaml (15s). Grafana uses
+          # this as the floor for $__interval and $__rate_interval, so a value
+          # below the real scrape interval makes range queries ask for a
+          # resolution Prometheus never stored and draws gaps between points.
+          timeInterval: 15s

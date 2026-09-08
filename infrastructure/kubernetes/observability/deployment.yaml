@@ -48,7 +48,7 @@ spec:
         # not. Update this value when configmap.yaml changes (or run
         # `kubectl rollout restart`), which is the same manual step the
         # Prometheus manifests document.
-        pulsestream.io/config-revision: "1"
+        pulsestream.io/config-revision: "2"
     spec:
       serviceAccountName: otel-collector
       securityContext:

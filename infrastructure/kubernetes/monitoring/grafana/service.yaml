@@ -1,0 +1,24 @@
+# Cluster-internal access to the Grafana UI (#155).
+#
+# Grafana stays off a public NodePort or LoadBalancer because the login surface
+# has no SSO or advanced RBAC in this issue. Operators access the UI through a
+# local `kubectl port-forward service/grafana 3000:80 -n monitoring` tunnel.
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: visualization
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
+

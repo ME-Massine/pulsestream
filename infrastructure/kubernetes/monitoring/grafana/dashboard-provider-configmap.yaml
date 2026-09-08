@@ -1,0 +1,54 @@
+# The file provider that loads the platform dashboards into Grafana (#156).
+#
+# Two ConfigMaps are needed for provisioned dashboards and they are not
+# interchangeable: this one tells Grafana *where to look* and is mounted under
+# /etc/grafana/provisioning/dashboards, and dashboards-configmap.yaml holds the
+# dashboard JSON itself and is mounted at the path named below. Mounting only
+# the JSON produces a Grafana with no dashboards and nothing in the log.
+#
+# This file is only needed when Grafana is wired up with plain volume mounts.
+# The grafana chart's dashboard sidecar writes its own provider pointing at the
+# directory it syncs into, so installing both means two providers loading the
+# same dashboards - see README.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: visualization
+    app.kubernetes.io/part-of: pulsestream
+data:
+  pulsestream.yaml: |
+    apiVersion: 1
+
+    providers:
+      - name: pulsestream
+        orgId: 1
+        folder: PulseStream
+        type: file
+        # Keep Grafana's copy in step when a dashboard is removed from the
+        # ConfigMap, instead of leaving an orphan that no file explains.
+        disableDeletion: false
+        # A ConfigMap update reaches the mounted file some tens of seconds after
+        # `kubectl apply`; this provider re-reads the directory on the same
+        # order of time, so a dashboard change lands without a pod restart. A
+        # datasource change still needs one - see datasource-configmap.yaml.
+        updateIntervalSeconds: 30
+        # False on purpose, and this is the one setting that differs from the
+        # Compose provider (infrastructure/docker/grafana/provisioning/dashboards/dashboards.yml).
+        # A ConfigMap volume is mounted read-only, so with `true` Grafana accepts
+        # a "Save dashboard" in the UI, fails to write the file back, and the
+        # edit vanishes at the next provisioning sweep. `false` makes the UI say
+        # so instead: the dashboard is marked provisioned and Save offers
+        # "Save JSON to file", which is how an edit is meant to get back into
+        # this repository.
+        allowUiUpdates: false
+        options:
+          # Must match where dashboards-configmap.yaml is mounted.
+          path: /etc/grafana/dashboards
+          # All dashboards land in the single `folder` above. Turning this on
+          # would derive the folder from subdirectories, which a flat ConfigMap
+          # mount does not have.
+          foldersFromFilesStructure: false

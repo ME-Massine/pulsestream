@@ -13,7 +13,7 @@ The design — which metric, why prometheus-adapter rather than KEDA, why consum
 
 ## What this is not
 
-This directory does **not** deploy Prometheus. The repository's Prometheus configuration today is Compose-only (`infrastructure/docker/prometheus/prometheus.yml`) and scrapes a static host target, which is useless to an in-cluster adapter. An in-cluster Prometheus is a prerequisite of this path, tracked with the wider metrics integration work (#154+).
+This directory does **not** deploy Prometheus. That is [`../monitoring/`](../monitoring/README.md) (#154), which installs the in-cluster Prometheus this path depends on and already satisfies the two requirements below. The Compose configuration (`infrastructure/docker/prometheus/prometheus.yml`) is not a substitute: it scrapes a static host target, which is useless to an in-cluster adapter.
 
 Whatever installs it must satisfy two requirements, or the adapter cannot serve pod metrics:
 
@@ -31,7 +31,7 @@ helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapte
   --values infrastructure/kubernetes/autoscaling/prometheus-adapter-values.yaml
 ```
 
-Set `prometheus.url` in the values file to the Service of the in-cluster Prometheus before installing. The default (`http://prometheus-server.monitoring.svc`) is the `prometheus-community/prometheus` chart's Service name in a `monitoring` namespace.
+Set `prometheus.url` in the values file to the Service of the in-cluster Prometheus before installing. The default (`http://prometheus-server.monitoring.svc`) is what installing [`../monitoring/prometheus-values.yaml`](../monitoring/prometheus-values.yaml) as release `prometheus` in the `monitoring` namespace produces, so it needs no change if that is how Prometheus was installed.
 
 > Exactly one component in a cluster serves `custom.metrics.k8s.io`. If another adapter is already registered, this install takes the API over silently. Check first:
 > ```bash

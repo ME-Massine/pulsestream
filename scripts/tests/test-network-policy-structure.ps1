@@ -229,6 +229,48 @@ try {
         -Description "an OTLP egress rule on query-service, which emits no spans"
 
     Set-PolicyObject -Name "query-service" -Policy $originalQuery
+
+    # --- Prometheus ingress (#154) -----------------------------------------
+    # The scrape allowance on query-service must stay pinned to the exact
+    # server-pod labels. Dropping one label widens the peer to any pod in the
+    # monitoring namespace that carries the remaining labels.
+    $query = Get-PolicyObject -Name "query-service"
+    $prometheusRule = @($query.spec.ingress) | Where-Object {
+        @($_.from) | Where-Object {
+            $null -ne $_.namespaceSelector -and
+            $_.namespaceSelector.matchLabels.'kubernetes.io/metadata.name' -eq "monitoring"
+        }
+    } | Select-Object -First 1
+    if ($null -eq $prometheusRule) {
+        throw "query-service.yaml has no ingress rule for the monitoring namespace to mutate; add the Prometheus scrape allowance first"
+    }
+
+    $prometheusPeer = @($prometheusRule.from) | Where-Object { $null -ne $_.namespaceSelector } | Select-Object -First 1
+    $prometheusPeer.podSelector.matchLabels.PSObject.Properties.Remove("app.kubernetes.io/component")
+    Set-PolicyObject -Name "query-service" -Policy $query
+
+    Assert-ValidatorRejects `
+        -ExpectedMessage "monitoring-namespace Prometheus server pods" `
+        -Description "a query-service Prometheus ingress peer missing a required pod label"
+
+    Set-PolicyObject -Name "query-service" -Policy $originalQuery
+
+    # Removing the Prometheus allowance entirely must also fail; the
+    # same-namespace rule cannot admit Prometheus from `monitoring`.
+    $query = Get-PolicyObject -Name "query-service"
+    $query.spec.ingress = @($query.spec.ingress | Where-Object {
+        -not (@($_.from) | Where-Object {
+            $null -ne $_.namespaceSelector -and
+            $_.namespaceSelector.matchLabels.'kubernetes.io/metadata.name' -eq "monitoring"
+        })
+    })
+    Set-PolicyObject -Name "query-service" -Policy $query
+
+    Assert-ValidatorRejects `
+        -ExpectedMessage "monitoring-namespace Prometheus server pods" `
+        -Description "a query-service policy with no Prometheus scrape ingress rule"
+
+    Set-PolicyObject -Name "query-service" -Policy $originalQuery
 } finally {
     Remove-Item -LiteralPath Function:\kubectl -ErrorAction SilentlyContinue
     Remove-Variable -Name PulseStreamPolicyJson -Scope Global -ErrorAction SilentlyContinue

@@ -1,0 +1,22 @@
+# Persistent storage for Grafana's SQLite database, users, and local state.
+#
+# The StorageClass is intentionally left unset so each cluster can use its
+# default provisioner. The deployment remains at one replica because the
+# embedded SQLite database on this ReadWriteOnce volume is not a multi-writer
+# backend.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: visualization
+    app.kubernetes.io/part-of: pulsestream
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+

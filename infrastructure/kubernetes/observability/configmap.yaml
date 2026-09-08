@@ -5,15 +5,13 @@
 # per backend. Changing where traces end up is then an edit to the `exporters`
 # block here, not a redeploy of every service.
 #
-# THE EXPORTER IS `debug`, ON PURPOSE. No trace backend runs in the cluster yet
-# - Jaeger is still marked planned in docs/diagrams/kubernetes-deployment.md,
-# and it is deployed by a separate issue. An `otlp` exporter aimed at a Service
-# that does not exist would leave the collector retrying and queueing every
-# batch it accepts, so the pipeline terminates in `debug`, which writes a
-# one-line summary per batch to the collector's stdout. That is what makes
-# "services can export telemetry to the collector" verifiable today (see
-# README.md). When the backend lands, it is added to `exporters` and to the
-# traces pipeline's exporter list; nothing else in this directory changes.
+# TWO EXPORTERS, AND BOTH EARN THEIR PLACE (#158). `otlp/jaeger` forwards every
+# batch to the tracing backend, which is where traces are actually inspected.
+# `debug` stays alongside it because it is the only signal that survives the
+# backend being down: a batch that reaches the collector is logged whether or
+# not Jaeger accepts it, which is what separates "the service never exported"
+# from "the backend rejected it" during an incident. At `verbosity: basic` it
+# is one line per batch.
 #
 # EVERY ENDPOINT IS BOUND EXPLICITLY TO 0.0.0.0. Since collector v0.110 the
 # default host for a component endpoint is `localhost`, so a receiver that omits
@@ -67,6 +65,22 @@ data:
         send_batch_size: 512
 
     exporters:
+      # The tracing backend (#158). gRPC, so the endpoint carries no scheme -
+      # an `http://` prefix here is a startup error, not a fallback.
+      #
+      # `insecure: true` disables TLS on this hop. It is pod-to-pod traffic
+      # inside the cluster to a backend that serves no certificate; the
+      # alternative is issuing one for a service with no authentication in front
+      # of it either. Revisit together, not separately.
+      #
+      # If Jaeger is unavailable the exporter retries with backoff and then
+      # drops the batch. That is the intended failure: the collector must not
+      # block its receivers on a diagnostic backend, and the platform's own
+      # event pipeline never touches this path.
+      otlp/jaeger:
+        endpoint: jaeger.observability.svc.cluster.local:4317
+        tls:
+          insecure: true
       # `basic` logs one line per exported batch (span count), not the spans
       # themselves. `detailed` prints every span and attribute and is a way to
       # fill a node's log disk on a busy pipeline; switch to it only while
@@ -97,6 +111,7 @@ data:
             - memory_limiter
             - batch
           exporters:
+            - otlp/jaeger
             - debug
       telemetry:
         logs:
