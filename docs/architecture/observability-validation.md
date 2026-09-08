@@ -107,19 +107,20 @@ pwsh ./scripts/tests/test-observability-stack-checks.ps1
 - Grafana credentials. The script defaults to `admin`/`admin`; pass
   `-GrafanaUser` / `-GrafanaPassword` for anything else.
 
-### The stack has to be the one in this repository
+### Repository-owned components have to match the checked-in manifests
 
 Step 6 asserts that Grafana has the dashboards loaded, which requires the #156
 provisioning ConfigMaps to be **mounted** into the Grafana pod. Applying them is
-not enough, and the Grafana Deployment in #155 currently mounts only its data and
-`tmp` volumes — so on a stack deployed purely from the manifests in this
-repository, step 6 fails until that Deployment gains the three mounts documented
+not enough. The Grafana Deployment includes the three read-only mounts documented
 in
-[`infrastructure/kubernetes/monitoring/grafana/README.md`](../../infrastructure/kubernetes/monitoring/grafana/README.md).
+[`infrastructure/kubernetes/monitoring/grafana/README.md`](../../infrastructure/kubernetes/monitoring/grafana/README.md),
+and the structure regression test protects that contract.
 
-A run that passes only after mounting them by hand validates that cluster, not
-the manifests. The evidence this issue is accepted on has to come from a stack
-brought up entirely from the repository.
+A run that passes only after changing a repository-owned component by hand
+validates that cluster, not the manifests. The acceptance environment must deploy
+the platform and observability components from their checked-in manifests. Kafka
+and Postgres are prerequisites; Postgres can be supplied externally because this
+repository does not currently contain a Kubernetes Postgres manifest.
 
 ---
 
