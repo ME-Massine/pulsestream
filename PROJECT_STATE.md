@@ -30,7 +30,7 @@ PulseStream is a cloud-native event processing platform engineered for the inges
 
 ### Phase 7 — Production Readiness and Platform Hardening (In Progress)
 
-Phases 1 through 6 delivered a deployable, observable, resilient telemetry platform: HTTP ingestion, Kafka transport, stream processing with anomaly detection, PostgreSQL persistence, dead-letter and replay handling, distributed tracing, a Grafana/Prometheus observability stack, and Kubernetes manifests for every workload.
+Phases 1 through 6 delivered a deployable, observable, resilient telemetry platform: HTTP ingestion, Kafka transport, stream processing with anomaly detection, PostgreSQL persistence, dead-letter and replay handling, distributed tracing, a Grafana/Prometheus observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes.
 
 Phase 7 turns that deployable platform into a **secure, operable, versioned, production-ready single-cluster release.** It completes the read side (query APIs and anomaly persistence), strengthens distributed-processing correctness guarantees, introduces enforceable CI and supply-chain quality gates, secures ingestion and Kafka communication, and validates the platform under realistic load and failure conditions.
 
@@ -85,17 +85,18 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
 ### Reliability and Resilience (Phase 5)
 *   Dead-letter routing to `telemetry.events.dlq` (`DeadLetterPublisher`, `DeadLetterEventConsumer`).
 *   Event replay from the dead-letter topic via a management endpoint (`DlqReplayService`, `DlqReplayEndpoint`, `ReplayEventPublisher`) with bounded, snapshot-based replay sessions.
-*   Retry and failure-isolation behavior in the processing consumers.
+*   Kafka producer retries plus consumer failure isolation through dead-letter routing; replay failures keep the original DLQ record available for a later operator-triggered attempt.
 *   Documented [event replay strategy](docs/architecture/event-replay-strategy.md).
 
 ### Kubernetes Deployment (Phase 6)
-Kubernetes manifests are committed for the full platform under [infrastructure/kubernetes/](infrastructure/kubernetes/):
+Kubernetes manifests are committed under [infrastructure/kubernetes/](infrastructure/kubernetes/) for the application, streaming, and observability workloads:
 *   Deployments, Services, and ConfigMaps for `ingestion-service`, `telemetry-processor`, and the `query-service` scaffold.
 *   Kafka on Kubernetes via the Strimzi operator (`KafkaNodePool`, `Kafka`, and `KafkaTopic` resources).
-*   In-cluster observability: Grafana, and an OpenTelemetry Collector.
+*   In-cluster observability: Prometheus, Grafana, an OpenTelemetry Collector, and Jaeger.
 *   Horizontal Pod Autoscalers, including CPU-based and Prometheus-adapter custom-metrics autoscaling.
 *   Network policies for service-to-service isolation.
 *   Container build, image registry, and image validation standards.
+*   PostgreSQL is a required external dependency; the repository does not yet contain a Kubernetes PostgreSQL workload or Service manifest.
 
 ---
 

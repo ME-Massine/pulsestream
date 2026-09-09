@@ -5,7 +5,7 @@
 ![Last Commit](https://img.shields.io/github/last-commit/ME-Massine/pulsestream)
 ![Repo Size](https://img.shields.io/github/repo-size/ME-Massine/pulsestream)
 
-PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the full platform. A `query-service` scaffold exists; query APIs, anomaly persistence, and simulator tooling are the primary remaining gaps addressed in Phase 7.
+PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes. A `query-service` scaffold exists; query APIs, anomaly persistence, and simulator tooling are the primary remaining gaps addressed in Phase 7.
 
 > **Project status.** The platform is at the start of **Phase 7 — Production Readiness and Platform Hardening**; Phases 1 through 6 are complete. The authoritative, up-to-date status is maintained in [PROJECT_STATE.md](./PROJECT_STATE.md).
 
@@ -29,13 +29,13 @@ flowchart LR
 
     C --> D[Telemetry Processor]
     D --> E[(PostgreSQL)]
-    E --> F[Query Service scaffold]
-    F --> G[API Clients / Dashboards]
+    E -.->|planned reads| F[Query Service scaffold]
+    F -.->|planned APIs| G[API Clients / Dashboards]
 
     D --> H[(telemetry.events.processed)]
     D --> I[(telemetry.events.anomalies)]
     D --> J[(telemetry.events.dlq)]
-    J --> D
+    J -->|operator-triggered replay listener| D
 
     subgraph Observability
         K[Prometheus]
@@ -90,7 +90,7 @@ The platform utilizes a curated selection of industry-standard technologies to a
 | **OpenTelemetry** | Instrumentation for distributed tracing, exporting OTLP traces. |
 | **Jaeger** | Local distributed tracing backend for collecting and visualizing OpenTelemetry traces. |
 | **Docker** | Facilitates a consistent local development environment. |
-| **Kubernetes** | Cluster deployment target; manifests for all workloads are committed under `infrastructure/kubernetes/`. |
+| **Kubernetes** | Cluster deployment target; manifests for the application services, Kafka, and observability components are committed under `infrastructure/kubernetes/`. PostgreSQL is an external prerequisite. |
 
 ---
 
@@ -109,8 +109,8 @@ docs/
 
 infrastructure/
 ├─ docker/                # local Docker Compose stack
-└─ kubernetes/            # committed manifests for all workloads (services, Kafka/Strimzi,
-                          # monitoring, observability, autoscaling, network policies)
+└─ kubernetes/            # committed manifests for services, Kafka/Strimzi, monitoring,
+                          # observability, autoscaling, and network policies
 
 observability/
 └─ grafana/dashboards/    # version-controlled Grafana dashboard definitions

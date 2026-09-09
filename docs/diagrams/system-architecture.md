@@ -12,11 +12,11 @@ flowchart LR
     C --> T3[(Kafka Topic: telemetry.events.anomalies)]
     C --> T4[(Kafka Topic: telemetry.events.dlq)]
 
-    T4 --> C
+    T4 -->|operator-triggered replay listener| C
 
     C --> D[PostgreSQL]
-    D --> E[Query Service scaffold]
-    E --> F[Dashboard / API Clients]
+    D -.->|planned reads| E[Query Service scaffold]
+    E -.->|planned APIs| F[Dashboard / API Clients]
 
     subgraph Observability
         P[Prometheus]

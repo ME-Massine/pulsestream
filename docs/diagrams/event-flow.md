@@ -21,9 +21,9 @@ sequenceDiagram
     Processor->>Processor: Apply anomaly detection
     Processor->>DB: Store processed telemetry
     Processor->>Anomalies: Publish telemetry.anomaly if detected
-    Query->>DB: Read processed telemetry
-    Dashboard->>Query: Request telemetry data
-    Query->>Dashboard: Return response
+    Dashboard-->>Query: Planned: request telemetry data
+    Query-->>DB: Planned: read processed telemetry
+    Query-->>Dashboard: Planned: return response
 ```
 
 **Notes:**

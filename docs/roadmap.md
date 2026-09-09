@@ -88,7 +88,7 @@ The authoritative, up-to-date status of the platform is tracked in [PROJECT_STAT
 
 *   Dead-letter queue handling — implemented (`telemetry.events.dlq` routing)
 *   Event replay capability — implemented (bounded replay from the dead-letter topic via a management endpoint)
-*   Retry mechanisms — implemented in the processing consumers
+*   Retry mechanisms — implemented for Kafka publishing; failed consumer processing routes to the DLQ, and failed replay records remain available for a later operator-triggered attempt
 *   Failure isolation — implemented
 
 **Status:** Complete
@@ -103,7 +103,7 @@ The authoritative, up-to-date status of the platform is tracked in [PROJECT_STAT
 
 **Deliverables:**
 
-*   Kubernetes manifests — implemented for all workloads under `infrastructure/kubernetes/`
+*   Kubernetes manifests — implemented for the application services, Kafka, and observability components under `infrastructure/kubernetes/`; PostgreSQL is supplied separately
 *   Service deployments — implemented for `ingestion-service`, `telemetry-processor`, and the `query-service` scaffold
 *   Kafka cluster deployment — implemented via the Strimzi operator
 *   Observability stack in Kubernetes — implemented (Grafana, OpenTelemetry Collector)
@@ -112,7 +112,7 @@ The authoritative, up-to-date status of the platform is tracked in [PROJECT_STAT
 
 **Status:** Complete
 
-**Outcome:** Committed, reviewable manifests deploy the full platform to a Kubernetes cluster. End-to-end validation against a live target cluster is completed as part of Phase 7.
+**Outcome:** Committed, reviewable manifests deploy the application services, Kafka, and observability components to a Kubernetes cluster when their documented prerequisites, including PostgreSQL, are supplied. Full-platform end-to-end validation against a live target cluster remains Phase 7 work.
 
 ---
 

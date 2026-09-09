@@ -89,20 +89,20 @@ The telemetry-processor consumes raw telemetry events and performs real-time ana
 
 **Status:** Scaffold exists at `services/query-service`. Query business functionality (REST endpoints, data access) is still planned.
 
-The Query Service exposes APIs that allow external systems and dashboards to retrieve telemetry data and anomalies.
+The Query Service is intended to expose APIs that allow external systems and dashboards to retrieve telemetry data and anomalies.
 
-**Responsibilities:**
+**Planned responsibilities:**
 
 *   Expose REST APIs
 *   Query processed telemetry data
 *   Retrieve anomaly records
 *   Support filtering and aggregation queries
 
-**Primary data interaction:**
+**Planned primary data interaction:**
 
 *   Reads from PostgreSQL
 
-**Key characteristics:**
+**Planned characteristics:**
 
 *   Read-oriented service
 *   Optimized for data retrieval

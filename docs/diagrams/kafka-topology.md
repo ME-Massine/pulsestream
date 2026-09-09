@@ -12,11 +12,10 @@ flowchart LR
     C --> T2[(telemetry.events.processed)]
     C --> T3[(telemetry.events.anomalies)]
     C --> T4[(telemetry.events.dlq)]
-    T4 --> C
+    T4 -->|operator-triggered replay listener| C
 
-    T2 --> D[Query Service scaffold / downstream consumers]
-    T3 --> E[Alerting / Dashboard / Query Service scaffold]
-    T4 --> F[DLQ replay endpoint on telemetry-processor]
+    T2 -.-> D[Future query / downstream consumers]
+    T3 -.-> E[Future alerting / query consumers]
 ```
 
 ### Topic Definitions
@@ -24,9 +23,9 @@ flowchart LR
 | Topic                | Producer                                | Consumer                                  | Purpose                           |
 |----------------------|-----------------------------------------|-------------------------------------------|-----------------------------------|
 | `telemetry.events.raw`      | Ingestion Service                       | telemetry-processor                       | Raw incoming telemetry events     |
-| `telemetry.events.processed`| telemetry-processor                     | Query Service (scaffold) / downstream consumers | Normalized and enriched telemetry data |
-| `telemetry.events.anomalies`| telemetry-processor                     | Query Service (scaffold) / future alerting consumers | Detected anomaly events           |
-| `telemetry.events.dlq`| telemetry-processor | telemetry-processor replay endpoint / inspection | Invalid or failed events          |
+| `telemetry.events.processed`| telemetry-processor                     | Future query / downstream consumers | Normalized and enriched telemetry data |
+| `telemetry.events.anomalies`| telemetry-processor                     | Future alerting / query consumers | Detected anomaly events           |
+| `telemetry.events.dlq`| telemetry-processor | telemetry-processor replay listener / inspection | Invalid or failed events          |
 
 ### Notes
 

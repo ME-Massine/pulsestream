@@ -2,7 +2,7 @@
 
 PulseStream is a cloud-native event processing platform designed to ingest, process, and analyze IoT telemetry data at scale.
 
-The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence of normal processed telemetry records, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for all workloads. Query APIs and application-level anomaly persistence are the primary remaining gaps, addressed in Phase 7.
+The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence of normal processed telemetry records, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for the application services, Kafka, and observability components; PostgreSQL must currently be supplied separately. Query APIs and application-level anomaly persistence are the primary remaining gaps, addressed in Phase 7.
 
 The system is designed using an event-driven architecture built around Apache Kafka. The authoritative platform status is maintained in [PROJECT_STATE.md](../PROJECT_STATE.md).
 
@@ -107,9 +107,9 @@ Redis may be used as a caching layer for frequently requested data.
 
 **Status:** Scaffold. A deployable `services/query-service` module and its Kubernetes manifests exist, but the REST query endpoints and data access are Phase 7 work.
 
-The query service exposes APIs to retrieve processed telemetry data.
+The query service is intended to expose APIs for retrieving processed telemetry data.
 
-**Responsibilities:**
+**Planned responsibilities:**
 
 *   Querying PostgreSQL
 *   Aggregating device telemetry
@@ -151,7 +151,7 @@ Spring Boot platform services are run from their service directories on the host
 
 ### Production Deployment
 
-Cluster deployment targets **Kubernetes**. Manifests for all workloads — the platform services, Kafka (via the Strimzi operator), observability, autoscaling, and network policies — are committed under `infrastructure/kubernetes/`. End-to-end validation against a live target cluster is completed as part of Phase 7.
+Cluster deployment targets **Kubernetes**. Manifests for the platform services, Kafka (via the Strimzi operator), observability, autoscaling, and network policies are committed under `infrastructure/kubernetes/`; PostgreSQL must currently be provisioned separately. Full-platform end-to-end validation against a live target cluster remains Phase 7 work.
 
 Kubernetes provides:
 

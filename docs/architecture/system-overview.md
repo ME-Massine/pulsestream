@@ -37,11 +37,12 @@ Telemetry events are processed asynchronously through Kafka consumers. Processin
 
 ### Anomaly Detection
 
-The platform analyzes telemetry streams and detects abnormal device behavior such as:
+The platform analyzes telemetry streams and currently detects abnormal device behavior such as:
 
 - threshold breaches
 - abnormal spikes or drops in sensor values
-- missing device heartbeats
+
+Missing-device-heartbeat detection is planned.
 
 Detected anomalies are emitted as dedicated Kafka events. The database schema includes an anomalies table, but application-level anomaly persistence is not implemented yet.
 
@@ -96,7 +97,7 @@ Kafka Topics:
 ↓
 PostgreSQL
 ↓
-Query Service (scaffold)
+Query Service (scaffold; planned APIs)
 ↓
 Dashboard / API Clients
 

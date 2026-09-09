@@ -64,13 +64,13 @@ flowchart LR
 
     C --> D[Telemetry Processor]
     D --> E[(PostgreSQL)]
-    E --> F[Query Service scaffold]
-    F --> G[API Clients / Dashboards]
+    E -.->|planned reads| F[Query Service scaffold]
+    F -.->|planned APIs| G[API Clients / Dashboards]
 
     D --> H[(telemetry.events.processed)]
     D --> I[(telemetry.events.anomalies)]
     D --> J[(telemetry.events.dlq)]
-    J --> D
+    J -->|operator-triggered replay listener| D
 
     subgraph Observability
         K[Prometheus]
