@@ -3,17 +3,22 @@ name: Publish images
 # Publishes platform service container images to the GitHub Container Registry
 # (GHCR) so Kubernetes can pull them. See
 # docs/architecture/container-image-registry.md for the naming and tagging
-# strategy this workflow implements.
+# strategy this workflow implements, and
+# docs/architecture/release-and-promotion.md for what happens to an image after
+# it is published.
 #
-# Runs only on pushes to main and on version tags (v*) — never on pull requests,
-# so forks cannot publish and unmerged work never reaches the registry.
+# Runs only on pushes to main — never on pull requests, so forks cannot publish
+# and unmerged work never reaches the registry.
+#
+# It deliberately does NOT run on v* tags. A release version is applied to an
+# already-tested digest by release-promotion.yml, which re-tags rather than
+# rebuilds: building again on the tag would produce different image contents
+# under a version whose contents were already approved (#264).
 
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
 
 jobs:
   publish:
@@ -45,6 +50,7 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build and push image
+        id: build
         run: |
           set -euo pipefail
 
@@ -53,24 +59,131 @@ jobs:
           owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           image="ghcr.io/${owner}/pulsestream/${{ matrix.service }}"
           short_sha="${GITHUB_SHA::7}"
+          source_tag="sha-${short_sha}"
 
-          # Every image gets an immutable per-commit tag. main also gets the
-          # moving "latest" tag; a v* tag push also gets the release version.
-          tags=("sha-${short_sha}")
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            tags+=("latest")
+          # A commit must map to exactly one digest per service, and a Java
+          # build is not byte-reproducible: rebuilding this commit would publish
+          # different contents under a tag a release may already have promoted.
+          # So an existing per-commit tag is reused rather than overwritten,
+          # which also makes a re-run of this workflow a no-op instead of a
+          # silent repoint.
+          if docker buildx imagetools inspect "${image}:${source_tag}" > /dev/null 2>&1; then
+            echo "${image}:${source_tag} already exists - reusing it rather than rebuilding this commit."
+            rebuilt="false"
+          else
+            # OCI labels carry the source commit into the image itself, so an
+            # operator holding only a running pod's digest can find the code it
+            # was built from (see the release doc's traceability section).
+            docker build \
+              --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.version=${source_tag}" \
+              --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -t "${image}:${source_tag}" \
+              "services/${{ matrix.service }}"
+            docker push "${image}:${source_tag}"
+            rebuilt="true"
           fi
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            tags+=("${GITHUB_REF#refs/tags/}")
+
+          digest="$(docker buildx imagetools inspect "${image}:${source_tag}" --format '{{.Manifest.Digest}}')"
+          if [ -z "${digest}" ]; then
+            echo "::error::Could not resolve a digest for ${image}:${source_tag}"
+            exit 1
           fi
 
-          echo "Publishing ${image} with tags: ${tags[*]}"
+          # `latest` is a convenience pointer for local pulls. It is moved onto
+          # the digest that was just published rather than onto a fresh build,
+          # so it can never name contents no per-commit tag also names.
+          docker buildx imagetools create --tag "${image}:latest" "${image}@${digest}"
 
-          # Build once, then apply every tag to the same image id and push each.
-          docker build -t "${image}:${tags[0]}" "services/${{ matrix.service }}"
-          for tag in "${tags[@]:1}"; do
-            docker tag "${image}:${tags[0]}" "${image}:${tag}"
-          done
-          for tag in "${tags[@]}"; do
-            docker push "${image}:${tag}"
-          done
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "source_tag=${source_tag}" >> "$GITHUB_OUTPUT"
+          echo "rebuilt=${rebuilt}" >> "$GITHUB_OUTPUT"
+
+      - name: Record the published digest
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          cat > "digests/${{ matrix.service }}.json" <<EOF
+          {
+            "service": "${{ matrix.service }}",
+            "commit": "${GITHUB_SHA}",
+            "repository": "${{ steps.build.outputs.image }}",
+            "sourceTag": "${{ steps.build.outputs.source_tag }}",
+            "digest": "${{ steps.build.outputs.digest }}",
+            "rebuilt": ${{ steps.build.outputs.rebuilt }},
+            "runUrl": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          EOF
+
+          {
+            echo "### ${{ matrix.service }}"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Build tag | \`${{ steps.build.outputs.source_tag }}\` |"
+            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| Built this run | ${{ steps.build.outputs.rebuilt }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The digest is what release-promotion.yml promotes, so it is published as
+      # an artifact rather than left only in a log line.
+      - name: Upload the digest record
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digest-${{ matrix.service }}
+          path: digests/${{ matrix.service }}.json
+          retention-days: 90
+          if-no-files-found: error
+
+  digest-index:
+    name: Publish the digest index
+    runs-on: ubuntu-latest
+    needs: publish
+    # The index is worth having even if one service failed to publish: it then
+    # records which services this commit does have images for.
+    if: always()
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download the digest records
+        uses: actions/download-artifact@v4
+        with:
+          pattern: image-digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: Merge into one index
+        run: |
+          set -euo pipefail
+
+          if [ ! -d digests ] || [ -z "$(ls -A digests 2>/dev/null)" ]; then
+            echo "::error::No digest records were produced for ${GITHUB_SHA}"
+            exit 1
+          fi
+
+          jq -s --arg commit "${GITHUB_SHA}" \
+            '{ commit: $commit, images: (map({ (.service): . }) | add) }' \
+            digests/*.json > image-digests.json
+
+          cat image-digests.json
+
+          {
+            echo "### Digest index for \`${GITHUB_SHA}\`"
+            echo ""
+            echo '```json'
+            cat image-digests.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the digest index
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digests
+          path: image-digests.json
+          retention-days: 90
+          if-no-files-found: error

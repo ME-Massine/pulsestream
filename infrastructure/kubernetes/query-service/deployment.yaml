@@ -3,8 +3,12 @@
 # Image, tag, and registry conventions follow
 # docs/architecture/container-image-registry.md. The image is pinned to an
 # immutable per-commit tag (sha-<short>) rather than `latest`, which the doc
-# marks as mutable and unfit for reproducible deploys. Bump this tag to the
-# sha-<short> of the main commit you want to roll out.
+# marks as mutable and unfit for reproducible deploys.
+#
+# This reference is not edited by hand: the Release promotion workflow rewrites
+# it to the promoted digest and opens a pull request for it, and CI requires
+# every service here to name one commit (#264). To roll out a different build,
+# promote it - see docs/architecture/release-and-promotion.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
