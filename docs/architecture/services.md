@@ -254,7 +254,7 @@ Each service can scale horizontally depending on system load.
 
 ### Query Service
 
-**Status:** Planned.
+**Service status:** Scaffold. **Scaling status:** Planned until query APIs are implemented.
 
 *   Scales based on query traffic
 *   Read replicas may be introduced later

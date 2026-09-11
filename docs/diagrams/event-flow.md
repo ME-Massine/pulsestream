@@ -8,6 +8,7 @@ sequenceDiagram
     participant Ingestion as Ingestion Service
     participant Kafka as Kafka Topic: telemetry.events.raw
     participant Processor as telemetry-processor
+    participant Processed as Kafka Topic: telemetry.events.processed
     participant Anomalies as Kafka Topic: telemetry.events.anomalies
     participant DB as PostgreSQL
     participant Query as Query Service (scaffold)
@@ -19,8 +20,12 @@ sequenceDiagram
     Kafka->>Processor: Consume telemetry.reading
     Processor->>Processor: Normalize reading
     Processor->>Processor: Apply anomaly detection
-    Processor->>DB: Store processed telemetry
-    Processor->>Anomalies: Publish telemetry.anomaly if detected
+    alt Anomaly detected
+        Processor->>Anomalies: Publish telemetry.anomaly
+    else Normal reading
+        Processor->>DB: Store processed telemetry
+        Processor->>Processed: Publish telemetry.processed
+    end
     Dashboard-->>Query: Planned: request telemetry data
     Query-->>DB: Planned: read processed telemetry
     Query-->>Dashboard: Planned: return response
