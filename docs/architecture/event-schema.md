@@ -208,7 +208,7 @@ Events received by the ingestion service must pass basic validation checks:
 
 Metric-specific bounds are handled by the telemetry processor anomaly detection rules rather than by the ingestion API.
 
-Invalid HTTP ingestion requests are rejected by the ingestion service validation layer. The dead-letter topic is provisioned for failed asynchronous processing, but explicit DLQ routing is not implemented yet.
+Invalid HTTP ingestion requests are rejected by the ingestion service validation layer. Events that fail asynchronous processing are routed to the dead-letter topic (`telemetry.events.dlq`) as `telemetry.deadletter` events, which the telemetry processor can replay back into the pipeline via a management endpoint.
 
 ## Summary
 
