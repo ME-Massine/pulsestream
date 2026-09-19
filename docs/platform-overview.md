@@ -151,7 +151,7 @@ Spring Boot platform services are run from their service directories on the host
 
 ### Production Deployment
 
-Cluster deployment targets **Kubernetes**. Manifests for the platform services, Kafka (via the Strimzi operator), observability, autoscaling, and network policies are committed under `infrastructure/kubernetes/`; PostgreSQL must currently be provisioned separately. Full-platform end-to-end validation against a live target cluster remains Phase 7 work.
+Cluster deployment targets **Kubernetes**. Manifests for the platform services, Kafka (via the Strimzi operator), observability, autoscaling, and network policies are committed under `infrastructure/kubernetes/`; PostgreSQL must currently be provisioned separately. Full-platform end-to-end validation against a live target cluster is the outstanding Phase 6 exit gate that must be met before Phase 7 begins.
 
 Kubernetes provides:
 
@@ -183,7 +183,7 @@ These include:
 
 ## Engineering Phases
 
-The platform is developed in structured phases. Phases 1 through 6 are complete; Phase 7 is in progress.
+The platform is developed in structured phases. Phases 1 through 5 are complete. Phase 6 Kubernetes deployment implementation is complete, but its live target-cluster validation remains pending; Phase 7 begins only after that gate is met.
 
 1.  System Architecture
 2.  Local Development Platform

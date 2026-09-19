@@ -21,20 +21,20 @@ PulseStream is a cloud-native event processing platform engineered for the inges
 | **Phase 3** | Core Event Pipeline | ✅ Completed |
 | **Phase 4** | Observability and Monitoring | ✅ Completed |
 | **Phase 5** | Reliability and Resilience | ✅ Completed |
-| **Phase 6** | Kubernetes Deployment | ✅ Completed |
-| **Phase 7** | Production Readiness and Platform Hardening | 🚧 In Progress |
+| **Phase 6** | Kubernetes Deployment | 🚧 Implemented — live validation pending |
+| **Phase 7** | Production Readiness and Platform Hardening | ⏳ Planned — begins after Phase 6 validation |
 
 ---
 
 # Current Phase
 
-### Phase 7 — Production Readiness and Platform Hardening (In Progress)
+### Phase 6 — Kubernetes Deployment (Live Validation Pending)
 
-Phases 1 through 6 delivered a deployable, observable, resilient telemetry platform: HTTP ingestion, Kafka transport, stream processing with anomaly detection, PostgreSQL persistence, dead-letter and replay handling, distributed tracing, a Grafana/Prometheus observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes.
+Phases 1 through 5 delivered the telemetry platform's application, observability, and resilience capabilities. Phase 6 has added committed Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes.
 
-Phase 7 turns that deployable platform into a **secure, operable, versioned, production-ready single-cluster release.** It completes the read side (query APIs and anomaly persistence), strengthens distributed-processing correctness guarantees, introduces enforceable CI and supply-chain quality gates, secures ingestion and Kafka communication, and validates the platform under realistic load and failure conditions.
+Phase 6 implementation is not yet a completed deployment phase. Before Phase 7 may begin, its live target-cluster validation must demonstrate the entry criteria recorded in the Phase 7 parent issue (#254): the exact committed manifests deploy; all platform workloads using their committed image references become Ready; Kafka, PostgreSQL, and platform-service connectivity work end to end; external ingestion access works in the target environment; and network isolation, autoscaling, and Kubernetes observability are complete or explicitly re-scoped without unresolved deployment prerequisites.
 
-Phase 7 work is tracked under the **Phase 7 — Production Readiness and Platform Hardening** milestone and the Phase 7 parent issue (#254).
+After that gate is met, Phase 7 will turn the validated deployment into a **secure, operable, versioned, production-ready single-cluster release.** It will complete the read side (query APIs and anomaly persistence), strengthen distributed-processing correctness guarantees, introduce enforceable CI and supply-chain quality gates, secure ingestion and Kafka communication, and validate the platform under realistic load and failure conditions. Phase 7 work is tracked under the **Phase 7 — Production Readiness and Platform Hardening** milestone and the Phase 7 parent issue (#254).
 
 ---
 
@@ -88,7 +88,7 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
 *   Kafka producer retries plus consumer failure isolation through dead-letter routing; replay failures keep the original DLQ record available for a later operator-triggered attempt.
 *   Documented [event replay strategy](docs/architecture/event-replay-strategy.md).
 
-### Kubernetes Deployment (Phase 6)
+### Kubernetes Deployment (Phase 6 — Implemented, Live Validation Pending)
 Kubernetes manifests are committed under [infrastructure/kubernetes/](infrastructure/kubernetes/) for the application, streaming, and observability workloads:
 *   Deployments, Services, and ConfigMaps for `ingestion-service`, `telemetry-processor`, and the `query-service` scaffold.
 *   Kafka on Kubernetes via the Strimzi operator (`KafkaNodePool`, `Kafka`, and `KafkaTopic` resources).
@@ -98,12 +98,24 @@ Kubernetes manifests are committed under [infrastructure/kubernetes/](infrastruc
 *   Container build, image registry, and image validation standards.
 *   PostgreSQL is a required external dependency; the repository does not yet contain a Kubernetes PostgreSQL workload or Service manifest.
 
+These artifacts establish implementation coverage, not live-deployment acceptance. The Phase 6 validation gate described above remains open.
+
 ---
 
 # Current Work
 
-### Phase 7 — Production Readiness and Platform Hardening
-The objective of this phase is to deliver a secure, operable, versioned, production-ready release. Deliverables tracked under the Phase 7 milestone include:
+### Phase 6 — Live Deployment Validation
+The objective of the current phase is to execute and record the validation required before Phase 7 can begin:
+
+*   Deploy the exact committed Kubernetes manifests to the target cluster.
+*   Confirm that all platform workloads using the committed image references become Ready.
+*   Demonstrate end-to-end Kafka, PostgreSQL, and platform-service connectivity.
+*   Verify external ingestion access in the target cluster environment.
+*   Confirm that network isolation, autoscaling, and Kubernetes observability work, or explicitly re-scope any incomplete item.
+*   Resolve any DNS, port, image, storage, and deployment-order prerequisites discovered by that run.
+
+### Planned Phase 7 — Production Readiness and Platform Hardening
+After Phase 6 validation completes, Phase 7 will deliver a secure, operable, versioned, production-ready release. Deliverables tracked under the Phase 7 milestone include:
 
 *   **Engineering quality and release foundations** — complete CI quality gates for every component; automated dependency, secret, code, and container security checks; versioned release and container-image promotion workflow.
 *   **Production data contracts and query capabilities** — version-controlled PostgreSQL schema migrations; a processed-telemetry query API; persisted and queryable anomaly projections; versioned event contracts with compatibility validation.
@@ -120,9 +132,9 @@ normal or anomalous projection; and recovery, load, and durability tests pass wi
 
 ---
 
-# Remaining Platform Gaps
+# Remaining Validation and Platform Gaps
 
-These are the primary capabilities that are **not yet implemented** at the start of Phase 7:
+The Phase 6 live-deployment evidence required to begin Phase 7 is not yet recorded. The following Phase 7 capabilities are also not yet implemented:
 
 *   Application-level persistence of detected anomalies (anomalies are currently published to `telemetry.events.anomalies` only) — issue #267.
 *   Query API business logic for processed telemetry and anomalies (the `query-service` is a scaffold only) — issues #266, #267.

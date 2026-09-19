@@ -7,7 +7,7 @@
 
 PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes. A `query-service` scaffold exists; query APIs, anomaly persistence, and simulator tooling are the primary remaining gaps addressed in Phase 7.
 
-> **Project status.** The platform is at the start of **Phase 7 — Production Readiness and Platform Hardening**; Phases 1 through 6 are complete. The authoritative, up-to-date status is maintained in [PROJECT_STATE.md](./PROJECT_STATE.md).
+> **Project status.** **Phase 6 — Kubernetes Deployment** is implemented but awaiting live target-cluster validation. Phase 7 — Production Readiness and Platform Hardening begins only after that validation meets its entry criteria. The authoritative, up-to-date status is maintained in [PROJECT_STATE.md](./PROJECT_STATE.md).
 
 The project is engineered with a primary focus on several critical domains of modern software development:
 *   **Event-driven architecture** for decoupled and scalable service interaction.

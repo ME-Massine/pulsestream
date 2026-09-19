@@ -6,7 +6,7 @@ Development is organized into structured engineering phases. Each phase correspo
 
 The authoritative, up-to-date status of the platform is tracked in [PROJECT_STATE.md](../PROJECT_STATE.md). This roadmap describes the intended scope and outcome of each phase; where the two disagree, `PROJECT_STATE.md` is authoritative.
 
-**Current phase:** Phase 7 — Production Readiness and Platform Hardening. Phases 1 through 6 are complete.
+**Current phase:** Phase 6 — Kubernetes Deployment. Its implementation is complete, but live target-cluster validation is still pending. Phase 7 — Production Readiness and Platform Hardening begins only after the Phase 6 exit criteria are demonstrated.
 
 ---
 
@@ -110,9 +110,13 @@ The authoritative, up-to-date status of the platform is tracked in [PROJECT_STAT
 *   Autoscaling — implemented (CPU-based and custom-metrics HPAs)
 *   Network isolation — implemented (network policies)
 
-**Status:** Complete
+**Status:** Implemented — live validation pending
 
-**Outcome:** Committed, reviewable manifests deploy the application services, Kafka, and observability components to a Kubernetes cluster when their documented prerequisites, including PostgreSQL, are supplied. Full-platform end-to-end validation against a live target cluster remains Phase 7 work.
+**Outcome:** Committed, reviewable manifests provide the application services, Kafka, and observability components for a Kubernetes cluster when their documented prerequisites, including PostgreSQL, are supplied. Phase 6 is complete only after the exact committed manifests deploy successfully; all platform workloads using their committed image references become Ready; Kafka, PostgreSQL, and platform-service connectivity work end to end; external ingestion access is verified in the target cluster environment; and network isolation, autoscaling, and Kubernetes observability are complete or explicitly re-scoped. These are the Phase 7 entry criteria in #254, so this validation is Phase 6 work, not Phase 7 work.
+
+### Issue #30 audit — Kubernetes service networking
+
+Issue #30 was closed on 2026-08-13 without a completion comment. Its manifest-delivery scope is superseded by the committed ClusterIP Services and the ingestion-service NodePort under `infrastructure/kubernetes/`; the original issue is therefore retained as closed for that implementation work. Its required operational checks — in-cluster service discovery and connectivity, plus external ingestion access — are not claimed as complete here. They are part of the outstanding Phase 6 live-validation gate above and must be recorded against #30 (or #30 reopened) before Phase 6 can be declared complete.
 
 ---
 
@@ -133,7 +137,7 @@ The authoritative, up-to-date status of the platform is tracked in [PROJECT_STAT
 *   Load, failure-recovery, and data-durability validation
 *   Automated versioned releases and container-image promotion
 
-**Status:** In Progress
+**Status:** Planned — begins after the Phase 6 exit criteria are demonstrated
 
 **Outcome:** A clean environment can deploy a documented, versioned PulseStream release using one supported workflow; a client can submit telemetry over an authenticated channel and query the resulting normal or anomalous projection; and recovery, load, and durability tests pass with documented evidence. Tracked under the Phase 7 milestone and parent issue #254.
 

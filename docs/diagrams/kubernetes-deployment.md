@@ -1,6 +1,6 @@
 # Kubernetes Deployment Diagram
 
-This diagram shows how PulseStream components are deployed inside a Kubernetes cluster. Manifests are committed under [`infrastructure/kubernetes/`](../../infrastructure/kubernetes/) for the platform services, Kafka (via the Strimzi operator), in-cluster observability, autoscaling, and network policies. PostgreSQL must currently be supplied separately, and full-platform end-to-end validation against a live target cluster remains Phase 7 work.
+This diagram shows how PulseStream components are deployed inside a Kubernetes cluster. Manifests are committed under [`infrastructure/kubernetes/`](../../infrastructure/kubernetes/) for the platform services, Kafka (via the Strimzi operator), in-cluster observability, autoscaling, and network policies. PostgreSQL must currently be supplied separately, and full-platform end-to-end validation against a live target cluster is the outstanding Phase 6 exit gate before Phase 7 begins.
 
 ```mermaid
 flowchart TB
