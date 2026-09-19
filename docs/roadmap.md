@@ -4,6 +4,10 @@ This document outlines the implementation roadmap for the PulseStream platform.
 
 Development is organized into structured engineering phases. Each phase corresponds to a set of GitHub issues tracked in the project board.
 
+The authoritative, up-to-date status of the platform is tracked in [PROJECT_STATE.md](../PROJECT_STATE.md). This roadmap describes the intended scope and outcome of each phase; where the two disagree, `PROJECT_STATE.md` is authoritative.
+
+**Current phase:** Phase 6 — Kubernetes Deployment. Its implementation is complete, but live target-cluster validation is still pending. Phase 7 — Production Readiness and Platform Hardening begins only after the Phase 6 exit criteria are demonstrated.
+
 ---
 
 ## Phase 1 — System Architecture
@@ -49,10 +53,12 @@ Development is organized into structured engineering phases. Each phase correspo
 *   Kafka producer implementation — implemented for raw telemetry
 *   Telemetry processor — implemented for raw event consumption, normalization, anomaly detection, and downstream publishing
 *   Event persistence in PostgreSQL — implemented for normal processed telemetry
-*   Anomaly persistence — planned
-*   Query API — planned
+*   Anomaly persistence — planned (Phase 7, #267)
+*   Query API — planned (Phase 7, #266)
 
-**Outcome:** Normal telemetry events flow from API to Kafka to processor to PostgreSQL. Anomalous events are published to Kafka; persistence/query workflows remain planned.
+**Status:** Complete
+
+**Outcome:** Normal telemetry events flow from API to Kafka to processor to PostgreSQL. Anomalous events are published to `telemetry.events.anomalies`. Application-level anomaly persistence and query APIs are deferred to Phase 7.
 
 ---
 
@@ -63,12 +69,14 @@ Development is organized into structured engineering phases. Each phase correspo
 **Deliverables:**
 
 *   Prometheus metrics endpoints — implemented in services
-*   Prometheus local scrape configuration — started
-*   Grafana dashboards — planned
-*   Distributed tracing — planned
-*   Service health monitoring — started through actuator health endpoints
+*   Prometheus scrape configuration — implemented for the local stack
+*   Grafana dashboards — implemented (version-controlled JSON, provisioned locally and in-cluster)
+*   Distributed tracing — implemented via OpenTelemetry (OTLP export to Jaeger locally, OpenTelemetry Collector in Kubernetes)
+*   Service health monitoring — implemented through actuator health endpoints
 
-**Outcome:** Operational visibility into the platform.
+**Status:** Complete
+
+**Outcome:** Operational visibility into the platform through metrics, dashboards, health probes, and distributed traces.
 
 ---
 
@@ -78,12 +86,14 @@ Development is organized into structured engineering phases. Each phase correspo
 
 **Deliverables:**
 
-*   Dead-letter queue handling
-*   Event replay capability
-*   Retry mechanisms
-*   Failure isolation
+*   Dead-letter queue handling — implemented (`telemetry.events.dlq` routing)
+*   Event replay capability — implemented (bounded replay from the dead-letter topic via a management endpoint)
+*   Retry mechanisms — implemented for Kafka publishing; failed consumer processing routes to the DLQ, and failed replay records remain available for a later operator-triggered attempt
+*   Failure isolation — implemented
 
-**Outcome:** Robust event processing even during service failures.
+**Status:** Complete
+
+**Outcome:** Robust event processing during service failures, with dead-letter capture and operator-driven replay. See the [event replay strategy](architecture/event-replay-strategy.md).
 
 ---
 
@@ -93,12 +103,43 @@ Development is organized into structured engineering phases. Each phase correspo
 
 **Deliverables:**
 
-*   Kubernetes manifests
-*   Service deployments
-*   Kafka cluster deployment
-*   Observability stack in Kubernetes
+*   Kubernetes manifests — implemented for the application services, Kafka, and observability components under `infrastructure/kubernetes/`; PostgreSQL is supplied separately
+*   Service deployments — implemented for `ingestion-service`, `telemetry-processor`, and the `query-service` scaffold
+*   Kafka cluster deployment — implemented via the Strimzi operator
+*   Observability stack in Kubernetes — implemented (Grafana, OpenTelemetry Collector)
+*   Autoscaling — implemented (CPU-based and custom-metrics HPAs)
+*   Network isolation — implemented (network policies)
 
-**Outcome:** Cloud-native production-ready platform.
+**Status:** Implemented — live validation pending
+
+**Outcome:** Committed, reviewable manifests provide the application services, Kafka, and observability components for a Kubernetes cluster when their documented prerequisites, including PostgreSQL, are supplied. Phase 6 is complete only after the exact committed manifests deploy successfully; all platform workloads using their committed image references become Ready; Kafka, PostgreSQL, and platform-service connectivity work end to end; external ingestion access is verified in the target cluster environment; and network isolation, autoscaling, and Kubernetes observability are complete or explicitly re-scoped. These are the Phase 7 entry criteria in #254, so this validation is Phase 6 work, not Phase 7 work.
+
+### Issue #30 audit — Kubernetes service networking
+
+Issue #30 was closed on 2026-08-13 without a completion comment. Its manifest-delivery scope is superseded by the committed ClusterIP Services and the ingestion-service NodePort under `infrastructure/kubernetes/`; the original issue is therefore retained as closed for that implementation work. Its required operational checks — in-cluster service discovery and connectivity, plus external ingestion access — are not claimed as complete here. They are part of the outstanding Phase 6 live-validation gate above and must be recorded against #30 (or #30 reopened) before Phase 6 can be declared complete.
+
+---
+
+## Phase 7 — Production Readiness and Platform Hardening
+
+**Objective:** Turn the deployable platform into a secure, operable, versioned, production-ready single-cluster release.
+
+**Deliverables:**
+
+*   Complete CI quality gates and automated dependency, secret, code, and container security checks
+*   Version-controlled PostgreSQL schema migrations
+*   Processed-telemetry query API and persisted, queryable anomaly projections
+*   Versioned event contracts with compatibility validation
+*   Deterministic anomaly detection under horizontal scaling
+*   Reliable PostgreSQL and Kafka delivery consistency, and correct replay reclassification
+*   Authenticated, encrypted external ingestion and secured Kafka client communication
+*   Custom processing and consumer-lag metrics; SLOs, alerts, dashboards, and operational runbooks
+*   Load, failure-recovery, and data-durability validation
+*   Automated versioned releases and container-image promotion
+
+**Status:** Planned — begins after the Phase 6 exit criteria are demonstrated
+
+**Outcome:** A clean environment can deploy a documented, versioned PulseStream release using one supported workflow; a client can submit telemetry over an authenticated channel and query the resulting normal or anomalous projection; and recovery, load, and durability tests pass with documented evidence. Tracked under the Phase 7 milestone and parent issue #254.
 
 ---
 
