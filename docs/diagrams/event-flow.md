@@ -8,9 +8,10 @@ sequenceDiagram
     participant Ingestion as Ingestion Service
     participant Kafka as Kafka Topic: telemetry.events.raw
     participant Processor as telemetry-processor
+    participant Processed as Kafka Topic: telemetry.events.processed
     participant Anomalies as Kafka Topic: telemetry.events.anomalies
     participant DB as PostgreSQL
-    participant Query as Query Service (planned)
+    participant Query as Query Service (scaffold)
     participant Dashboard as Dashboard / API Client
 
     Device->>Ingestion: POST /api/v1/events
@@ -19,11 +20,15 @@ sequenceDiagram
     Kafka->>Processor: Consume telemetry.reading
     Processor->>Processor: Normalize reading
     Processor->>Processor: Apply anomaly detection
-    Processor->>DB: Store processed telemetry
-    Processor->>Anomalies: Publish telemetry.anomaly if detected
-    Query->>DB: Read processed telemetry
-    Dashboard->>Query: Request telemetry data
-    Query->>Dashboard: Return response
+    alt Anomaly detected
+        Processor->>Anomalies: Publish telemetry.anomaly
+    else Normal reading
+        Processor->>DB: Store processed telemetry
+        Processor->>Processed: Publish telemetry.processed
+    end
+    Dashboard-->>Query: Planned: request telemetry data
+    Query-->>DB: Planned: read processed telemetry
+    Query-->>Dashboard: Planned: return response
 ```
 
 **Notes:**
@@ -32,4 +37,5 @@ sequenceDiagram
 *   Kafka decouples telemetry producers from downstream consumers.
 *   The telemetry-processor applies anomaly detection rules asynchronously.
 *   Normal processed telemetry is stored in PostgreSQL.
-*   Anomaly events are currently published to Kafka; database anomaly persistence and query APIs are planned.
+*   Events that fail processing are routed to `telemetry.events.dlq` and can be replayed back into the pipeline via a management endpoint on the telemetry processor.
+*   Anomaly events are currently published to Kafka only; application-level anomaly persistence and the query APIs are Phase 7 work (the `query-service` is a scaffold).

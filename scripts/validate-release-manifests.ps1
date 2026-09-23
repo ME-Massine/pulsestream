@@ -18,7 +18,7 @@
 [CmdletBinding()]
 param(
     # Root the Deployment manifests are discovered under.
-    [string] $ManifestRoot = (Join-Path $PSScriptRoot "..\infrastructure\kubernetes"),
+    [string] $ManifestRoot,
     # Repository prefix that marks an image as PulseStream-owned. Third-party
     # images (Grafana, Jaeger, the collector) are pinned by their own charts and
     # manifests and are not part of this promotion workflow.
@@ -34,6 +34,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# PowerShell 5.1 evaluates default parameter expressions before $PSScriptRoot
+# is populated. Resolve the repository-relative default after binding instead.
+if ([string]::IsNullOrWhiteSpace($ManifestRoot)) {
+    $ManifestRoot = Join-Path $PSScriptRoot "..\infrastructure\kubernetes"
+}
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamRelease.psm1") -Force
 

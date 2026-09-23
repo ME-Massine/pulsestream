@@ -28,7 +28,7 @@ param(
     # One "<service>=sha256:<hex>" entry per service, as resolved from the
     # registry by the tag that commit was published under.
     [Parameter(Mandatory)] [string[]] $ImageDigest,
-    [string] $ManifestRoot = (Join-Path $PSScriptRoot "..\infrastructure\kubernetes"),
+    [string] $ManifestRoot,
     [string] $RegistryPrefix = "ghcr.io/me-massine/pulsestream",
     [string[]] $Services = @("ingestion-service", "telemetry-processor", "query-service"),
     [string] $RepositoryUrl = "https://github.com/ME-Massine/pulsestream",
@@ -45,6 +45,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# PowerShell 5.1 evaluates default parameter expressions before $PSScriptRoot
+# is populated. Resolve the repository-relative default after binding instead.
+if ([string]::IsNullOrWhiteSpace($ManifestRoot)) {
+    $ManifestRoot = Join-Path $PSScriptRoot "..\infrastructure\kubernetes"
+}
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamRelease.psm1") -Force
 

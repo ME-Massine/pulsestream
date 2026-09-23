@@ -480,6 +480,10 @@ function Invoke-Script {
     }
 }
 
+$defaultValidation = Invoke-Script -Path $validate -Argument @{}
+Assert-True -What "the validator defaults to the repository manifests" -Condition $defaultValidation.Ok
+if (-not $defaultValidation.Ok) { Write-Host "       $($defaultValidation.Message)" }
+
 try {
     New-Item -ItemType Directory -Path $scratch -Force | Out-Null
     foreach ($service in $services) {
