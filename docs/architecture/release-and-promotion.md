@@ -108,7 +108,10 @@ org.opencontainers.image.created    <build time>
 Promotion runs from the Actions tab:
 [`release-promotion.yml`](../../.github/workflows/release-promotion.yml),
 `workflow_dispatch`, with a version, the full source commit, and a `dry_run`
-switch that defaults to on.
+switch that defaults to on. The workflow must be dispatched on the branch or
+tag whose selected commit is that exact `source_commit`; the gate rejects an
+input that differs from `GITHUB_SHA`, so the tested image set and manifest tree
+cannot come from different commits.
 
 It is split into two jobs so that a failed promotion cannot update the release
 manifest as a matter of structure rather than step order:
@@ -116,10 +119,11 @@ manifest as a matter of structure rather than step order:
 ```
 gate                                   promote  (needs: gate)
   ├─ the version tag is valid            ├─ resolve sha-<short> -> digest per service
-  ├─ the commit is 40 hex, exists,       ├─ imagetools create: copy that digest to the version tag
-  │  and is an ancestor of main          ├─ re-inspect the new tag; the digest must be unchanged
-  └─ every required check passed         ├─ write the release lock and notes
-     for that commit                     ├─ repin every Deployment to the digest
+  ├─ the commit is 40 hex, exists,       ├─ preflight local, branch, and registry collisions
+  │  and is an ancestor of main          ├─ write and validate the release set before tag writes
+  └─ every required check passed         ├─ copy the digest to the version tag without changing it
+     for that commit                     ├─ re-inspect the new tag; the digest must be unchanged
+                                         ├─ repin every Deployment to the digest
                                          └─ open a pull request
 ```
 
@@ -128,7 +132,9 @@ applied and no manifest is written for a commit that did not pass.
 
 ### What the gate requires
 
-The required checks are listed in the workflow's `REQUIRED_CHECKS`. A check
+The required checks are listed in the workflow's `REQUIRED_CHECKS`. They include
+the all-service container build/start/health validation and the three
+`publish-images.yml` jobs for the source commit. A check
 blocks promotion when it failed, when it is still running, when it was skipped,
 and — the case that matters most — **when it produced no result at all**.
 
@@ -147,6 +153,16 @@ reference — there is no other supported way for one to change.
 
 The pull request runs the same **Release manifest consistency** check as any
 other, which re-verifies the manifests against the lock that was just written.
+
+Before a non-dry promotion changes the registry, it refuses an existing release
+directory, release branch, or version tag whose digest differs from the tested
+digest. An existing version tag with the exact tested digest is safe to reuse;
+this makes retries after a partial registry operation idempotent without
+silently repointing a release.
+
+The retag commands use `--prefer-index=false`. This preserves a single-manifest
+source as a single manifest; the default `imagetools create` behavior can wrap a
+single source in a new index, changing the digest even when no layer is rebuilt.
 
 ---
 
@@ -198,7 +214,8 @@ all of it.
 
 ## Release notes
 
-Notes are generated from the commits between the previous release's recorded
+Notes are generated from the commits between the highest semantic-versioned
+previous release's recorded
 commit and this one — the previous release's *commit*, not a git tag, so the
 range stays correct before the first `v*` tag exists and if a tag is ever moved.
 
@@ -341,6 +358,13 @@ tag. A manifest left on the previous release's digest is reported as stale.
 
 Third-party images (Grafana, Jaeger, the OpenTelemetry collector) are pinned by
 their own manifests and are not this workflow's to promote.
+
+The **Platform container images** job in `ci.yml` builds all three service
+images, verifies their configured non-root users, starts each image with
+external telemetry disabled, and probes its Spring Boot health endpoint. This
+is the runtime evidence required by promotion. The **Java service tests** job
+also runs each standalone Maven project's test suite on Java 17; a Java setup
+check alone is not accepted as build or test evidence.
 
 ---
 

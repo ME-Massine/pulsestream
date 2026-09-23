@@ -119,6 +119,12 @@ function Test-ServiceContainer {
     $tag = Get-ImageTag $Service
     $name = Get-ContainerName $Service
 
+    $configuredUser = (Invoke-Docker inspect --format '{{.Config.User}}' $tag | Out-String).Trim()
+    Confirm-Condition -Permanent `
+        -Condition (($LASTEXITCODE -eq 0) -and -not [string]::IsNullOrWhiteSpace($configuredUser) -and $configuredUser -notin @("root", "0", "0:0")) `
+        -SuccessMessage "Image is configured to run as non-root ($configuredUser)" `
+        -FailureMessage "Image '$Service' must configure a non-root user (got '$configuredUser')."
+
     # Fresh start every run so a leftover container from a prior run cannot mask a
     # regression.
     Remove-ValidationContainer $Service

@@ -29,6 +29,13 @@ $digestA = "sha256:" + ("a" * 64)
 $digestB = "sha256:" + ("b" * 64)
 $digestC = "sha256:" + ("c" * 64)
 
+# Workflow invariants that cannot be exercised without a registry are still
+# guarded here so a later edit cannot silently remove the safety properties the
+# release scripts rely on.
+$releaseWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\release-promotion.yml") -Raw
+$publishWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\publish-images.yml") -Raw
+$ciWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\ci.yml") -Raw
+
 function Assert-Equal {
     param([Parameter(Mandatory)] [string] $What, $Expected, $Actual)
 
@@ -479,6 +486,28 @@ function Invoke-Script {
         return [pscustomobject]@{ Ok = $false; Message = $_.Exception.Message }
     }
 }
+
+Assert-True -What "promotion checks out the exact selected source commit" -Condition (
+    $releaseWorkflow -match 'ref:\s*\$\{\{\s*inputs\.source_commit\s*\}\}'
+)
+Assert-True -What "promotion rejects a source commit different from the workflow SHA" -Condition (
+    $releaseWorkflow -match 'source_commit.*GITHUB_SHA|commit.*GITHUB_SHA'
+)
+Assert-True -What "promotion preserves the source manifest digest when retagging" -Condition (
+    ([regex]::Matches($releaseWorkflow, '--prefer-index=false')).Count -ge 1
+)
+Assert-True -What "latest preserves the source manifest digest when retagging" -Condition (
+    ([regex]::Matches($publishWorkflow, '--prefer-index=false')).Count -ge 1
+)
+Assert-True -What "publish validates the source tag OCI revision" -Condition (
+    $publishWorkflow -match 'org\.opencontainers\.image\.revision'
+)
+Assert-True -What "CI validates all platform container images at runtime" -Condition (
+    $ciWorkflow -match 'validate-container-images\.ps1\s+-Network\s+bridge'
+)
+Assert-True -What "CI runs the standalone Java service test suites" -Condition (
+    $ciWorkflow -match 'name:\s+Java service tests' -and $ciWorkflow -match '\./mvnw\s+--batch-mode\s+test'
+)
 
 $defaultValidation = Invoke-Script -Path $validate -Argument @{}
 Assert-True -What "the validator defaults to the repository manifests" -Condition $defaultValidation.Ok

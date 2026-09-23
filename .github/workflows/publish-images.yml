@@ -91,10 +91,29 @@ jobs:
             exit 1
           fi
 
+          # Reusing a tag is safe only if the registry object still carries
+          # the commit identity this workflow expects. Fail closed if someone
+          # repointed the tag outside this workflow or if the object is not a
+          # single image whose OCI config can be inspected.
+          source_revision="$(docker buildx imagetools inspect "${image}:${source_tag}" --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true)"
+          if [ "${source_revision}" != "${GITHUB_SHA}" ]; then
+            echo "::error::${image}:${source_tag} is labelled for '${source_revision}', not ${GITHUB_SHA}; refusing to reuse a tag with the wrong source commit."
+            exit 1
+          fi
+
           # `latest` is a convenience pointer for local pulls. It is moved onto
           # the digest that was just published rather than onto a fresh build,
           # so it can never name contents no per-commit tag also names.
-          docker buildx imagetools create --tag "${image}:latest" "${image}@${digest}"
+          # Preserve the source manifest format. The default prefer-index
+          # behavior can wrap a single-platform source in a new index and
+          # produce a different digest even though no layer was rebuilt.
+          docker buildx imagetools create --prefer-index=false --tag "${image}:latest" "${image}@${digest}"
+
+          latest_digest="$(docker buildx imagetools inspect "${image}:latest" --format '{{.Manifest.Digest}}')"
+          if [ "${latest_digest}" != "${digest}" ]; then
+            echo "::error::${image}:latest resolved to ${latest_digest}, not the published source digest ${digest}"
+            exit 1
+          fi
 
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"

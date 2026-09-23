@@ -25,9 +25,9 @@ param(
     [string] $RegistryPrefix = "ghcr.io/me-massine/pulsestream",
     # Services that must each be referenced by exactly the manifest set.
     [string[]] $Services = @("ingestion-service", "telemetry-processor", "query-service"),
-    # Validate against a specific release lock. Without it, the newest lock under
-    # <ManifestRoot>/releases is used, and when there is none the pre-release
-    # rules apply.
+    # Validate against a specific release lock. Without it, the highest semantic
+    # version under <ManifestRoot>/releases is used, and when there is none the
+    # pre-release rules apply.
     [string] $ReleaseVersion,
     # Skip the release lock entirely and check only the pre-release rules.
     [switch] $IgnoreReleaseLock
@@ -76,14 +76,36 @@ function Get-ReleaseLockPath {
         return $null
     }
 
-    # Newest by write time rather than by version order: a lock is written once,
-    # by the promotion run that produced it, and comparing version strings would
-    # need a full semver ordering for no gain here.
-    $candidate = Get-ChildItem -Path $releaseRoot -Recurse -File -Filter "images.lock.json" |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 1
+    # Git checkout timestamps are not release ordering. Parse the version in
+    # every lock and select the highest semantic version deterministically.
+    $candidate = @(
+        Get-ChildItem -Path $releaseRoot -Recurse -File -Filter "images.lock.json" |
+            ForEach-Object {
+                $parsedLock = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                $versionInfo = Test-SemanticVersionTag -Tag ([string] $parsedLock.version)
+                if (-not $versionInfo.IsValid) {
+                    throw "Release lock '$($_.FullName)' has an invalid version: $($versionInfo.Reason)"
+                }
 
-    if ($candidate) { return $candidate.FullName }
+                [pscustomobject]@{
+                    Path        = $_.FullName
+                    Major       = $versionInfo.Major
+                    Minor       = $versionInfo.Minor
+                    Patch       = $versionInfo.Patch
+                    ChannelRank = if ($versionInfo.Channel -eq "release") { 1 } else { 0 }
+                    Candidate   = if ($null -eq $versionInfo.Candidate) { 0 } else { $versionInfo.Candidate }
+                }
+            } |
+            Sort-Object `
+                @{ Expression = "Major"; Descending = $true }, `
+                @{ Expression = "Minor"; Descending = $true }, `
+                @{ Expression = "Patch"; Descending = $true }, `
+                @{ Expression = "ChannelRank"; Descending = $true }, `
+                @{ Expression = "Candidate"; Descending = $true } |
+            Select-Object -First 1
+    )
+
+    if ($candidate) { return $candidate.Path }
     return $null
 }
 

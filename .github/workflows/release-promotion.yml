@@ -27,7 +27,7 @@ on:
         required: true
         type: string
       source_commit:
-        description: "Full 40-character commit on main whose images are being promoted"
+        description: "Full 40-character commit selected as the workflow ref; its images are being promoted"
         required: true
         type: string
       dry_run:
@@ -41,8 +41,11 @@ env:
   # blocks exactly like a failing one - see Test-PromotionGate.
   REQUIRED_CHECKS: |
     Repository sanity checks
-    Java build placeholder
-    Telemetry Processor Docker image
+    Java service tests
+    Platform container images
+    Build and push ingestion-service
+    Build and push telemetry-processor
+    Build and push query-service
     Release manifest consistency
   SERVICES: ingestion-service telemetry-processor query-service
 
@@ -64,7 +67,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # The ancestry check below needs main's history, not just the tip.
+          # The source tree used by the gate must be the same tree named by the
+          # source_commit input. The ancestry check below still needs history.
+          ref: ${{ inputs.source_commit }}
           fetch-depth: 0
 
       - name: Validate the version tag
@@ -90,6 +95,11 @@ jobs:
 
           if ! echo "${commit}" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "::error::'${commit}' is not a full 40-character commit. Promotion records the exact commit an image came from, and a short sha is ambiguous."
+            exit 1
+          fi
+
+          if [ "${commit}" != "${GITHUB_SHA}" ]; then
+            echo "::error::source_commit ${commit} is not the commit selected by this workflow run (${GITHUB_SHA}). Dispatch the workflow on the source commit's branch or tag and pass that exact commit."
             exit 1
           fi
 
@@ -158,6 +168,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          # Keep manifest generation on the exact source tree that passed the
+          # gate; a workflow ref can move or differ from the input otherwise.
+          ref: ${{ inputs.source_commit }}
           fetch-depth: 0
 
       - name: Log in to GHCR
@@ -191,6 +204,56 @@ jobs:
           echo "source_tag=${source_tag}" >> "$GITHUB_OUTPUT"
           echo "args=${args# }" >> "$GITHUB_OUTPUT"
 
+      - name: Preflight release outputs
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          version_directory="infrastructure/kubernetes/releases/${{ inputs.version }}"
+          if [ -e "${version_directory}" ]; then
+            echo "::error::Release directory ${version_directory} already exists. A release version is immutable."
+            exit 1
+          fi
+
+          branch="release/${{ inputs.version }}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${branch}" > /dev/null 2>&1; then
+            echo "::error::Remote branch ${branch} already exists. Refusing to create or overwrite a release PR branch."
+            exit 1
+          fi
+
+          registry="${{ steps.digests.outputs.registry }}"
+          for entry in ${{ steps.digests.outputs.args }}; do
+            service="${entry%%=*}"
+            digest="${entry#*=}"
+            image="${registry}/${service}"
+            target="${image}:${{ inputs.version }}"
+
+            if docker buildx imagetools inspect "${target}" > /dev/null 2>&1; then
+              existing="$(docker buildx imagetools inspect "${target}" --format '{{.Manifest.Digest}}')"
+              if [ "${existing}" != "${digest}" ]; then
+                echo "::error::${target} already exists with ${existing}, not the tested digest ${digest}."
+                exit 1
+              fi
+              echo "[ok] ${target} already names the tested digest; the retag is idempotent."
+            fi
+          done
+
+      - name: Write the release manifest set
+        run: |
+          set -euo pipefail
+
+          # Write and validate the complete local release set before any
+          # registry tag or remote branch can be changed.
+          pwsh -NoProfile -File ./scripts/promote-release-manifests.ps1 \
+            -Version "${{ inputs.version }}" \
+            -Commit "${{ inputs.source_commit }}" \
+            -ImageDigest ${{ steps.digests.outputs.args }} \
+            -RegistryPrefix "${{ steps.digests.outputs.registry }}" \
+            -RepositoryUrl "${{ github.server_url }}/${{ github.repository }}" \
+            -PromotionRunUrl "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          git --no-pager diff --stat
+
       - name: Apply the release tag to the tested digests
         if: ${{ !inputs.dry_run }}
         run: |
@@ -203,34 +266,21 @@ jobs:
             digest="${entry#*=}"
             image="${registry}/${service}"
 
-            # `imagetools create` copies an existing manifest to a new tag. No
-            # layer is rebuilt, so the release tag and the tested build tag name
-            # the same bytes.
-            docker buildx imagetools create --tag "${image}:${{ inputs.version }}" "${image}@${digest}"
+            # Preserve the source manifest format. With one non-index source,
+            # the default prefer-index behavior would wrap it in a new index
+            # and change the digest even though no layer was rebuilt.
+            target="${image}:${{ inputs.version }}"
+            if ! docker buildx imagetools inspect "${target}" > /dev/null 2>&1; then
+              docker buildx imagetools create --prefer-index=false --tag "${target}" "${image}@${digest}"
+            fi
 
-            promoted="$(docker buildx imagetools inspect "${image}:${{ inputs.version }}" --format '{{.Manifest.Digest}}')"
+            promoted="$(docker buildx imagetools inspect "${target}" --format '{{.Manifest.Digest}}')"
             pwsh -NoProfile -Command "
               Import-Module ./scripts/lib/PulseStreamRelease.psm1 -Force
               Assert-PromotedDigest -Service '${service}' -SourceDigest '${digest}' -PromotedDigest '${promoted}'
               Write-Host '[ok] ${service} ${{ inputs.version }} is the digest that was tested.'
             "
           done
-
-      - name: Write the release manifest set
-        run: |
-          set -euo pipefail
-
-          # The resolved digests are passed unquoted so each "<service>=<digest>"
-          # word binds to one element of the script's -ImageDigest array.
-          pwsh -NoProfile -File ./scripts/promote-release-manifests.ps1 \
-            -Version "${{ inputs.version }}" \
-            -Commit "${{ inputs.source_commit }}" \
-            -ImageDigest ${{ steps.digests.outputs.args }} \
-            -RegistryPrefix "${{ steps.digests.outputs.registry }}" \
-            -RepositoryUrl "${{ github.server_url }}/${{ github.repository }}" \
-            -PromotionRunUrl "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          git --no-pager diff --stat
 
       - name: Summarise the promotion
         run: |

@@ -32,8 +32,8 @@ param(
     [string] $RegistryPrefix = "ghcr.io/me-massine/pulsestream",
     [string[]] $Services = @("ingestion-service", "telemetry-processor", "query-service"),
     [string] $RepositoryUrl = "https://github.com/ME-Massine/pulsestream",
-    # Release the notes are measured from. Defaults to the newest release
-    # already recorded under <ManifestRoot>/releases.
+    # Release the notes are measured from. Defaults to the highest semantic
+    # version already recorded under <ManifestRoot>/releases.
     [string] $PreviousVersion,
     # Link back to the run that performed the promotion, so a deployed digest
     # leads to the evidence it was promoted on.
@@ -113,12 +113,38 @@ if ($baselineVersion) {
     }
     $previousCommit = (Get-Content -LiteralPath $previousLockPath -Raw | ConvertFrom-Json).commit
 } elseif (Test-Path -LiteralPath $releaseRoot -PathType Container) {
-    $previousLock = Get-ChildItem -Path $releaseRoot -Recurse -File -Filter "images.lock.json" |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 1
+    # Git checkout timestamps are not release ordering. Parse every lock and
+    # select the highest semantic version deterministically.
+    $previousLock = @(
+        Get-ChildItem -Path $releaseRoot -Recurse -File -Filter "images.lock.json" |
+            ForEach-Object {
+                $parsedLock = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                $versionInfo = Test-SemanticVersionTag -Tag ([string] $parsedLock.version)
+                if (-not $versionInfo.IsValid) {
+                    throw "Release lock '$($_.FullName)' has an invalid version: $($versionInfo.Reason)"
+                }
+
+                [pscustomobject]@{
+                    Path        = $_.FullName
+                    Parsed      = $parsedLock
+                    Major       = $versionInfo.Major
+                    Minor       = $versionInfo.Minor
+                    Patch       = $versionInfo.Patch
+                    ChannelRank = if ($versionInfo.Channel -eq "release") { 1 } else { 0 }
+                    Candidate   = if ($null -eq $versionInfo.Candidate) { 0 } else { $versionInfo.Candidate }
+                }
+            } |
+            Sort-Object `
+                @{ Expression = "Major"; Descending = $true }, `
+                @{ Expression = "Minor"; Descending = $true }, `
+                @{ Expression = "Patch"; Descending = $true }, `
+                @{ Expression = "ChannelRank"; Descending = $true }, `
+                @{ Expression = "Candidate"; Descending = $true } |
+            Select-Object -First 1
+    )
 
     if ($previousLock) {
-        $parsed = Get-Content -LiteralPath $previousLock.FullName -Raw | ConvertFrom-Json
+        $parsed = $previousLock.Parsed
         $baselineVersion = $parsed.version
         $previousCommit = $parsed.commit
     }
