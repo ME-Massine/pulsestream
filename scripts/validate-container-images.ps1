@@ -151,8 +151,20 @@ function Get-DeploymentProbeEndpoints {
         if ($probe.httpGet.path -ne $probeSpec.ExpectedPath) {
             throw "Deployment '$Service' $($probeSpec.Name) probe is '$($probe.httpGet.path)', expected '$($probeSpec.ExpectedPath)'."
         }
-        if ([string] $probe.httpGet.port -ne [string] $Config.MainPort) {
-            throw "Deployment '$Service' $($probeSpec.Name) probe uses port '$($probe.httpGet.port)', but runtime validation publishes '$($Config.MainPort)'."
+        # Kubernetes probes may use a named container port (the manifests use
+        # `http`) rather than the numeric port. Resolve that name against the
+        # same container before checking the host mapping.
+        $declaredPort = [string] $probe.httpGet.port
+        $resolvedPort = $declaredPort
+        if ($declaredPort -notmatch '^\d+$') {
+            $namedPorts = @($containers[0].ports | Where-Object { [string] $_.name -eq $declaredPort })
+            if ($namedPorts.Count -ne 1) {
+                throw "Deployment '$Service' $($probeSpec.Name) refers to named port '$declaredPort', but that name is not declared exactly once on the container."
+            }
+            $resolvedPort = [string] $namedPorts[0].containerPort
+        }
+        if ($resolvedPort -ne [string] $Config.MainPort) {
+            throw "Deployment '$Service' $($probeSpec.Name) resolves to port '$resolvedPort' (declared as '$declaredPort'), but runtime validation publishes '$($Config.MainPort)'."
         }
 
         $endpoints.Add([pscustomobject]@{
