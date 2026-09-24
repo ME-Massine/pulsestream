@@ -1,7 +1,7 @@
 # Parse every PowerShell source and run every offline regression test for the
 # current PowerShell edition. Cluster-dependent tests are skipped only when
-# kubectl cannot reach an API server; Kubernetes resources are checked separately
-# by the CI kubeconform job.
+# kubectl cannot reach an API server; a skipped test fails this gate because
+# Kubernetes resources are checked separately by the CI kubeconform job.
 [CmdletBinding()]
 param()
 
@@ -145,8 +145,18 @@ if ($testFailures.Count -gt 0) {
     Write-Host "Test failures: $($testFailures -join ', ')"
 }
 
-if ($parseFailures.Count -gt 0 -or $testFailures.Count -gt 0) {
-    throw "PowerShell checks failed on $edition."
+if ($parseFailures.Count -gt 0 -or $testFailures.Count -gt 0 -or $skipped.Count -gt 0) {
+    $failureDetails = @()
+    if ($parseFailures.Count -gt 0) {
+        $failureDetails += "parse failures: $($parseFailures -join ', ')"
+    }
+    if ($testFailures.Count -gt 0) {
+        $failureDetails += "test failures: $($testFailures -join ', ')"
+    }
+    if ($skipped.Count -gt 0) {
+        $failureDetails += "skipped tests are not passing: $($skipped -join ', ')"
+    }
+    throw "PowerShell checks failed on $edition. $($failureDetails -join '; ')"
 }
 
 Write-Host "All PowerShell checks passed on $edition."

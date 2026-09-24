@@ -59,9 +59,10 @@ powershell -File scripts\tests\run-all-tests.ps1
 ```
 
 Two PowerShell tests use `kubectl` client-side serialization and therefore need
-API discovery. When no cluster is reachable, the runner reports those tests as
-skipped by name; the Kubernetes manifests are still checked by the strict
-schema job. A skipped test is not counted as a pass.
+API discovery. The CI jobs create a disposable Kubernetes API for those tests.
+When running locally without a reachable cluster, the runner reports those
+tests as skipped by name and fails the gate; the Kubernetes manifests are still
+checked by the strict schema job. A skipped test is not counted as a pass.
 
 ### Coverage baseline
 

@@ -257,6 +257,8 @@ jobs:
           schema_dir="${RUNNER_TEMP}/kubeconform-schemas/kafka.strimzi.io"
           mkdir -p "${schema_dir}"
           base="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${STRIMZI_CRD_CATALOG_COMMIT}/kafka.strimzi.io"
+          # The catalog uses lowercase source names, while kubeconform expands
+          # ResourceKind with its kind casing in the schema lookup template.
           curl -sSfL "${base}/kafka_v1.json" -o "${schema_dir}/Kafka_v1.json"
           curl -sSfL "${base}/kafkanodepool_v1.json" -o "${schema_dir}/KafkaNodePool_v1.json"
           curl -sSfL "${base}/kafkatopic_v1.json" -o "${schema_dir}/KafkaTopic_v1.json"
@@ -290,6 +292,10 @@ jobs:
     name: PowerShell checks (${{ matrix.edition }})
     runs-on: windows-latest
 
+    env:
+      KIND_VERSION: v0.29.0
+      KIND_NODE_IMAGE: kindest/node:v1.30.0
+
     strategy:
       fail-fast: false
       matrix:
@@ -301,6 +307,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # kubectl create --dry-run=client still performs API discovery for the
+      # resource kinds exercised by the structural tests. Provide a disposable
+      # API server so those tests execute instead of being skipped.
+      - name: Start disposable Kubernetes API
+        shell: pwsh
+        run: |
+          $kindPath = Join-Path $env:RUNNER_TEMP "kind.exe"
+          Invoke-WebRequest `
+              -UseBasicParsing `
+              -Uri "https://kind.sigs.k8s.io/dl/$env:KIND_VERSION/kind-windows-amd64" `
+              -OutFile $kindPath
+
+          & $kindPath create cluster `
+              --name pulsestream-ci `
+              --image $env:KIND_NODE_IMAGE `
+              --wait 90s
+          if ($LASTEXITCODE -ne 0) {
+              throw "kind could not create the disposable cluster."
+          }
+
+          kubectl cluster-info --context kind-pulsestream-ci
+          if ($LASTEXITCODE -ne 0) {
+              throw "kubectl could not reach the disposable cluster."
+          }
+
       - name: Parse helpers and run regression tests (PowerShell 7)
         if: matrix.edition == 'pwsh'
         shell: pwsh
@@ -310,3 +341,15 @@ jobs:
         if: matrix.edition == 'powershell'
         shell: powershell
         run: .\scripts\tests\run-all-tests.ps1
+
+      - name: Remove disposable Kubernetes API
+        if: always()
+        shell: pwsh
+        run: |
+          $kindPath = Join-Path $env:RUNNER_TEMP "kind.exe"
+          if (Test-Path -LiteralPath $kindPath) {
+              & $kindPath delete cluster --name pulsestream-ci
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Warning "kind cleanup returned exit code $LASTEXITCODE."
+              }
+          }
