@@ -41,13 +41,19 @@ env:
   # blocks exactly like a failing one - see Test-PromotionGate.
   REQUIRED_CHECKS: |
     Repository sanity checks
-    Java service tests
+    Service verify (ingestion-service)
+    Service verify (telemetry-processor)
+    Service verify (query-service)
     Platform container images
     Build and push ingestion-service
     Build and push telemetry-processor
     Build and push query-service
     Published image runtime validation
     Release manifest consistency
+    Docker Compose configuration
+    Kubernetes manifests
+    PowerShell checks (pwsh)
+    PowerShell checks (powershell)
   SERVICES: ingestion-service telemetry-processor query-service
 
 # Two dispatches for the same version must not race through the preflight and
