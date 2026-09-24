@@ -11,12 +11,16 @@ param(
     [string] $ImagePrefix = "pulsestream",
     # Skip the build phase and validate images already built with the same tags.
     [switch] $SkipBuild,
+    # Exact service=image-reference mappings to pull and validate. This is how
+    # publish-images.yml tests the immutable digest it will later promote.
+    [string[]] $ImageReference = @(),
     [int] $TimeoutSeconds = 120
 )
 
 $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamYaml.psm1") -Force
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
@@ -42,25 +46,27 @@ function Invoke-Docker {
 # expose a reachable health endpoint on the host lives here so the run loop below
 # stays generic.
 #
-# - HealthPort:  container port the actuator /health endpoint listens on. For most
-#                services this is the service port; telemetry-processor serves its
-#                management surface on a separate loopback-bound port (see its
-#                application.yml), so validation must both target 9083 and bind it
-#                to 0.0.0.0 (via PULSESTREAM_MANAGEMENT_ADDRESS) to reach it.
-# - HostPort:    host port the HealthPort is published on. Offset into the 19xxx
-#                range so validation never collides with a service already running
-#                on the host on its native port.
+# - MainPort/ManagementPort: container ports for the Kubernetes probe paths and
+#                the full actuator surface. telemetry-processor serves the latter
+#                on a separate loopback-bound port, so validation targets both and
+#                binds it to 0.0.0.0 (via PULSESTREAM_MANAGEMENT_ADDRESS).
+# - MainHostPort/ManagementHostPort: host ports offset into the 19xxx range so
+#                validation never collides with a service on its native port.
 # - Env:         environment overrides the container needs to start cleanly.
 $serviceConfig = @{
     "ingestion-service"   = @{
-        HealthPort = 8081
-        HostPort   = 19081
-        Env        = @{ PULSESTREAM_OTEL_TRACES_EXPORTER = "none" }
+        MainPort           = 8081
+        MainHostPort       = 19081
+        ManagementPort     = 8081
+        ManagementHostPort = 19081
+        Env                = @{ PULSESTREAM_OTEL_TRACES_EXPORTER = "none" }
     }
     "telemetry-processor" = @{
-        HealthPort = 9083
-        HostPort   = 19083
-        Env        = @{
+        MainPort           = 8082
+        MainHostPort       = 19082
+        ManagementPort     = 9083
+        ManagementHostPort = 19083
+        Env                = @{
             PULSESTREAM_OTEL_TRACES_EXPORTER = "none"
             # The management port is bound to loopback inside the container by
             # default. Bind it to all interfaces here so the published port is
@@ -69,20 +75,105 @@ $serviceConfig = @{
         }
     }
     "query-service"       = @{
-        HealthPort = 8083
-        HostPort   = 19082
-        Env        = @{ PULSESTREAM_OTEL_TRACES_EXPORTER = "none" }
+        MainPort           = 8083
+        MainHostPort       = 19084
+        ManagementPort     = 8083
+        ManagementHostPort = 19084
+        Env                = @{ PULSESTREAM_OTEL_TRACES_EXPORTER = "none" }
     }
 }
 
-function Get-ImageTag {
+if ($ImageReference.Count -gt 0 -and $SkipBuild) {
+    throw "-ImageReference already skips the local build; do not combine it with -SkipBuild."
+}
+
+$providedReference = @{}
+foreach ($entry in $ImageReference) {
+    $parts = $entry.Split([char[]] '=', 2)
+    if ($parts.Count -ne 2 -or [string]::IsNullOrWhiteSpace($parts[0]) -or [string]::IsNullOrWhiteSpace($parts[1])) {
+        throw "Image reference '$entry' is not in '<service>=<image-reference>' form."
+    }
+
+    $service = $parts[0].Trim()
+    if (-not $serviceConfig.ContainsKey($service)) {
+        throw "Image reference '$entry' names unknown service '$service'."
+    }
+    if ($providedReference.ContainsKey($service)) {
+        throw "Image reference was supplied more than once for '$service'."
+    }
+    $providedReference[$service] = $parts[1].Trim()
+}
+
+if ($providedReference.Count -gt 0) {
+    foreach ($service in $Services) {
+        if (-not $providedReference.ContainsKey($service)) {
+            throw "No exact image reference was supplied for '$service'. Digest validation must cover every selected service."
+        }
+    }
+}
+
+function Get-ImageReference {
     param([string] $Service)
+    if ($providedReference.ContainsKey($Service)) {
+        return $providedReference[$Service]
+    }
     "$ImagePrefix/$Service`:local"
 }
 
 function Get-ContainerName {
     param([string] $Service)
     "pulsestream-validate-$Service"
+}
+
+function Get-DeploymentProbeEndpoints {
+    param([string] $Service, $Config)
+
+    $manifestPath = Join-Path $repoRoot "infrastructure\kubernetes\$Service\deployment.yaml"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Deployment manifest for '$Service' was not found at '$manifestPath'."
+    }
+
+    $deployment = ConvertFrom-KubernetesYaml -Path $manifestPath
+    $containers = @($deployment.spec.template.spec.containers | Where-Object { $_.name -eq $Service })
+    if ($containers.Count -ne 1) {
+        throw "Deployment '$Service' must contain exactly one '$Service' container for runtime probe validation."
+    }
+
+    $endpoints = [System.Collections.Generic.List[object]]::new()
+    foreach ($probeSpec in @(
+        [pscustomobject]@{ Name = "liveness"; Property = "livenessProbe"; ExpectedPath = "/livez" },
+        [pscustomobject]@{ Name = "readiness"; Property = "readinessProbe"; ExpectedPath = "/readyz" }
+    )) {
+        $probe = $containers[0].$($probeSpec.Property)
+        if ($null -eq $probe -or $null -eq $probe.httpGet) {
+            throw "Deployment '$Service' has no HTTP $($probeSpec.Name) probe."
+        }
+        if ($probe.httpGet.path -ne $probeSpec.ExpectedPath) {
+            throw "Deployment '$Service' $($probeSpec.Name) probe is '$($probe.httpGet.path)', expected '$($probeSpec.ExpectedPath)'."
+        }
+        # Kubernetes probes may use a named container port (the manifests use
+        # `http`) rather than the numeric port. Resolve that name against the
+        # same container before checking the host mapping.
+        $declaredPort = [string] $probe.httpGet.port
+        $resolvedPort = $declaredPort
+        if ($declaredPort -notmatch '^\d+$') {
+            $namedPorts = @($containers[0].ports | Where-Object { [string] $_.name -eq $declaredPort })
+            if ($namedPorts.Count -ne 1) {
+                throw "Deployment '$Service' $($probeSpec.Name) refers to named port '$declaredPort', but that name is not declared exactly once on the container."
+            }
+            $resolvedPort = [string] $namedPorts[0].containerPort
+        }
+        if ($resolvedPort -ne [string] $Config.MainPort) {
+            throw "Deployment '$Service' $($probeSpec.Name) resolves to port '$resolvedPort' (declared as '$declaredPort'), but runtime validation publishes '$($Config.MainPort)'."
+        }
+
+        $endpoints.Add([pscustomobject]@{
+            Name = $probeSpec.Name
+            Url  = "http://localhost:$($Config.MainHostPort)$($probe.httpGet.path)"
+        })
+    }
+
+    return $endpoints.ToArray()
 }
 
 function Remove-ValidationContainer {
@@ -99,7 +190,7 @@ function Build-ServiceImage {
         throw "No Dockerfile found for '$Service' at $context."
     }
 
-    $tag = Get-ImageTag $Service
+    $tag = Get-ImageReference $Service
     Write-Host "Building $tag ..."
     Invoke-Docker build -t $tag $context
     Confirm-Condition -Permanent `
@@ -116,8 +207,14 @@ function Test-ServiceContainer {
         throw "No validation config for service '$Service'."
     }
 
-    $tag = Get-ImageTag $Service
+    $tag = Get-ImageReference $Service
     $name = Get-ContainerName $Service
+
+    $configuredUser = (Invoke-Docker inspect --format '{{.Config.User}}' $tag | Out-String).Trim()
+    Confirm-Condition -Permanent `
+        -Condition (($LASTEXITCODE -eq 0) -and -not [string]::IsNullOrWhiteSpace($configuredUser) -and $configuredUser -notin @("root", "0", "0:0")) `
+        -SuccessMessage "Image is configured to run as non-root ($configuredUser)" `
+        -FailureMessage "Image '$Service' must configure a non-root user (got '$configuredUser')."
 
     # Fresh start every run so a leftover container from a prior run cannot mask a
     # regression.
@@ -126,8 +223,11 @@ function Test-ServiceContainer {
     $runArgs = @(
         "run", "-d", "--name", $name,
         "--network", $Network,
-        "-p", "$($config.HostPort):$($config.HealthPort)"
+        "-p", "$($config.MainHostPort):$($config.MainPort)"
     )
+    if ($config.ManagementHostPort -ne $config.MainHostPort -or $config.ManagementPort -ne $config.MainPort) {
+        $runArgs += @("-p", "$($config.ManagementHostPort):$($config.ManagementPort)")
+    }
     foreach ($key in $config.Env.Keys) {
         $runArgs += @("-e", "$key=$($config.Env[$key])")
     }
@@ -139,12 +239,18 @@ function Test-ServiceContainer {
         -SuccessMessage "Container started: $name" `
         -FailureMessage "docker run failed for '$Service' (exit $LASTEXITCODE)."
 
-    $healthUrl = "http://localhost:$($config.HostPort)/actuator/health"
+    # Read liveness/readiness from the committed Deployment rather than merely
+    # duplicating their paths here. telemetry-processor's full management
+    # surface remains separately reachable on 9083.
+    $endpoints = @(
+        Get-DeploymentProbeEndpoints -Service $Service -Config $config
+        [pscustomobject]@{ Name = "management health"; Url = "http://localhost:$($config.ManagementHostPort)/actuator/health" }
+    )
 
     try {
         Invoke-WithRetry `
             -TimeoutSeconds $TimeoutSeconds `
-            -FailureMessage "'$Service' health endpoint did not report UP within $TimeoutSeconds seconds." `
+            -FailureMessage "'$Service' deployed liveness, readiness, and management endpoints did not all report UP within $TimeoutSeconds seconds." `
             -Operation {
                 # A crashed container can never recover, so fail fast instead of
                 # retrying for the full timeout against a dead container.
@@ -154,11 +260,13 @@ function Test-ServiceContainer {
                     -SuccessMessage "'$Service' container is running" `
                     -FailureMessage "'$Service' container exited before becoming healthy. Recent logs:`n$(Invoke-Docker logs --tail 40 $name | Out-String)"
 
-                $result = Invoke-JsonGet $healthUrl
-                Confirm-Condition `
-                    -Condition ($result.status -eq "UP") `
-                    -SuccessMessage "'$Service' health endpoint is UP ($healthUrl)" `
-                    -FailureMessage "'$Service' health endpoint status was '$($result.status)', expected UP"
+                foreach ($endpoint in $endpoints) {
+                    $result = Invoke-JsonGet $endpoint.Url
+                    Confirm-Condition `
+                        -Condition ($result.status -eq "UP") `
+                        -SuccessMessage "'$Service' $($endpoint.Name) endpoint is UP ($($endpoint.Url))" `
+                        -FailureMessage "'$Service' $($endpoint.Name) endpoint status was '$($result.status)', expected UP ($($endpoint.Url))"
+                }
             }
     }
     finally {
@@ -173,7 +281,15 @@ Write-Host ""
 foreach ($service in $Services) {
     Write-Host "=== $service ===" -ForegroundColor Cyan
 
-    if (-not $SkipBuild) {
+    if ($providedReference.Count -gt 0) {
+        $reference = Get-ImageReference $service
+        Write-Host "Pulling exact image $reference ..."
+        Invoke-Docker pull $reference | Out-Null
+        Confirm-Condition -Permanent `
+            -Condition ($LASTEXITCODE -eq 0) `
+            -SuccessMessage "Exact image pulled: $reference" `
+            -FailureMessage "docker pull failed for '$reference' (exit $LASTEXITCODE)."
+    } elseif (-not $SkipBuild) {
         Build-ServiceImage $service
     }
 

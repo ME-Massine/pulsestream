@@ -39,83 +39,139 @@ jobs:
           test -d docs/decisions
           test -d docs/diagrams
 
-  java-build-placeholder:
-    name: Java build placeholder
+  java-service-tests:
+    name: Java service tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 21
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "17"
 
-      - name: Confirm Java is available
-        run: java -version
+      - name: Test every standalone Maven service
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in ingestion-service telemetry-processor query-service; do
+            echo "=== ${service} ==="
+            (
+              cd "services/${service}"
+              # The wrapper is versioned for Windows contributors too. Make
+              # the Unix runner's execution contract explicit, then invoke it
+              # directly so a non-executable wrapper cannot silently pass CI.
+              chmod +x ./mvnw
+              ./mvnw --batch-mode test
+            )
+          done
 
-  telemetry-processor-docker:
-    name: Telemetry Processor Docker image
+  release-manifests:
+    name: Release manifest consistency
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build telemetry-processor image
-        run: docker build -t pulsestream/telemetry-processor:ci services/telemetry-processor
+      # Catches the two ways a manifest set stops describing one tested build:
+      # a service pinned to a different commit than its neighbours, and a
+      # manifest left on the digest of a previous release. Neither needs a
+      # cluster or a registry - the committed files are compared with each
+      # other - so this runs on every pull request. See
+      # docs/architecture/release-and-promotion.md.
+      - name: Validate deployment image references
+        shell: pwsh
+        run: ./scripts/validate-release-manifests.ps1
 
-      - name: Assert image runs as non-root
+      - name: Run the release promotion unit tests
+        shell: pwsh
+        run: ./scripts/tests/test-release-promotion.ps1
+
+  platform-container-images:
+    name: Platform container images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build, start, and probe every platform image
+        shell: pwsh
+        run: ./scripts/validate-container-images.ps1 -Network bridge -TimeoutSeconds 120
+
+  published-image-runtime-validation:
+    name: Published image runtime validation
+    runs-on: ubuntu-latest
+
+    # Pulling an exact repository@digest is the invariant that promotion later
+    # relies on. PRs must exercise that path without publishing unmerged work
+    # to GHCR, so this job uses an ephemeral local OCI registry instead.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Start an ephemeral OCI registry
         run: |
-          user="$(docker inspect --format '{{.Config.User}}' pulsestream/telemetry-processor:ci)"
-          echo "Configured image user: '${user}'"
-          if [ -z "${user}" ] || [ "${user}" = "root" ] || [ "${user}" = "0" ] || [ "${user}" = "0:0" ]; then
-            echo "::error::Image must not run as root (got '${user}')"
-            exit 1
-          fi
+          set -euo pipefail
+          docker run -d --name pulsestream-ci-registry -p 5000:5000 registry:2
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:5000/v2/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Registry did not become ready."
+          exit 1
 
-      - name: Start container and verify Spring Boot startup
+      - name: Build, publish, and verify immutable digests
+        id: digests
+        shell: bash
         run: |
-          docker run -d --name tp-ci -p 8082:8082 pulsestream/telemetry-processor:ci
+          set -euo pipefail
 
-          echo "Waiting for Spring Boot to finish starting..."
-          started=""
-          for i in $(seq 1 60); do
-            if docker logs tp-ci 2>&1 | grep -q "Started TelemetryProcessorApplication"; then
-              started="yes"
-              break
-            fi
-            if [ "$(docker inspect --format '{{.State.Running}}' tp-ci)" != "true" ]; then
-              echo "::error::Container exited before startup completed"
-              break
-            fi
-            sleep 2
+          refs_file="${RUNNER_TEMP}/pulsestream-image-references"
+          : > "${refs_file}"
+
+          for service in ingestion-service telemetry-processor query-service; do
+            image="localhost:5000/pulsestream/${service}"
+            tag="sha-${GITHUB_SHA::7}"
+
+            # Match the labels used by publish-images.yml. The local registry
+            # makes the digest a real registry digest, not a Docker image ID.
+            docker build \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.version=${tag}" \
+              -t "${image}:${tag}" \
+              "services/${service}"
+            docker push "${image}:${tag}"
+
+            digest="$(docker buildx imagetools inspect "${image}:${tag}" --format '{{.Manifest.Digest}}')"
+            test -n "${digest}"
+            test "$(docker buildx imagetools inspect "${image}@${digest}" --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}')" = "${GITHUB_SHA}"
+
+            echo "${service}=${image}@${digest}" | tee -a "${refs_file}"
           done
 
-          echo "----- container logs -----"
-          docker logs tp-ci 2>&1 | head -40
+          echo "references_file=${refs_file}" >> "${GITHUB_OUTPUT}"
 
-          if [ -z "${started}" ]; then
-            echo "::error::Telemetry Processor did not start (never logged 'Started TelemetryProcessorApplication')"
-            exit 1
-          fi
+      - name: Pull and probe the exact local digests
+        shell: pwsh
+        env:
+          REFERENCES_FILE: ${{ steps.digests.outputs.references_file }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $references = @(Get-Content -LiteralPath $env:REFERENCES_FILE)
+          if ($references.Count -ne 3) {
+              throw "Expected exact digest references for all three platform services, got $($references.Count)."
+          }
 
-          echo "Confirming the container is still running after startup..."
-          sleep 5
-          if [ "$(docker inspect --format '{{.State.Running}}' tp-ci)" != "true" ]; then
-            echo "::error::Container is not running after startup (crashed shortly after 'Started')"
-            docker logs tp-ci 2>&1 | tail -40
-            exit 1
-          fi
+          ./scripts/validate-container-images.ps1 `
+              -Network bridge `
+              -ImageReference $references `
+              -TimeoutSeconds 120
 
-          echo "Confirming runtime process user is non-root..."
-          runtime_user="$(docker exec tp-ci whoami)"
-          echo "Runtime user: '${runtime_user}'"
-          if [ "${runtime_user}" = "root" ]; then
-            echo "::error::Container process is running as root"
-            exit 1
-          fi
-
-      - name: Tear down container
+      - name: Remove the ephemeral OCI registry
         if: always()
-        run: docker rm -f tp-ci || true
+        run: docker rm -f pulsestream-ci-registry 2> /dev/null || true

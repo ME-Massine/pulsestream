@@ -54,21 +54,36 @@ the local and published names differ only by the `ghcr.io/<owner>/` prefix.
 
 ## Tagging strategy
 
-Every published image carries an **immutable, per-commit** tag. Moving and
-release tags are added on top depending on what triggered the publish.
+Every published image carries a per-commit tag. The publish workflow never
+overwrites it, but a registry tag is still a mutable pointer by nature; release
+promotion therefore consumes retained, digest-pinned validation provenance
+rather than trusting the tag at promotion time.
 
-| Tag             | Applied when                | Mutable? | Purpose                                              |
-| --------------- | --------------------------- | -------- | ---------------------------------------------------- |
-| `sha-<short>`   | every publish               | No       | Exact, reproducible reference to one commit          |
-| `latest`        | push to `main`              | Yes      | Most recent build of the mainline                    |
-| `<version>`     | push of a `v*` git tag      | No       | Released version (e.g. `v1.2.0`)                      |
+| Tag                 | Applied when                          | Mutable? | Purpose                                              |
+| ------------------- | ------------------------------------- | -------- | ---------------------------------------------------- |
+| `sha-<short>`       | every publish                         | Not trusted by promotion | Build tag for one commit; its recorded digest is promoted |
+| `latest`            | push to `main`                        | Yes      | Most recent build of the mainline                    |
+| `<version>-rc.<n>`  | promotion of a tested `sha-<short>`   | No       | Release candidate (e.g. `v1.2.0-rc.1`)               |
+| `<version>`         | promotion of a candidate              | No       | Released version (e.g. `v1.2.0`)                      |
 
 `sha-<short>` uses the first 7 characters of the commit SHA (for example
 `sha-c2b315e`).
 
+The two version tags are **applied to an image that already exists** — they are
+never built. A promotion copies the registry manifest of the runtime-validated
+digest recorded for the commit onto the version tag, so all four rows above can
+name the same bytes. See
+[Release and Container Image Promotion](release-and-promotion.md).
+
+If the per-commit tag already exists when a publish runs, the existing image is
+reused rather than rebuilt. A Java build is not byte-reproducible, so
+overwriting the tag would give one commit two digests for the same service and
+repoint a tag a release may already have promoted.
+
 **Rule of thumb:** pin deployments to an immutable tag (`sha-<short>` or a
-`<version>` tag). Treat `latest` as a convenience for local pulls only — it is
-mutable and must not be relied on for reproducible deploys.
+`<version>` tag), and to a digest once the image is part of a release. Treat
+`latest` as a convenience for local pulls only — it is mutable and must not be
+relied on for reproducible deploys.
 
 ---
 
@@ -76,13 +91,20 @@ mutable and must not be relied on for reproducible deploys.
 
 Publishing is automated by
 [`.github/workflows/publish-images.yml`](../../.github/workflows/publish-images.yml).
-It builds and pushes all three service images on:
-
-- every push to `main` → tags `sha-<short>` and `latest`
-- every push of a `v*` tag → tags `sha-<short>` and `<version>`
+It builds and pushes all three service images on every push to `main`, tagging
+`sha-<short>` and moving `latest` onto that same digest.
 
 Pull requests do **not** publish, so forks cannot push images and unmerged work
-never reaches the registry.
+never reaches the registry. Neither do `v*` tags: a version is applied to an
+already-published digest by
+[`release-promotion.yml`](../../.github/workflows/release-promotion.yml), and
+building on the tag would publish contents no check had run against under a
+version that was already approved.
+
+Each run records the digest it published in the job summary and in an
+`image-digests` artifact. It then pulls those exact `repository@digest`
+references and probes the deployed health paths. Only that successful probe
+job emits `validated-image-digests`, which is what promotion later consumes.
 
 ### Manual publish (single service)
 
@@ -111,6 +133,18 @@ containers:
   - name: query-service
     image: ghcr.io/<owner>/pulsestream/query-service:sha-c2b315e
 ```
+
+Once the image is part of a release, the manifest carries the digest as well, so
+what Kubernetes resolves cannot be changed by repointing the tag:
+
+```yaml
+containers:
+  - name: query-service
+    image: ghcr.io/<owner>/pulsestream/query-service:v1.2.0@sha256:<64 hex>
+```
+
+`scripts/validate-release-manifests.ps1` checks these references on every pull
+request — see [Release and Container Image Promotion](release-and-promotion.md).
 
 If the package is private, the pulling cluster needs an image pull secret
 holding a token with `read:packages` scope:

@@ -1,0 +1,432 @@
+name: Release promotion
+
+# Promotes an already-published, already-tested image set to a release candidate
+# or a release (#264).
+#
+# There is no build step anywhere in this workflow, and that is the point. The
+# images it promotes were built once by publish-images.yml for one main commit;
+# promotion resolves the digests those builds produced and copies the manifest
+# to a new tag with `docker buildx imagetools create`. The bytes an operator
+# eventually runs are the bytes CI tested.
+#
+# The run is split into two jobs so the guarantee is structural rather than a
+# matter of step order: `gate` decides whether the commit may be promoted at
+# all, and `promote` does not exist as a runnable job unless `gate` succeeded.
+#
+# The manifest change it produces lands as a pull request. main is protected and
+# takes reviewed changes only, so a promotion proposes the new image references
+# and a human approves them - the controlled process the issue asks for.
+#
+# See docs/architecture/release-and-promotion.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag: v<major>.<minor>.<patch> for a release, v<major>.<minor>.<patch>-rc.<n> for a candidate"
+        required: true
+        type: string
+      source_commit:
+        description: "Full 40-character commit selected as the workflow ref; its images are being promoted"
+        required: true
+        type: string
+      dry_run:
+        description: "Resolve digests and generate the manifest set without pushing tags or opening a pull request"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  # Checks that must have passed for the source commit. A check with no result
+  # blocks exactly like a failing one - see Test-PromotionGate.
+  REQUIRED_CHECKS: |
+    Repository sanity checks
+    Java service tests
+    Platform container images
+    Build and push ingestion-service
+    Build and push telemetry-processor
+    Build and push query-service
+    Published image runtime validation
+    Release manifest consistency
+  SERVICES: ingestion-service telemetry-processor query-service
+
+# Two dispatches for the same version must not race through the preflight and
+# publish conflicting release tags or branches. Different versions may proceed
+# independently; queued work is retained for an auditable promotion trail.
+concurrency:
+  group: release-promotion-${{ github.repository }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Verify the commit may be promoted
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+
+    outputs:
+      short_sha: ${{ steps.commit.outputs.short_sha }}
+      channel: ${{ steps.version.outputs.channel }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # The source tree used by the gate must be the same tree named by the
+          # source_commit input. The ancestry check below still needs history.
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+
+      - name: Validate the version tag
+        id: version
+        shell: pwsh
+        run: |
+          Import-Module ./scripts/lib/PulseStreamRelease.psm1 -Force
+
+          $parsed = Test-SemanticVersionTag -Tag "${{ inputs.version }}"
+          if (-not $parsed.IsValid) {
+              Write-Host "::error::$($parsed.Reason)"
+              exit 1
+          }
+
+          "channel=$($parsed.Channel)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "${{ inputs.version }} is a $($parsed.Channel) tag for $($parsed.BaseTag)."
+
+      - name: Validate the source commit
+        id: commit
+        run: |
+          set -euo pipefail
+          commit="${{ inputs.source_commit }}"
+
+          if ! echo "${commit}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::'${commit}' is not a full 40-character commit. Promotion records the exact commit an image came from, and a short sha is ambiguous."
+            exit 1
+          fi
+
+          if [ "${commit}" != "${GITHUB_SHA}" ]; then
+            echo "::error::source_commit ${commit} is not the commit selected by this workflow run (${GITHUB_SHA}). Dispatch the workflow on the source commit's branch or tag and pass that exact commit."
+            exit 1
+          fi
+
+          if ! git cat-file -e "${commit}^{commit}" 2>/dev/null; then
+            echo "::error::Commit ${commit} does not exist in this repository."
+            exit 1
+          fi
+
+          # Only images built from main were published, so only main commits can
+          # be promoted. A commit on a branch has no per-commit image to resolve.
+          if ! git merge-base --is-ancestor "${commit}" "origin/${{ github.event.repository.default_branch }}"; then
+            echo "::error::Commit ${commit} is not an ancestor of ${{ github.event.repository.default_branch }}. Only merged commits are published, so only they can be promoted."
+            exit 1
+          fi
+
+          echo "short_sha=${commit:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Require the checks for this commit to have passed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Every check run reported for the commit, including re-runs: the
+          # gate takes the worst result per check name, so a green re-run does
+          # not retire a failing run of the same check.
+          gh api --paginate \
+            "repos/${{ github.repository }}/commits/${{ inputs.source_commit }}/check-runs" \
+            --jq '.check_runs[] | {Name: .name, Status: .status, Conclusion: .conclusion}' \
+            | jq -s '.' > checks.json
+
+          echo "Check runs reported for ${{ inputs.source_commit }}:"
+          jq -r '.[] | "  \(.Name): \(.Status)/\(.Conclusion // "none")"' checks.json
+
+          pwsh -NoProfile -Command '
+            Import-Module ./scripts/lib/PulseStreamRelease.psm1 -Force
+
+            $gates = Get-Content -LiteralPath checks.json -Raw | ConvertFrom-Json
+            $required = @($env:REQUIRED_CHECKS -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
+            $result = Test-PromotionGate -Gate $gates -Required $required
+            foreach ($name in $result.Satisfied) {
+                Write-Host "[ok] $name"
+            }
+            if (-not $result.Ok) {
+                foreach ($problem in $result.Blocking) {
+                    Write-Host "::error::$problem"
+                }
+                throw "$($result.Blocking.Count) required check(s) did not pass for ${{ inputs.source_commit }}. An untested commit cannot be promoted."
+            }
+
+            Write-Host "[ok] Every required check passed for ${{ inputs.source_commit }}."
+          '
+
+  promote:
+    name: Promote ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    needs: gate
+
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Keep manifest generation on the exact source tree that passed the
+          # gate; a workflow ref can move or differ from the input otherwise.
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+
+      - name: Retrieve the runtime-validated digest provenance
+        id: provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # A sha-* registry tag is a mutable pointer. Find the successful
+          # publish run for this exact commit and download the record emitted
+          # only after the images addressed by digest were pulled and probed.
+          publish_run="$(gh api --paginate "repos/${{ github.repository }}/actions/workflows/publish-images.yml/runs?head_sha=${{ inputs.source_commit }}&event=push&per_page=100" \
+            --jq '.workflow_runs[] | select(.status == "completed" and .conclusion == "success") | .id' | head -n 1)"
+          if [ -z "${publish_run}" ]; then
+            echo "::error::No successful publish-images run exists for ${{ inputs.source_commit }}. Promotion requires runtime-validated digest provenance, not a sha-* tag lookup."
+            exit 1
+          fi
+
+          artifact_id="$(gh api "repos/${{ github.repository }}/actions/runs/${publish_run}/artifacts" \
+            --jq '.artifacts[] | select(.name == "validated-image-digests" and .expired == false) | .id' | head -n 1)"
+          if [ -z "${artifact_id}" ]; then
+            echo "::error::Publish run ${publish_run} has no retained validated-image-digests artifact. Re-run the publish workflow; an unprobed digest cannot be promoted."
+            exit 1
+          fi
+
+          archive="${RUNNER_TEMP}/validated-image-digests-${publish_run}.zip"
+          provenance="${RUNNER_TEMP}/validated-image-digests.json"
+          gh api -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/actions/artifacts/${artifact_id}/zip" > "${archive}"
+          unzip -p "${archive}" validated-image-digests.json > "${provenance}"
+          if [ ! -s "${provenance}" ]; then
+            echo "::error::Artifact ${artifact_id} did not contain validated-image-digests.json."
+            exit 1
+          fi
+
+          echo "path=${provenance}" >> "$GITHUB_OUTPUT"
+          echo "publish_run=${publish_run}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Resolve the tested digests
+        id: digests
+        run: |
+          set -euo pipefail
+
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          source_tag="sha-${{ needs.gate.outputs.short_sha }}"
+          provenance="${{ steps.provenance.outputs.path }}"
+          args=""
+
+          if [ "$(jq -r '.commit // empty' "${provenance}")" != "${{ inputs.source_commit }}" ]; then
+            echo "::error::Validated digest provenance does not name source commit ${{ inputs.source_commit }}."
+            exit 1
+          fi
+
+          for service in ${SERVICES}; do
+            image="ghcr.io/${owner}/pulsestream/${service}"
+            recorded_repository="$(jq -r --arg service "${service}" '.images[$service].repository // empty' "${provenance}")"
+            digest="$(jq -r --arg service "${service}" '.images[$service].digest // empty' "${provenance}")"
+            recorded_commit="$(jq -r --arg service "${service}" '.images[$service].commit // empty' "${provenance}")"
+            recorded_tag="$(jq -r --arg service "${service}" '.images[$service].sourceTag // empty' "${provenance}")"
+
+            if [ "${recorded_repository}" != "${image}" ] || [ "${recorded_commit}" != "${{ inputs.source_commit }}" ] || [ "${recorded_tag}" != "${source_tag}" ] || ! echo "${digest}" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              echo "::error::Validated digest provenance is incomplete or mismatched for ${service}."
+              exit 1
+            fi
+
+            # Do not resolve image:${source_tag}: it is a mutable tag. The
+            # digest came from the successful runtime-validation artifact, and
+            # the immutable OCI object must itself attest to the same commit.
+            resolved_digest="$(docker buildx imagetools inspect "${image}@${digest}" --format '{{.Manifest.Digest}}')"
+            if [ "${resolved_digest}" != "${digest}" ]; then
+              echo "::error::${image}@${digest} resolved to ${resolved_digest}, not the runtime-validated digest."
+              exit 1
+            fi
+            source_revision="$(docker buildx imagetools inspect "${image}@${digest}" --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true)"
+            if [ "${source_revision}" != "${{ inputs.source_commit }}" ]; then
+              echo "::error::${image}@${digest} is labelled for '${source_revision}', not ${{ inputs.source_commit }}."
+              exit 1
+            fi
+
+            echo "${service}: ${digest} (validated in publish run ${{ steps.provenance.outputs.publish_run }})"
+
+            args="${args} ${service}=${digest}"
+            echo "digest_${service//-/_}=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+          echo "registry=ghcr.io/${owner}/pulsestream" >> "$GITHUB_OUTPUT"
+          echo "source_tag=${source_tag}" >> "$GITHUB_OUTPUT"
+          echo "args=${args# }" >> "$GITHUB_OUTPUT"
+
+      - name: Preflight release outputs
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          version_directory="infrastructure/kubernetes/releases/${{ inputs.version }}"
+          if [ -e "${version_directory}" ]; then
+            echo "::error::Release directory ${version_directory} already exists. A release version is immutable."
+            exit 1
+          fi
+
+          branch="release/${{ inputs.version }}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${branch}" > /dev/null 2>&1; then
+            echo "::error::Remote branch ${branch} already exists. Refusing to create or overwrite a release PR branch."
+            exit 1
+          fi
+
+          registry="${{ steps.digests.outputs.registry }}"
+          for entry in ${{ steps.digests.outputs.args }}; do
+            service="${entry%%=*}"
+            digest="${entry#*=}"
+            image="${registry}/${service}"
+            target="${image}:${{ inputs.version }}"
+
+            if docker buildx imagetools inspect "${target}" > /dev/null 2>&1; then
+              existing="$(docker buildx imagetools inspect "${target}" --format '{{.Manifest.Digest}}')"
+              if [ "${existing}" != "${digest}" ]; then
+                echo "::error::${target} already exists with ${existing}, not the tested digest ${digest}."
+                exit 1
+              fi
+              echo "[ok] ${target} already names the tested digest; the retag is idempotent."
+            fi
+          done
+
+      - name: Write the release manifest set
+        run: |
+          set -euo pipefail
+
+          # Write and validate the complete local release set before any
+          # registry tag or remote branch can be changed.
+          pwsh -NoProfile -File ./scripts/promote-release-manifests.ps1 \
+            -Version "${{ inputs.version }}" \
+            -Commit "${{ inputs.source_commit }}" \
+            -ImageDigest ${{ steps.digests.outputs.args }} \
+            -RegistryPrefix "${{ steps.digests.outputs.registry }}" \
+            -RepositoryUrl "${{ github.server_url }}/${{ github.repository }}" \
+            -PromotionRunUrl "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          git --no-pager diff --stat
+
+      - name: Apply the release tag to the tested digests
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          registry="${{ steps.digests.outputs.registry }}"
+
+          for entry in ${{ steps.digests.outputs.args }}; do
+            service="${entry%%=*}"
+            digest="${entry#*=}"
+            image="${registry}/${service}"
+
+            # Preserve the source manifest format. With one non-index source,
+            # the default prefer-index behavior would wrap it in a new index
+            # and change the digest even though no layer was rebuilt.
+            target="${image}:${{ inputs.version }}"
+            if ! docker buildx imagetools inspect "${target}" > /dev/null 2>&1; then
+              docker buildx imagetools create --prefer-index=false --tag "${target}" "${image}@${digest}"
+            fi
+
+            promoted="$(docker buildx imagetools inspect "${target}" --format '{{.Manifest.Digest}}')"
+            pwsh -NoProfile -Command "
+              Import-Module ./scripts/lib/PulseStreamRelease.psm1 -Force
+              Assert-PromotedDigest -Service '${service}' -SourceDigest '${digest}' -PromotedDigest '${promoted}'
+              Write-Host '[ok] ${service} ${{ inputs.version }} is the digest that was tested.'
+            "
+          done
+
+      - name: Summarise the promotion
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${{ inputs.version }} (${{ needs.gate.outputs.channel }})"
+            echo ""
+            echo "Promoted from \`${{ inputs.source_commit }}\` (\`${{ steps.digests.outputs.source_tag }}\`)."
+            echo ""
+            echo '```json'
+            cat "infrastructure/kubernetes/releases/${{ inputs.version }}/images.lock.json"
+            echo '```'
+            echo ""
+            cat "infrastructure/kubernetes/releases/${{ inputs.version }}/release-notes.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open the manifest pull request
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          branch="release/${{ inputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${branch}"
+          git add infrastructure/kubernetes
+          git commit -m "release(${{ needs.gate.outputs.channel }}): pin the deployment manifests to ${{ inputs.version }}
+
+          Promoted from ${{ inputs.source_commit }} (${{ steps.digests.outputs.source_tag }}).
+          Every service image is the digest that commit's checks passed on; no
+          image was rebuilt for this release."
+          git push --set-upstream origin "${branch}"
+
+          gh pr create \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "${branch}" \
+            --title "release(${{ needs.gate.outputs.channel }}): ${{ inputs.version }}" \
+            --body-file - <<EOF
+          ## Summary
+
+          Promotes the images built from \`${{ inputs.source_commit }}\` to **${{ inputs.version }}** (${{ needs.gate.outputs.channel }}) and pins every platform Deployment to the promoted digests.
+
+          No image was rebuilt: the release tag was applied to the digests published under \`${{ steps.digests.outputs.source_tag }}\`, which are the ones the required checks passed on.
+
+          ## Related Issue
+
+          Closes #264
+
+          ## Issue Requirements Covered
+
+          - The release references immutable digests rather than tags.
+          - The promoted digests are the tested ones.
+          - The lock maps every deployed digest back to its source commit.
+
+          ## Changes
+
+          - \`infrastructure/kubernetes/releases/${{ inputs.version }}/images.lock.json\` records the promotion.
+          - \`infrastructure/kubernetes/releases/${{ inputs.version }}/release-notes.md\` lists the issue-scoped changes in the release.
+          - Every platform Deployment is repinned to its promoted digest.
+
+          ## Testing
+
+          Generated by [this promotion run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}). The Release manifest consistency check on this pull request re-verifies the manifests against the lock.
+
+          ## Checklist
+
+          - [x] Code builds successfully
+          - [x] Tests pass
+          - [x] Documentation updated if needed
+          - [x] Linked issue is referenced
+          - [x] This PR stays within the issue scope
+          EOF
+
+      - name: Report a dry run
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "::notice::Dry run. The digests were resolved and the manifest set was generated, but no registry tag was applied and no pull request was opened. Re-run with dry_run disabled to promote."
