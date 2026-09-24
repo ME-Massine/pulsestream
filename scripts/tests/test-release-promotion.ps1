@@ -533,8 +533,10 @@ Assert-True -What "CI validates all platform container images at runtime" -Condi
 Assert-True -What "CI makes each Unix Maven wrapper executable before running it" -Condition (
     $ciWorkflow -match 'chmod \+x ./mvnw'
 )
-Assert-True -What "CI runs the standalone Java service test suites" -Condition (
-    $ciWorkflow -match 'name:\s+Java service tests' -and $ciWorkflow -match '\./mvnw\s+--batch-mode\s+test'
+Assert-True -What "CI runs standalone Java service verification on Java 17" -Condition (
+    $ciWorkflow -match 'name:\s+Service verify \(\$\{\{ matrix\.service \}\}\)' -and
+    $ciWorkflow -match 'java-version:\s+"17"' -and
+    $ciWorkflow -match '\./mvnw\s+--batch-mode\s+--no-transfer-progress\s+verify'
 )
 Assert-True -What "container validation probes liveness, readiness, and the management endpoint" -Condition (
     $containerValidation -match '/livez' -and $containerValidation -match '/readyz' -and $containerValidation -match '/actuator/health'

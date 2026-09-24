@@ -5,14 +5,20 @@ on:
     branches:
       - main
       - dev
-      - "feature/**"
-      - "fix/**"
-      - "chore/**"
-      - "docs/**"
   pull_request:
     branches:
       - main
       - dev
+
+# A pull request is already the review event for feature branches. Limiting push
+# runs to long-lived branches avoids running the same full workflow twice for
+# one proposed commit, and a newer commit cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   repo-sanity:
@@ -39,9 +45,18 @@ jobs:
           test -d docs/decisions
           test -d docs/diagrams
 
-  java-service-tests:
-    name: Java service tests
+  service-verify:
+    name: Service verify (${{ matrix.service }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - ingestion-service
+          - telemetry-processor
+          - query-service
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -51,22 +66,44 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: maven
+          cache-dependency-path: |
+            services/ingestion-service/pom.xml
+            services/telemetry-processor/pom.xml
+            services/query-service/pom.xml
 
-      - name: Test every standalone Maven service
+      # verify covers compilation, tests, packaging, the JaCoCo report, and the
+      # non-regression coverage check declared by each service POM.
+      - name: Run Maven verify
+        working-directory: services/${{ matrix.service }}
         shell: bash
         run: |
           set -euo pipefail
-          for service in ingestion-service telemetry-processor query-service; do
-            echo "=== ${service} ==="
-            (
-              cd "services/${service}"
-              # The wrapper is versioned for Windows contributors too. Make
-              # the Unix runner's execution contract explicit, then invoke it
-              # directly so a non-executable wrapper cannot silently pass CI.
-              chmod +x ./mvnw
-              ./mvnw --batch-mode test
-            )
-          done
+          # Keep the Unix wrapper executable in the checkout even if a local
+          # filesystem or archive operation dropped its mode bit.
+          chmod +x ./mvnw
+          ./mvnw --batch-mode --no-transfer-progress verify
+
+      - name: Summarise coverage
+        if: always()
+        shell: bash
+        run: |
+          report="services/${{ matrix.service }}/target/site/jacoco/jacoco.csv"
+          if [ ! -f "${report}" ]; then
+            echo "No JaCoCo report at ${report}: the build failed before reporting." >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          python3 scripts/ci/summarise-coverage.py \
+            "${report}" "${{ matrix.service }}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-${{ matrix.service }}
+          path: services/${{ matrix.service }}/target/site/jacoco/
+          if-no-files-found: ignore
+          retention-days: 14
 
   release-manifests:
     name: Release manifest consistency
@@ -175,3 +212,144 @@ jobs:
       - name: Remove the ephemeral OCI registry
         if: always()
         run: docker rm -f pulsestream-ci-registry 2> /dev/null || true
+
+  compose-config:
+    name: Docker Compose configuration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        run: docker compose -f infrastructure/docker/docker-compose.yml config --quiet
+
+      - name: Report resolved services
+        run: docker compose -f infrastructure/docker/docker-compose.yml config --services
+
+  kubernetes-manifests:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+
+    env:
+      KUBECONFORM_VERSION: v0.6.7
+      KUBERNETES_VERSION: "1.30.0"
+      STRIMZI_CRD_CATALOG_COMMIT: ad3b08c5045129d7bb1eeffd8e61719b2c8dd1e2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: Download Strimzi schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          schema_dir="${RUNNER_TEMP}/kubeconform-schemas/kafka.strimzi.io"
+          mkdir -p "${schema_dir}"
+          base="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${STRIMZI_CRD_CATALOG_COMMIT}/kafka.strimzi.io"
+          # The catalog uses lowercase source names, while kubeconform expands
+          # ResourceKind with its kind casing in the schema lookup template.
+          curl -sSfL "${base}/kafka_v1.json" -o "${schema_dir}/Kafka_v1.json"
+          curl -sSfL "${base}/kafkanodepool_v1.json" -o "${schema_dir}/KafkaNodePool_v1.json"
+          curl -sSfL "${base}/kafkatopic_v1.json" -o "${schema_dir}/KafkaTopic_v1.json"
+
+      # Values files are inputs to Helm charts, not Kubernetes resources. The
+      # CRD catalog makes Strimzi Kafka, KafkaNodePool, and KafkaTopic resources
+      # validate under the same strict, fail-closed command as built-in kinds.
+      - name: Validate Kubernetes resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t manifests < <(
+            find infrastructure/kubernetes -type f -name '*.yaml' \
+              ! -name 'prometheus-values.yaml' \
+              ! -name 'prometheus-adapter-values.yaml' | sort
+          )
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "No Kubernetes manifests found."
+            exit 1
+          fi
+          echo "Validating ${#manifests[@]} manifest file(s)"
+          kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version "${KUBERNETES_VERSION}" \
+            -schema-location default \
+            -schema-location "${RUNNER_TEMP}/kubeconform-schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+            "${manifests[@]}"
+
+  powershell-checks:
+    name: PowerShell checks (${{ matrix.edition }})
+    runs-on: windows-latest
+
+    env:
+      KIND_VERSION: v0.29.0
+      KIND_NODE_IMAGE: kindest/node:v1.30.0
+
+    strategy:
+      fail-fast: false
+      matrix:
+        edition:
+          - pwsh
+          - powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # kubectl create --dry-run=client still performs API discovery for the
+      # resource kinds exercised by the structural tests. Provide a disposable
+      # API server so those tests execute instead of being skipped.
+      - name: Start disposable Kubernetes API
+        shell: pwsh
+        run: |
+          $kindPath = Join-Path $env:RUNNER_TEMP "kind.exe"
+          Invoke-WebRequest `
+              -UseBasicParsing `
+              -Uri "https://kind.sigs.k8s.io/dl/$env:KIND_VERSION/kind-windows-amd64" `
+              -OutFile $kindPath
+
+          & $kindPath create cluster `
+              --name pulsestream-ci `
+              --image $env:KIND_NODE_IMAGE `
+              --wait 90s
+          if ($LASTEXITCODE -ne 0) {
+              throw "kind could not create the disposable cluster."
+          }
+
+          kubectl cluster-info --context kind-pulsestream-ci
+          if ($LASTEXITCODE -ne 0) {
+              throw "kubectl could not reach the disposable cluster."
+          }
+
+      - name: Parse helpers and run regression tests (PowerShell 7)
+        if: matrix.edition == 'pwsh'
+        shell: pwsh
+        run: ./scripts/tests/run-all-tests.ps1
+
+      - name: Parse helpers and run regression tests (Windows PowerShell 5.1)
+        if: matrix.edition == 'powershell'
+        shell: powershell
+        run: .\scripts\tests\run-all-tests.ps1
+
+      - name: Remove disposable Kubernetes API
+        if: always()
+        shell: pwsh
+        run: |
+          $kindPath = Join-Path $env:RUNNER_TEMP "kind.exe"
+          if (Test-Path -LiteralPath $kindPath) {
+              & $kindPath delete cluster --name pulsestream-ci
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Warning "kind cleanup returned exit code $LASTEXITCODE."
+              }
+          }
