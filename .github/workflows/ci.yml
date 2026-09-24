@@ -99,3 +99,79 @@ jobs:
       - name: Build, start, and probe every platform image
         shell: pwsh
         run: ./scripts/validate-container-images.ps1 -Network bridge -TimeoutSeconds 120
+
+  published-image-runtime-validation:
+    name: Published image runtime validation
+    runs-on: ubuntu-latest
+
+    # Pulling an exact repository@digest is the invariant that promotion later
+    # relies on. PRs must exercise that path without publishing unmerged work
+    # to GHCR, so this job uses an ephemeral local OCI registry instead.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Start an ephemeral OCI registry
+        run: |
+          set -euo pipefail
+          docker run -d --name pulsestream-ci-registry -p 5000:5000 registry:2
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:5000/v2/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Registry did not become ready."
+          exit 1
+
+      - name: Build, publish, and verify immutable digests
+        id: digests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          refs_file="${RUNNER_TEMP}/pulsestream-image-references"
+          : > "${refs_file}"
+
+          for service in ingestion-service telemetry-processor query-service; do
+            image="localhost:5000/pulsestream/${service}"
+            tag="sha-${GITHUB_SHA::7}"
+
+            # Match the labels used by publish-images.yml. The local registry
+            # makes the digest a real registry digest, not a Docker image ID.
+            docker build \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.version=${tag}" \
+              -t "${image}:${tag}" \
+              "services/${service}"
+            docker push "${image}:${tag}"
+
+            digest="$(docker buildx imagetools inspect "${image}:${tag}" --format '{{.Manifest.Digest}}')"
+            test -n "${digest}"
+            test "$(docker buildx imagetools inspect "${image}@${digest}" --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}')" = "${GITHUB_SHA}"
+
+            echo "${service}=${image}@${digest}" | tee -a "${refs_file}"
+          done
+
+          echo "references_file=${refs_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Pull and probe the exact local digests
+        shell: pwsh
+        env:
+          REFERENCES_FILE: ${{ steps.digests.outputs.references_file }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $references = @(Get-Content -LiteralPath $env:REFERENCES_FILE)
+          if ($references.Count -ne 3) {
+              throw "Expected exact digest references for all three platform services, got $($references.Count)."
+          }
+
+          ./scripts/validate-container-images.ps1 `
+              -Network bridge `
+              -ImageReference $references `
+              -TimeoutSeconds 120
+
+      - name: Remove the ephemeral OCI registry
+        if: always()
+        run: docker rm -f pulsestream-ci-registry 2> /dev/null || true

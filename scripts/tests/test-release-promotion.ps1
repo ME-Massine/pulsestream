@@ -518,6 +518,12 @@ Assert-True -What "commit-tag publication is serialized" -Condition (
 Assert-True -What "published runtime validation pulls exact digest references" -Condition (
     $publishWorkflow -match 'Published image runtime validation' -and $publishWorkflow -match 'validated-image-digests' -and $publishWorkflow -match 'ImageReference \$references'
 )
+Assert-True -What "PR CI rehearses exact digest runtime validation without GHCR publication" -Condition (
+    $ciWorkflow -match 'published-image-runtime-validation' -and
+    $ciWorkflow -match 'registry:2' -and
+    $ciWorkflow -match 'localhost:5000/pulsestream' -and
+    $ciWorkflow -match 'ImageReference \$references'
+)
 Assert-True -What "promotion consumes validated digest provenance instead of a mutable source tag" -Condition (
     $releaseWorkflow -match 'validated-image-digests' -and $releaseWorkflow -match '\$\{image\}@\$\{digest\}' -and $releaseWorkflow -match 'org\.opencontainers\.image\.revision'
 )

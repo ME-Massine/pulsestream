@@ -99,6 +99,13 @@ passes. Promotion downloads that artifact from a successful publish run for the
 selected commit, verifies its OCI revision label, and re-tags its digest
 directly; it never resolves `sha-<short>` as promotion input.
 
+Pull-request CI rehearses the same immutable-reference path against an
+ephemeral local OCI registry. It builds each image with the selected commit's
+OCI revision, resolves the registry digest, and runs the deployment probes
+against `repository@digest`. This gives the PR a required exact-digest runtime
+check without publishing unmerged work to GHCR; the GHCR publication job still
+produces the authoritative digest artifact consumed by promotion on `main`.
+
 The image also carries the commit in its own OCI labels:
 
 ```
