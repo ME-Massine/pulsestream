@@ -35,6 +35,7 @@ $digestC = "sha256:" + ("c" * 64)
 $releaseWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\release-promotion.yml") -Raw
 $publishWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\publish-images.yml") -Raw
 $ciWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\ci.yml") -Raw
+$containerValidation = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\validate-container-images.ps1") -Raw
 
 function Assert-Equal {
     param([Parameter(Mandatory)] [string] $What, $Expected, $Actual)
@@ -345,6 +346,15 @@ Assert-True -What "manifests pinned to the locked digests are consistent" -Condi
     (Test-ReleaseManifestConsistency -ManifestImage $released -RegistryPrefix $registry -ExpectedService $services -Lock $lock).Ok
 )
 
+$nestedRepository = @(
+    New-ImageRecord -Service "ingestion-service" -Reference "$registry/ingestion-service:v0.7.0@$digestA"
+    New-ImageRecord -Service "telemetry-processor" -Reference "$registry/telemetry-processor:v0.7.0@$digestB"
+    New-ImageRecord -Service "query-service" -Reference "$registry/other/query-service:v0.7.0@$digestC"
+)
+$result = Test-ReleaseManifestConsistency -ManifestImage $nestedRepository -RegistryPrefix $registry -ExpectedService $services -Lock $lock
+Assert-True -What "a nested repository with a known final name is rejected" -Condition (-not $result.Ok)
+Assert-True -What "the nested-repository report requires the canonical repository" -Condition (($result.Problems -join " ") -match "noncanonical repository")
+
 $stale = @(
     New-ImageRecord -Service "ingestion-service" -Reference "$registry/ingestion-service:v0.7.0@$digestA"
     New-ImageRecord -Service "telemetry-processor" -Reference "$registry/telemetry-processor:v0.7.0@$digestB"
@@ -502,11 +512,26 @@ Assert-True -What "latest preserves the source manifest digest when retagging" -
 Assert-True -What "publish validates the source tag OCI revision" -Condition (
     $publishWorkflow -match 'org\.opencontainers\.image\.revision'
 )
+Assert-True -What "commit-tag publication is serialized" -Condition (
+    $publishWorkflow -match 'concurrency:' -and $publishWorkflow -match 'publish-images-\$\{\{ github\.repository \}\}'
+)
+Assert-True -What "published runtime validation pulls exact digest references" -Condition (
+    $publishWorkflow -match 'Published image runtime validation' -and $publishWorkflow -match 'validated-image-digests' -and $publishWorkflow -match 'ImageReference \$references'
+)
+Assert-True -What "promotion consumes validated digest provenance instead of a mutable source tag" -Condition (
+    $releaseWorkflow -match 'validated-image-digests' -and $releaseWorkflow -match '\$\{image\}@\$\{digest\}' -and $releaseWorkflow -match 'org\.opencontainers\.image\.revision'
+)
 Assert-True -What "CI validates all platform container images at runtime" -Condition (
     $ciWorkflow -match 'validate-container-images\.ps1\s+-Network\s+bridge'
 )
+Assert-True -What "CI makes each Unix Maven wrapper executable before running it" -Condition (
+    $ciWorkflow -match 'chmod \+x ./mvnw'
+)
 Assert-True -What "CI runs the standalone Java service test suites" -Condition (
     $ciWorkflow -match 'name:\s+Java service tests' -and $ciWorkflow -match '\./mvnw\s+--batch-mode\s+test'
+)
+Assert-True -What "container validation probes liveness, readiness, and the management endpoint" -Condition (
+    $containerValidation -match '/livez' -and $containerValidation -match '/readyz' -and $containerValidation -match '/actuator/health'
 )
 
 $defaultValidation = Invoke-Script -Path $validate -Argument @{}

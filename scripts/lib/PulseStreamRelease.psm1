@@ -517,6 +517,14 @@ function Test-ReleaseManifestConsistency {
             continue
         }
 
+        # Matching only the final segment would admit a nested repository as a
+        # platform service. Each service has exactly one approved repository.
+        $canonicalRepository = "$RegistryPrefix/$($entry.Service)"
+        if ($entry.Repository -ne $canonicalRepository) {
+            $problems.Add("$(& $where $entry): references noncanonical repository '$($entry.Repository)' for '$($entry.Service)'. Expected '$canonicalRepository'.")
+            continue
+        }
+
         if ($image.IsMutable) {
             $tag = if ($image.Tag) { "'$($image.Tag)'" } else { "no tag, which resolves to 'latest'" }
             $problems.Add("$(& $where $entry): $($entry.Service) is pinned to $tag. A mutable tag can be repointed after the manifest was reviewed.")

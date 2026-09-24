@@ -54,12 +54,14 @@ the local and published names differ only by the `ghcr.io/<owner>/` prefix.
 
 ## Tagging strategy
 
-Every published image carries an **immutable, per-commit** tag. Moving and
-release tags are added on top depending on what triggered the publish.
+Every published image carries a per-commit tag. The publish workflow never
+overwrites it, but a registry tag is still a mutable pointer by nature; release
+promotion therefore consumes retained, digest-pinned validation provenance
+rather than trusting the tag at promotion time.
 
 | Tag                 | Applied when                          | Mutable? | Purpose                                              |
 | ------------------- | ------------------------------------- | -------- | ---------------------------------------------------- |
-| `sha-<short>`       | every publish                         | No       | Exact, reproducible reference to one commit          |
+| `sha-<short>`       | every publish                         | Not trusted by promotion | Build tag for one commit; its recorded digest is promoted |
 | `latest`            | push to `main`                        | Yes      | Most recent build of the mainline                    |
 | `<version>-rc.<n>`  | promotion of a tested `sha-<short>`   | No       | Release candidate (e.g. `v1.2.0-rc.1`)               |
 | `<version>`         | promotion of a candidate              | No       | Released version (e.g. `v1.2.0`)                      |
@@ -68,8 +70,9 @@ release tags are added on top depending on what triggered the publish.
 `sha-c2b315e`).
 
 The two version tags are **applied to an image that already exists** — they are
-never built. A promotion copies the registry manifest of a tested `sha-<short>`
-digest onto the version tag, so all four rows above can name the same bytes. See
+never built. A promotion copies the registry manifest of the runtime-validated
+digest recorded for the commit onto the version tag, so all four rows above can
+name the same bytes. See
 [Release and Container Image Promotion](release-and-promotion.md).
 
 If the per-commit tag already exists when a publish runs, the existing image is
@@ -99,7 +102,9 @@ building on the tag would publish contents no check had run against under a
 version that was already approved.
 
 Each run records the digest it published in the job summary and in an
-`image-digests` artifact, which is what a promotion later resolves.
+`image-digests` artifact. It then pulls those exact `repository@digest`
+references and probes the deployed health paths. Only that successful probe
+job emits `validated-image-digests`, which is what promotion later consumes.
 
 ### Manual publish (single service)
 

@@ -43,7 +43,7 @@ else.
 
 | State                | Tag                        | What it means                                                           | Who applies it                       |
 | -------------------- | -------------------------- | ----------------------------------------------------------------------- | ------------------------------------ |
-| **development**      | `sha-<short>`              | Built from one `main` commit. Immutable, but not yet known to be good.   | `publish-images.yml`, on push to main |
+| **development**      | `sha-<short>`              | Built from one `main` commit. The workflow does not overwrite it, but promotion relies on recorded digests, not the tag. | `publish-images.yml`, on push to main |
 | **release candidate**| `v<x>.<y>.<z>-rc.<n>`      | A development digest whose required checks all passed. Same digest.      | `release-promotion.yml`              |
 | **released**         | `v<x>.<y>.<z>`             | A candidate accepted as the release. Same digest again.                  | `release-promotion.yml`              |
 
@@ -92,6 +92,13 @@ guessing:
 - an `image-digest-<service>` artifact per service,
 - an `image-digests` artifact holding the merged index for the commit.
 
+After publication, the workflow pulls each exact `repository@digest` reference,
+checks its configured non-root user, and probes `/livez`, `/readyz`, and the
+management health path. It emits `validated-image-digests` only if every probe
+passes. Promotion downloads that artifact from a successful publish run for the
+selected commit, verifies its OCI revision label, and re-tags its digest
+directly; it never resolves `sha-<short>` as promotion input.
+
 The image also carries the commit in its own OCI labels:
 
 ```
@@ -118,7 +125,7 @@ manifest as a matter of structure rather than step order:
 
 ```
 gate                                   promote  (needs: gate)
-  ├─ the version tag is valid            ├─ resolve sha-<short> -> digest per service
+  ├─ the version tag is valid            ├─ retrieve validated digest provenance per service
   ├─ the commit is 40 hex, exists,       ├─ preflight local, branch, and registry collisions
   │  and is an ancestor of main          ├─ write and validate the release set before tag writes
   └─ every required check passed         ├─ copy the digest to the version tag without changing it
@@ -133,8 +140,9 @@ applied and no manifest is written for a commit that did not pass.
 ### What the gate requires
 
 The required checks are listed in the workflow's `REQUIRED_CHECKS`. They include
-the all-service container build/start/health validation and the three
-`publish-images.yml` jobs for the source commit. A check
+the all-service container build/start validation, the three
+`publish-images.yml` jobs, and the published-image runtime validation for the
+source commit. A check
 blocks promotion when it failed, when it is still running, when it was skipped,
 and — the case that matters most — **when it produced no result at all**.
 
@@ -348,7 +356,8 @@ Before any release exists it requires that:
 - every platform image is on a `sha-<short>` build tag,
 - **every service is on the same one** — a manifest set that names two commits is
   not deploying one tested build,
-- every known service is referenced by some Deployment,
+- every known service is referenced by some Deployment at its one canonical
+  repository (a nested repository with the same final service name is rejected),
 - no platform image is pinned only by digest, because a digest alone names no
   commit and without a lock nothing maps it back to source.
 
@@ -361,8 +370,10 @@ their own manifests and are not this workflow's to promote.
 
 The **Platform container images** job in `ci.yml` builds all three service
 images, verifies their configured non-root users, starts each image with
-external telemetry disabled, and probes its Spring Boot health endpoint. This
-is the runtime evidence required by promotion. The **Java service tests** job
+external telemetry disabled, and probes `/livez`, `/readyz`, and the management
+health path. The **Published image runtime validation** job repeats those probes
+against the exact published digests and is the runtime evidence required by
+promotion. The **Java service tests** job
 also runs each standalone Maven project's test suite on Java 17; a Java setup
 check alone is not accepted as build or test evidence.
 

@@ -20,6 +20,14 @@ on:
     branches:
       - main
 
+# Publishing a source tag and its convenience tag is one registry transaction
+# per commit. Do not let two main pushes race to inspect, create, and verify
+# the same mutable names; queued runs retain their evidence rather than being
+# cancelled mid-publication.
+concurrency:
+  group: publish-images-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: Build and push ${{ matrix.service }}
@@ -204,5 +212,62 @@ jobs:
         with:
           name: image-digests
           path: image-digests.json
+          retention-days: 90
+          if-no-files-found: error
+
+  validate-published-images:
+    name: Published image runtime validation
+    runs-on: ubuntu-latest
+    needs: digest-index
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the published digest index
+        uses: actions/download-artifact@v4
+        with:
+          name: image-digests
+          path: provenance
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Pull and probe the exact published digests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $index = Get-Content -LiteralPath ./provenance/image-digests.json -Raw | ConvertFrom-Json
+          if ($index.commit -ne $env:GITHUB_SHA) {
+              throw "Digest index records commit '$($index.commit)', not the workflow commit '$env:GITHUB_SHA'."
+          }
+
+          $references = foreach ($service in @("ingestion-service", "telemetry-processor", "query-service")) {
+              $record = $index.images.PSObject.Properties[$service].Value
+              if ($null -eq $record -or $record.commit -ne $env:GITHUB_SHA -or
+                  $record.repository -notmatch '^ghcr\.io/[^/]+/pulsestream/(ingestion-service|telemetry-processor|query-service)$' -or
+                  $record.digest -notmatch '^sha256:[0-9a-f]{64}$') {
+                  throw "Digest index has no valid provenance record for '$service'."
+              }
+              "$service=$($record.repository)@$($record.digest)"
+          }
+
+          ./scripts/validate-container-images.ps1 -Network bridge -ImageReference $references -TimeoutSeconds 120
+
+          # This artifact is emitted only after every exact digest was pulled
+          # and its deployed probe paths reported UP. Promotion consumes it
+          # instead of resolving a mutable sha-* tag.
+          $index | Add-Member -NotePropertyName validationRunUrl -NotePropertyValue "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          $index | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath ./provenance/validated-image-digests.json -NoNewline
+
+      - name: Upload validated digest provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: validated-image-digests
+          path: provenance/validated-image-digests.json
           retention-days: 90
           if-no-files-found: error

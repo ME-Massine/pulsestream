@@ -60,6 +60,10 @@ jobs:
             echo "=== ${service} ==="
             (
               cd "services/${service}"
+              # The wrapper is versioned for Windows contributors too. Make
+              # the Unix runner's execution contract explicit, then invoke it
+              # directly so a non-executable wrapper cannot silently pass CI.
+              chmod +x ./mvnw
               ./mvnw --batch-mode test
             )
           done
