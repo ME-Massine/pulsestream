@@ -54,6 +54,7 @@ env:
     Kubernetes manifests
     PowerShell checks (pwsh)
     PowerShell checks (powershell)
+    PowerShell cluster-dependent tests
   SERVICES: ingestion-service telemetry-processor query-service
 
 # Two dispatches for the same version must not race through the preflight and

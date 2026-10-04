@@ -16,8 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
-Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib/PulseStreamValidation.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib/PulseStreamKubernetes.psm1") -Force
 
 # --- Predicates over a parsed NetworkPolicy ----------------------------------
 # kubectl -o json gives each rule's ports as {port, protocol}, where `port` is an

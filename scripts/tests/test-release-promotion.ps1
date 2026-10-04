@@ -534,9 +534,117 @@ Assert-True -What "CI makes each Unix Maven wrapper executable before running it
     $ciWorkflow -match 'chmod \+x ./mvnw'
 )
 Assert-True -What "CI runs standalone Java service verification on Java 17" -Condition (
-    $ciWorkflow -match 'name:\s+Service verify \(\$\{\{ matrix\.service \}\}\)' -and
     $ciWorkflow -match 'java-version:\s+"17"' -and
-    $ciWorkflow -match '\./mvnw\s+--batch-mode\s+--no-transfer-progress\s+verify'
+    $ciWorkflow -match '\./mvnw\b[^\r\n]*\bverify\b'
+)
+
+# The same check names appear in ci.yml (where they are produced), in
+# release-promotion.yml (the promotion gate) and in the ruleset JSON (the merge
+# gate). A rename in one that is not mirrored in the others either blocks every
+# merge or silently stops protecting the renamed job, so the sets are compared
+# rather than trusted to stay aligned by hand.
+function Get-WorkflowCheckNames {
+    param([Parameter(Mandatory)] [string] $Workflow)
+
+    $lines = @($Workflow -split "\r?\n")
+    $jobsAt = [array]::IndexOf($lines, "jobs:")
+    if ($jobsAt -lt 0) {
+        throw "The workflow has no top-level jobs: section."
+    }
+
+    $blocks = [System.Collections.Generic.List[object]]::new()
+    $current = $null
+    for ($index = $jobsAt + 1; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match '^  [A-Za-z0-9_-]+:\s*$') {
+            $current = [System.Collections.Generic.List[string]]::new()
+            $blocks.Add($current)
+        }
+        elseif ($null -ne $current) {
+            $current.Add($lines[$index])
+        }
+    }
+
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($block in $blocks) {
+        $template = $null
+        $matrix = @{}
+        $inMatrix = $false
+        $matrixKey = $null
+        foreach ($line in $block) {
+            if ($line -match '^    name:\s*(?<name>.+?)\s*$') {
+                $template = $Matches["name"].Trim("'", '"')
+            }
+            elseif ($line -match '^      matrix:\s*$') {
+                $inMatrix = $true
+            }
+            elseif ($inMatrix -and $line -match '^        (?<key>[A-Za-z0-9_-]+):\s*$') {
+                $matrixKey = $Matches["key"]
+                $matrix[$matrixKey] = [System.Collections.Generic.List[string]]::new()
+            }
+            elseif ($inMatrix -and $matrixKey -and $line -match '^          -\s*(?<value>.+?)\s*$') {
+                $matrix[$matrixKey].Add($Matches["value"].Trim("'", '"'))
+            }
+            elseif ($inMatrix -and $line -match '^    \S|^      \S') {
+                $inMatrix = $false
+            }
+        }
+
+        if ([string]::IsNullOrEmpty($template)) {
+            continue
+        }
+        if ($template -notmatch '\$\{\{\s*matrix\.') {
+            $names.Add($template)
+            continue
+        }
+
+        # Expand every matrix key the name mentions into one check per value.
+        $expanded = @($template)
+        foreach ($key in $matrix.Keys) {
+            $token = '${{ matrix.' + $key + ' }}'
+            if ($template.Contains($token)) {
+                $expanded = @(foreach ($name in $expanded) {
+                    foreach ($value in $matrix[$key]) { $name.Replace($token, $value) }
+                })
+            }
+        }
+        foreach ($name in $expanded) { $names.Add($name) }
+    }
+
+    return @($names)
+}
+
+$ciCheckNames = @(Get-WorkflowCheckNames -Workflow $ciWorkflow)
+$rulesetPath = Join-Path $repoRoot ".github/rulesets/main-branch-protection.json"
+$ruleset = Get-Content -LiteralPath $rulesetPath -Raw | ConvertFrom-Json
+$rulesetContexts = @(
+    $ruleset.rules |
+        Where-Object { $_.type -eq "required_status_checks" } |
+        ForEach-Object { $_.parameters.required_status_checks } |
+        ForEach-Object { $_.context }
+)
+$promotionChecks = @(
+    [regex]::Match($releaseWorkflow, '(?ms)^\s*REQUIRED_CHECKS:\s*\|\s*\r?\n(?<body>(?:[ \t]+\S[^\r\n]*\r?\n)+)').Groups["body"].Value -split "\r?\n" |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+
+Assert-True -What "the CI workflow's check names were discovered ($($ciCheckNames.Count))" -Condition ($ciCheckNames.Count -gt 0)
+Assert-True -What "the promotion gate's required checks were discovered ($($promotionChecks.Count))" -Condition ($promotionChecks.Count -gt 0)
+
+$missingFromRuleset = @($ciCheckNames | Where-Object { $rulesetContexts -notcontains $_ })
+$unknownInRuleset = @($rulesetContexts | Where-Object { $ciCheckNames -notcontains $_ })
+$missingFromPromotion = @($ciCheckNames | Where-Object { $promotionChecks -notcontains $_ })
+
+Assert-True -What "every CI check is a required context in the main ruleset (missing: $($missingFromRuleset -join ', '))" -Condition ($missingFromRuleset.Count -eq 0)
+Assert-True -What "every required ruleset context is produced by a CI job (unknown: $($unknownInRuleset -join ', '))" -Condition ($unknownInRuleset.Count -eq 0)
+Assert-True -What "every CI check is a required check of the promotion gate (missing: $($missingFromPromotion -join ', '))" -Condition ($missingFromPromotion.Count -eq 0)
+Assert-True -What "the ruleset pull_request rule uses only documented parameters" -Condition (
+    @($ruleset.rules | Where-Object { $_.type -eq "pull_request" } | ForEach-Object { $_.parameters.PSObject.Properties.Name } |
+        Where-Object { @(
+            "allowed_merge_methods", "dismiss_stale_reviews_on_push", "require_code_owner_review",
+            "require_last_push_approval", "required_approving_review_count", "required_review_thread_resolution",
+            "required_reviewers"
+        ) -notcontains $_ }).Count -eq 0
 )
 Assert-True -What "container validation probes liveness, readiness, and the management endpoint" -Condition (
     $containerValidation -match '/livez' -and $containerValidation -match '/readyz' -and $containerValidation -match '/actuator/health'

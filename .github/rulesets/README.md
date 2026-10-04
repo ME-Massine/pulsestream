@@ -30,6 +30,11 @@ merge, while a renamed job silently stops being protected.
 | `Docker Compose configuration` | `compose-config` |
 | `Kubernetes manifests` | `kubernetes-manifests` |
 | `PowerShell checks (<edition>)` | `powershell-checks` (one per edition) |
+| `PowerShell cluster-dependent tests` | `powershell-cluster-tests` |
+
+`scripts/tests/test-release-promotion.ps1` compares the job names in `ci.yml`
+with this ruleset and with `REQUIRED_CHECKS` in `release-promotion.yml`, so a
+rename that is not mirrored in all three fails the PowerShell checks.
 
 ## Applying it
 

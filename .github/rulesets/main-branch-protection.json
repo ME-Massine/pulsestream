@@ -26,7 +26,6 @@
         "require_code_owner_review": false,
         "require_last_push_approval": false,
         "required_review_thread_resolution": true,
-        "require_extra_approval_for_unattributed_changes": true,
         "allowed_merge_methods": [
           "merge",
           "squash",
@@ -50,7 +49,8 @@
           { "context": "Docker Compose configuration" },
           { "context": "Kubernetes manifests" },
           { "context": "PowerShell checks (pwsh)" },
-          { "context": "PowerShell checks (powershell)" }
+          { "context": "PowerShell checks (powershell)" },
+          { "context": "PowerShell cluster-dependent tests" }
         ]
       }
     }

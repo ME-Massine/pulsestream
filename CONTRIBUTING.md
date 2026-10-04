@@ -58,11 +58,20 @@ pwsh -File scripts/tests/run-all-tests.ps1
 powershell -File scripts\tests\run-all-tests.ps1
 ```
 
-Two PowerShell tests use `kubectl` client-side serialization and therefore need
-API discovery. The CI jobs create a disposable Kubernetes API for those tests.
-When running locally without a reachable cluster, the runner reports those
-tests as skipped by name and fails the gate; the Kubernetes manifests are still
-checked by the strict schema job. A skipped test is not counted as a pass.
+Tests that use `kubectl` client-side serialization need API discovery and mark
+themselves with a `# @requires-kube-api` comment near the top of the file.
+`run-all-tests.ps1 -Scope` selects which half of the suite runs:
+
+- `All` (default) runs everything. Without a reachable cluster the marked tests
+  are skipped with a warning, so the suite still passes on a plain dev machine.
+- `Offline` parses every script and runs only the tests that need no API
+  server. CI runs this on PowerShell 7 and Windows PowerShell 5.1.
+- `Cluster` runs only the marked tests and fails if `kubectl` cannot reach an
+  API server. CI runs this on Linux against a disposable `kind` cluster,
+  because Windows runners cannot run the Linux containers `kind` needs.
+
+CI never uses the skip path: `Offline` and `Cluster` are separate required
+jobs, so every test file runs in one of them.
 
 ### Coverage baseline
 

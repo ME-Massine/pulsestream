@@ -12,10 +12,13 @@ on:
 
 # A pull request is already the review event for feature branches. Limiting push
 # runs to long-lived branches avoids running the same full workflow twice for
-# one proposed commit, and a newer commit cancels the run it supersedes.
+# one proposed commit. A newer pull request commit cancels the run it
+# supersedes, but runs on main and dev are never cancelled: release promotion
+# requires every check on the source commit to have completed successfully, so a
+# cancelled run would leave that commit permanently unpromotable.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -67,10 +70,7 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: maven
-          cache-dependency-path: |
-            services/ingestion-service/pom.xml
-            services/telemetry-processor/pom.xml
-            services/query-service/pom.xml
+          cache-dependency-path: services/${{ matrix.service }}/pom.xml
 
       # verify covers compilation, tests, packaging, the JaCoCo report, and the
       # non-regression coverage check declared by each service POM.
@@ -257,23 +257,25 @@ jobs:
           schema_dir="${RUNNER_TEMP}/kubeconform-schemas/kafka.strimzi.io"
           mkdir -p "${schema_dir}"
           base="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${STRIMZI_CRD_CATALOG_COMMIT}/kafka.strimzi.io"
-          # The catalog uses lowercase source names, while kubeconform expands
-          # ResourceKind with its kind casing in the schema lookup template.
-          curl -sSfL "${base}/kafka_v1.json" -o "${schema_dir}/Kafka_v1.json"
-          curl -sSfL "${base}/kafkanodepool_v1.json" -o "${schema_dir}/KafkaNodePool_v1.json"
-          curl -sSfL "${base}/kafkatopic_v1.json" -o "${schema_dir}/KafkaTopic_v1.json"
+          # kubeconform lowercases ResourceKind when it expands the schema
+          # lookup template, so the files keep the catalog's lowercase names.
+          # The commit is pinned; retries cover transient network failures.
+          for kind in kafka kafkanodepool kafkatopic; do
+            curl -sSfL --retry 3 --retry-delay 2 --retry-all-errors \
+              "${base}/${kind}_v1.json" -o "${schema_dir}/${kind}_v1.json"
+          done
 
-      # Values files are inputs to Helm charts, not Kubernetes resources. The
-      # CRD catalog makes Strimzi Kafka, KafkaNodePool, and KafkaTopic resources
-      # validate under the same strict, fail-closed command as built-in kinds.
+      # Helm values files are inputs to charts, not Kubernetes resources, and
+      # are named *-values.yaml by convention. The CRD catalog makes Strimzi
+      # Kafka, KafkaNodePool, and KafkaTopic resources validate under the same
+      # strict, fail-closed command as built-in kinds.
       - name: Validate Kubernetes resources
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t manifests < <(
             find infrastructure/kubernetes -type f -name '*.yaml' \
-              ! -name 'prometheus-values.yaml' \
-              ! -name 'prometheus-adapter-values.yaml' | sort
+              ! -name '*-values.yaml' | sort
           )
           if [ "${#manifests[@]}" -eq 0 ]; then
             echo "No Kubernetes manifests found."
@@ -288,13 +290,14 @@ jobs:
             -schema-location "${RUNNER_TEMP}/kubeconform-schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
             "${manifests[@]}"
 
+  # Windows runners cannot run the Linux containers kind needs, so the suite is
+  # split: everything that needs no API server runs on both PowerShell editions
+  # here, and the tests that need kubectl API discovery run on Linux below. Each
+  # half is strict - nothing is skipped silently - so together they cover every
+  # test file.
   powershell-checks:
     name: PowerShell checks (${{ matrix.edition }})
     runs-on: windows-latest
-
-    env:
-      KIND_VERSION: v0.29.0
-      KIND_NODE_IMAGE: kindest/node:v1.30.0
 
     strategy:
       fail-fast: false
@@ -307,49 +310,54 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Parse helpers and run offline regression tests (PowerShell 7)
+        if: matrix.edition == 'pwsh'
+        shell: pwsh
+        run: ./scripts/tests/run-all-tests.ps1 -Scope Offline
+
+      - name: Parse helpers and run offline regression tests (Windows PowerShell 5.1)
+        if: matrix.edition == 'powershell'
+        shell: powershell
+        run: .\scripts\tests\run-all-tests.ps1 -Scope Offline
+
+  powershell-cluster-tests:
+    name: PowerShell cluster-dependent tests
+    runs-on: ubuntu-latest
+
+    env:
+      KIND_VERSION: v0.29.0
+      KIND_NODE_IMAGE: kindest/node:v1.30.0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       # kubectl create --dry-run=client still performs API discovery for the
       # resource kinds exercised by the structural tests. Provide a disposable
       # API server so those tests execute instead of being skipped.
       - name: Start disposable Kubernetes API
-        shell: pwsh
+        shell: bash
         run: |
-          $kindPath = Join-Path $env:RUNNER_TEMP "kind.exe"
-          Invoke-WebRequest `
-              -UseBasicParsing `
-              -Uri "https://kind.sigs.k8s.io/dl/$env:KIND_VERSION/kind-windows-amd64" `
-              -OutFile $kindPath
-
-          & $kindPath create cluster `
-              --name pulsestream-ci `
-              --image $env:KIND_NODE_IMAGE `
-              --wait 90s
-          if ($LASTEXITCODE -ne 0) {
-              throw "kind could not create the disposable cluster."
-          }
-
+          set -euo pipefail
+          curl -sSfL --retry 3 --retry-delay 2 --retry-all-errors \
+            -o "${RUNNER_TEMP}/kind" \
+            "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x "${RUNNER_TEMP}/kind"
+          "${RUNNER_TEMP}/kind" create cluster \
+            --name pulsestream-ci \
+            --image "${KIND_NODE_IMAGE}" \
+            --wait 90s
           kubectl cluster-info --context kind-pulsestream-ci
-          if ($LASTEXITCODE -ne 0) {
-              throw "kubectl could not reach the disposable cluster."
-          }
 
-      - name: Parse helpers and run regression tests (PowerShell 7)
-        if: matrix.edition == 'pwsh'
+      - name: Run cluster-dependent regression tests
         shell: pwsh
-        run: ./scripts/tests/run-all-tests.ps1
-
-      - name: Parse helpers and run regression tests (Windows PowerShell 5.1)
-        if: matrix.edition == 'powershell'
-        shell: powershell
-        run: .\scripts\tests\run-all-tests.ps1
+        run: ./scripts/tests/run-all-tests.ps1 -Scope Cluster
 
       - name: Remove disposable Kubernetes API
         if: always()
-        shell: pwsh
+        shell: bash
         run: |
-          $kindPath = Join-Path $env:RUNNER_TEMP "kind.exe"
-          if (Test-Path -LiteralPath $kindPath) {
-              & $kindPath delete cluster --name pulsestream-ci
-              if ($LASTEXITCODE -ne 0) {
-                  Write-Warning "kind cleanup returned exit code $LASTEXITCODE."
-              }
-          }
+          if [ -x "${RUNNER_TEMP}/kind" ]; then
+            "${RUNNER_TEMP}/kind" delete cluster --name pulsestream-ci \
+              || echo "::warning::kind cleanup failed."
+          fi

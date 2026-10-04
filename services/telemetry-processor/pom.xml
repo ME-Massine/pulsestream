@@ -20,7 +20,8 @@
     <properties>
         <java.version>17</java.version>
         <jacoco.version>0.8.12</jacoco.version>
-        <!-- Measured on the baseline commit; this is a non-regression floor. -->
+        <!-- Non-regression floors set just under the baseline measured at
+             #262: line 94.00%, branch 76.96%. -->
         <jacoco.coverage.line.minimum>0.90</jacoco.coverage.line.minimum>
         <jacoco.coverage.branch.minimum>0.70</jacoco.coverage.branch.minimum>
         <opentelemetry.instrumentation.version>2.29.0</opentelemetry.instrumentation.version>
