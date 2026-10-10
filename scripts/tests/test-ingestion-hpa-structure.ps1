@@ -10,7 +10,8 @@
 param()
 
 $ErrorActionPreference = "Stop"
-$kubectlExecutable = (Get-Command kubectl -CommandType Application -ErrorAction Stop).Source
+$kubectlExecutable = (Get-Command kubectl -CommandType Application -ErrorAction Stop |
+    Select-Object -First 1).Source
 $manifest = Join-Path $PSScriptRoot "../../infrastructure/kubernetes/ingestion-service/hpa.yaml"
 $validator = Join-Path $PSScriptRoot "../validate-ingestion-hpa.ps1"
 

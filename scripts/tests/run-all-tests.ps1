@@ -67,7 +67,8 @@ function Invoke-Native {
 function Test-KubectlSerializes {
     param([Parameter(Mandatory)] [string] $RepositoryRoot)
 
-    $kubectl = Get-Command kubectl -CommandType Application -ErrorAction SilentlyContinue
+    $kubectl = Get-Command kubectl -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
     $probe = Join-Path $RepositoryRoot "infrastructure/kubernetes/ingestion-service/hpa.yaml"
     if (-not $kubectl -or -not (Test-Path -LiteralPath $probe -PathType Leaf)) {
         return $false
