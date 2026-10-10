@@ -35,6 +35,7 @@ $digestC = "sha256:" + ("c" * 64)
 $releaseWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\release-promotion.yml") -Raw
 $publishWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\publish-images.yml") -Raw
 $ciWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\ci.yml") -Raw
+$prIssueWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\pr-issue-alignment.yml") -Raw
 $containerValidation = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\validate-container-images.ps1") -Raw
 
 function Assert-Equal {
@@ -538,11 +539,10 @@ Assert-True -What "CI runs standalone Java service verification on Java 17" -Con
     $ciWorkflow -match '\./mvnw\b[^\r\n]*\bverify\b'
 )
 
-# The same check names appear in ci.yml (where they are produced), in
-# release-promotion.yml (the promotion gate) and in the ruleset JSON (the merge
-# gate). A rename in one that is not mirrored in the others either blocks every
-# merge or silently stops protecting the renamed job, so the sets are compared
-# rather than trusted to stay aligned by hand.
+# CI checks appear in ci.yml, release-promotion.yml (the promotion gate), and
+# the ruleset JSON (the merge gate). The PR-only issue alignment check also
+# belongs in the merge gate. Compare the produced and required check names so a
+# rename cannot block every merge or silently stop protecting a job.
 function Get-WorkflowCheckNames {
     param([Parameter(Mandatory)] [string] $Workflow)
 
@@ -614,6 +614,8 @@ function Get-WorkflowCheckNames {
 }
 
 $ciCheckNames = @(Get-WorkflowCheckNames -Workflow $ciWorkflow)
+$prCheckNames = @(Get-WorkflowCheckNames -Workflow $prIssueWorkflow)
+$mergeCheckNames = @($ciCheckNames) + @($prCheckNames)
 $rulesetPath = Join-Path $repoRoot ".github/rulesets/main-branch-protection.json"
 $ruleset = Get-Content -LiteralPath $rulesetPath -Raw | ConvertFrom-Json
 $rulesetContexts = @(
@@ -629,14 +631,15 @@ $promotionChecks = @(
 )
 
 Assert-True -What "the CI workflow's check names were discovered ($($ciCheckNames.Count))" -Condition ($ciCheckNames.Count -gt 0)
+Assert-True -What "the PR issue alignment check is produced by its workflow" -Condition ($prCheckNames -contains "PR issue alignment")
 Assert-True -What "the promotion gate's required checks were discovered ($($promotionChecks.Count))" -Condition ($promotionChecks.Count -gt 0)
 
-$missingFromRuleset = @($ciCheckNames | Where-Object { $rulesetContexts -notcontains $_ })
-$unknownInRuleset = @($rulesetContexts | Where-Object { $ciCheckNames -notcontains $_ })
+$missingFromRuleset = @($mergeCheckNames | Where-Object { $rulesetContexts -notcontains $_ })
+$unknownInRuleset = @($rulesetContexts | Where-Object { $mergeCheckNames -notcontains $_ })
 $missingFromPromotion = @($ciCheckNames | Where-Object { $promotionChecks -notcontains $_ })
 
-Assert-True -What "every CI check is a required context in the main ruleset (missing: $($missingFromRuleset -join ', '))" -Condition ($missingFromRuleset.Count -eq 0)
-Assert-True -What "every required ruleset context is produced by a CI job (unknown: $($unknownInRuleset -join ', '))" -Condition ($unknownInRuleset.Count -eq 0)
+Assert-True -What "every CI and PR check is a required context in the main ruleset (missing: $($missingFromRuleset -join ', '))" -Condition ($missingFromRuleset.Count -eq 0)
+Assert-True -What "every required ruleset context is produced by a CI or PR job (unknown: $($unknownInRuleset -join ', '))" -Condition ($unknownInRuleset.Count -eq 0)
 Assert-True -What "every CI check is a required check of the promotion gate (missing: $($missingFromPromotion -join ', '))" -Condition ($missingFromPromotion.Count -eq 0)
 Assert-True -What "the ruleset pull_request rule uses only documented parameters" -Condition (
     @($ruleset.rules | Where-Object { $_.type -eq "pull_request" } | ForEach-Object { $_.parameters.PSObject.Properties.Name } |

@@ -10,18 +10,20 @@ check names it requires.
 - Merging needs a pull request with one approving review, and approvals are
   dismissed when new commits are pushed.
 - Every review conversation must be resolved before merge.
-- Every CI check listed below must pass, and the branch must be up to date with
+- Every required check listed below must pass, and the branch must be up to date with
   `main` before merge.
 
 ## Required checks
 
 The `context` values are GitHub check-run names. Matrix jobs use the job `name`
 with the matrix value appended. They must stay synchronized with
-`.github/workflows/ci.yml`: a required context that never reports blocks every
-merge, while a renamed job silently stops being protected.
+`.github/workflows/ci.yml` and `.github/workflows/pr-issue-alignment.yml`: a
+required context that never reports blocks every merge, while a renamed job
+silently stops being protected.
 
-| Check | CI job |
+| Check | Workflow job |
 | --- | --- |
+| `PR issue alignment` | `pr-issue-alignment` (PR only) |
 | `Repository sanity checks` | `repo-sanity` |
 | `Service verify (<service>)` | `service-verify` (one per service) |
 | `Release manifest consistency` | `release-manifests` |
@@ -33,8 +35,9 @@ merge, while a renamed job silently stops being protected.
 | `PowerShell cluster-dependent tests` | `powershell-cluster-tests` |
 
 `scripts/tests/test-release-promotion.ps1` compares the job names in `ci.yml`
-with this ruleset and with `REQUIRED_CHECKS` in `release-promotion.yml`, so a
-rename that is not mirrored in all three fails the PowerShell checks.
+and `pr-issue-alignment.yml` with this ruleset. It also compares the CI jobs
+with `REQUIRED_CHECKS` in `release-promotion.yml`, so a rename that is not
+mirrored in the required checks fails the PowerShell checks.
 
 ## Applying it
 
