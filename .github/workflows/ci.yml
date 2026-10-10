@@ -13,11 +13,10 @@ on:
 # A pull request is already the review event for feature branches. Limiting push
 # runs to long-lived branches avoids running the same full workflow twice for
 # one proposed commit. A newer pull request commit cancels the run it
-# supersedes, but runs on main and dev are never cancelled: release promotion
-# requires every check on the source commit to have completed successfully, so a
-# cancelled run would leave that commit permanently unpromotable.
+# supersedes. Push runs use a separate group for each commit so newer pushes
+# cannot cancel pending validation required for release promotion.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
