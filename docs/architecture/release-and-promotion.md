@@ -147,9 +147,9 @@ applied and no manifest is written for a commit that did not pass.
 ### What the gate requires
 
 The required checks are listed in the workflow's `REQUIRED_CHECKS`. They include
-the all-service container build/start validation, the three
-`publish-images.yml` jobs, and the published-image runtime validation for the
-source commit. A check
+the Java 17 verification matrix, infrastructure and manifest validation, the
+all-service container build/start validation, the three `publish-images.yml`
+jobs, and the published-image runtime validation for the source commit. A check
 blocks promotion when it failed, when it is still running, when it was skipped,
 and — the case that matters most — **when it produced no result at all**.
 
@@ -380,9 +380,9 @@ images, verifies their configured non-root users, starts each image with
 external telemetry disabled, and probes `/livez`, `/readyz`, and the management
 health path. The **Published image runtime validation** job repeats those probes
 against the exact published digests and is the runtime evidence required by
-promotion. The **Java service tests** job
-also runs each standalone Maven project's test suite on Java 17; a Java setup
-check alone is not accepted as build or test evidence.
+promotion. The **Service verify** matrix also runs each standalone Maven
+project's Maven `verify` lifecycle on Java 17, including tests and the JaCoCo
+baseline; a Java setup check alone is not accepted as build or test evidence.
 
 ---
 

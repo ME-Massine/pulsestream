@@ -5,13 +5,15 @@
 #
 #   powershell -File scripts\tests\test-ingestion-hpa-structure.ps1
 #   pwsh -File scripts/tests/test-ingestion-hpa-structure.ps1
+# @requires-kube-api: kubectl needs a reachable API server for discovery.
 [CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
-$kubectlExecutable = (Get-Command kubectl -CommandType Application -ErrorAction Stop).Source
-$manifest = Join-Path $PSScriptRoot "..\..\infrastructure\kubernetes\ingestion-service\hpa.yaml"
-$validator = Join-Path $PSScriptRoot "..\validate-ingestion-hpa.ps1"
+$kubectlExecutable = (Get-Command kubectl -CommandType Application -ErrorAction Stop |
+    Select-Object -First 1).Source
+$manifest = Join-Path $PSScriptRoot "../../infrastructure/kubernetes/ingestion-service/hpa.yaml"
+$validator = Join-Path $PSScriptRoot "../validate-ingestion-hpa.ps1"
 
 $json = & $kubectlExecutable create --dry-run=client --validate=false -o json -f $manifest 2>&1
 if ($LASTEXITCODE -ne 0) {

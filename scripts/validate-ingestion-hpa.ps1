@@ -14,8 +14,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
-Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib/PulseStreamValidation.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib/PulseStreamKubernetes.psm1") -Force
 
 function Get-HorizontalPodAutoscaler {
     param([string] $Name)

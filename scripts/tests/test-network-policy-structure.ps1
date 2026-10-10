@@ -5,13 +5,15 @@
 #
 #   powershell -File scripts\tests\test-network-policy-structure.ps1
 #   pwsh -File scripts/tests/test-network-policy-structure.ps1
+# @requires-kube-api: kubectl needs a reachable API server for discovery.
 [CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
-$kubectlExecutable = (Get-Command kubectl -CommandType Application -ErrorAction Stop).Source
-$policyDirectory = Join-Path $PSScriptRoot "..\..\infrastructure\kubernetes\network-policies"
-$validator = Join-Path $PSScriptRoot "..\validate-network-policies.ps1"
+$kubectlExecutable = (Get-Command kubectl -CommandType Application -ErrorAction Stop |
+    Select-Object -First 1).Source
+$policyDirectory = Join-Path $PSScriptRoot "../../infrastructure/kubernetes/network-policies"
+$validator = Join-Path $PSScriptRoot "../validate-network-policies.ps1"
 $global:PulseStreamPolicyJson = @{}
 
 foreach ($name in @("ingestion-service", "telemetry-processor", "query-service")) {
