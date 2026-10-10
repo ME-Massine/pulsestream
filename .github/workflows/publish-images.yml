@@ -38,6 +38,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
 
     strategy:
       # One service failing to publish must not silently skip the others.
@@ -127,6 +128,41 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "source_tag=${source_tag}" >> "$GITHUB_OUTPUT"
           echo "rebuilt=${rebuilt}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan the published digest
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ${{ steps.build.outputs.image }}@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Generate the digest-specific SBOM
+        id: sbom
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.build.outputs.image }}@${{ steps.build.outputs.digest }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: ${{ matrix.service }}.spdx.json
+          artifact-name: ${{ matrix.service }}-sbom.spdx.json
+          upload-artifact: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Attach the SBOM and sign the image digest
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SBOM: ${{ matrix.service }}.spdx.json
+        run: |
+          set -euo pipefail
+          cosign attach sbom --sbom "${SBOM}" --type spdxjson "${IMAGE}@${DIGEST}"
+          cosign sign --yes "${IMAGE}@${DIGEST}"
 
       - name: Record the published digest
         run: |

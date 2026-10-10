@@ -45,6 +45,9 @@ env:
     Service verify (telemetry-processor)
     Service verify (query-service)
     Platform container images
+    CodeQL / Analyze ingestion-service
+    CodeQL / Analyze telemetry-processor
+    CodeQL / Analyze query-service
     Build and push ingestion-service
     Build and push telemetry-processor
     Build and push query-service
@@ -229,6 +232,9 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Resolve the tested digests
         id: digests
         run: |
@@ -269,6 +275,11 @@ jobs:
               echo "::error::${image}@${digest} is labelled for '${source_revision}', not ${{ inputs.source_commit }}."
               exit 1
             fi
+
+            cosign verify \
+              --certificate-identity-regexp '^https://github.com/ME-Massine/pulsestream/.github/workflows/publish-images.yml@refs/heads/main$' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              "${image}@${digest}" > /dev/null
 
             echo "${service}: ${digest} (validated in publish run ${{ steps.provenance.outputs.publish_run }})"
 

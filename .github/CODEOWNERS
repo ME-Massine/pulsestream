@@ -1,0 +1,6 @@
+# Maintainers review changes that affect release controls, infrastructure, and services.
+/.github/                         @ME-Massine
+/infrastructure/                  @ME-Massine
+/services/                        @ME-Massine
+/scripts/                         @ME-Massine
+/SECURITY.md                      @ME-Massine
