@@ -225,7 +225,7 @@ jobs:
       # The digest is what release-promotion.yml promotes, so it is published as
       # an artifact rather than left only in a log line.
       - name: Upload the digest record
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-digest-${{ matrix.service }}
           path: digests/${{ matrix.service }}.json
@@ -275,7 +275,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the digest index
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-digests
           path: image-digests.json
@@ -332,7 +332,7 @@ jobs:
           $index | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath ./provenance/validated-image-digests.json -NoNewline
 
       - name: Upload validated digest provenance
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: validated-image-digests
           path: provenance/validated-image-digests.json
