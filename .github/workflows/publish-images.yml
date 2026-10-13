@@ -245,7 +245,7 @@ jobs:
 
     steps:
       - name: Download the digest records
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: image-digest-*
           merge-multiple: true
@@ -296,7 +296,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download the published digest index
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: image-digests
           path: provenance
