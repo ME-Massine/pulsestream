@@ -45,9 +45,9 @@ env:
     Service verify (telemetry-processor)
     Service verify (query-service)
     Platform container images
-    CodeQL / Analyze ingestion-service
-    CodeQL / Analyze telemetry-processor
-    CodeQL / Analyze query-service
+    Analyze ingestion-service
+    Analyze telemetry-processor
+    Analyze query-service
     Build and push ingestion-service
     Build and push telemetry-processor
     Build and push query-service
@@ -234,6 +234,8 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.5.2
 
       - name: Resolve the tested digests
         id: digests
@@ -277,8 +279,9 @@ jobs:
             fi
 
             cosign verify \
-              --certificate-identity-regexp '^https://github.com/ME-Massine/pulsestream/.github/workflows/publish-images.yml@refs/heads/main$' \
+              --certificate-identity '${{ github.server_url }}/${{ github.repository }}/.github/workflows/publish-images.yml@refs/heads/main' \
               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              -a 'source-commit=${{ inputs.source_commit }}' \
               "${image}@${digest}" > /dev/null
 
             echo "${service}: ${digest} (validated in publish run ${{ steps.provenance.outputs.publish_run }})"

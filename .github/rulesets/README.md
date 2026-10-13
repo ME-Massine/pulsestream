@@ -17,13 +17,16 @@ check names it requires.
 
 The `context` values are GitHub check-run names. Matrix jobs use the job `name`
 with the matrix value appended. They must stay synchronized with
-`.github/workflows/ci.yml` and `.github/workflows/pr-issue-alignment.yml`: a
+`.github/workflows/ci.yml`, `.github/workflows/pr-issue-alignment.yml`,
+`.github/workflows/codeql.yml`, and `.github/workflows/dependency-review.yml`: a
 required context that never reports blocks every merge, while a renamed job
 silently stops being protected.
 
 | Check | Workflow job |
 | --- | --- |
 | `PR issue alignment` | `pr-issue-alignment` (PR only) |
+| `Dependency review` | `dependency-review` (PR only) |
+| `Analyze <service>` | CodeQL `analyze` (one per service; no workflow-name prefix) |
 | `Repository sanity checks` | `repo-sanity` |
 | `Service verify (<service>)` | `service-verify` (one per service) |
 | `Release manifest consistency` | `release-manifests` |
@@ -34,10 +37,14 @@ silently stops being protected.
 | `PowerShell checks (<edition>)` | `powershell-checks` (one per edition) |
 | `PowerShell cluster-dependent tests` | `powershell-cluster-tests` |
 
-`scripts/tests/test-release-promotion.ps1` compares the job names in `ci.yml`
-and `pr-issue-alignment.yml` with this ruleset. It also compares the CI jobs
+`scripts/tests/test-release-promotion.ps1` compares the job names in all four
+workflows with this ruleset. It also compares the CI and CodeQL jobs
 with `REQUIRED_CHECKS` in `release-promotion.yml`, so a rename that is not
 mirrored in the required checks fails the PowerShell checks.
+
+Dependency review is PR-only, so it belongs in the merge policy rather than the
+promotion gate for a merged source commit. Applying the JSON is a separate
+administrator action; workflow changes alone do not enforce the live policy.
 
 ## Applying it
 

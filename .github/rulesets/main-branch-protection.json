@@ -40,6 +40,10 @@
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "PR issue alignment" },
+          { "context": "Dependency review" },
+          { "context": "Analyze ingestion-service" },
+          { "context": "Analyze telemetry-processor" },
+          { "context": "Analyze query-service" },
           { "context": "Repository sanity checks" },
           { "context": "Service verify (ingestion-service)" },
           { "context": "Service verify (telemetry-processor)" },

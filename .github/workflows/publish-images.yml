@@ -58,111 +58,142 @@ jobs:
         # no long-lived registry credentials are stored.
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push image
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.5.2
+
+      - name: Prepare the image locally
         id: build
+        env:
+          SERVICE: ${{ matrix.service }}
         run: |
           set -euo pipefail
 
           # GHCR namespaces must be lowercase; the owner login may contain
           # uppercase characters (e.g. ME-Massine).
-          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          image="ghcr.io/${owner}/pulsestream/${{ matrix.service }}"
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner}/pulsestream/${SERVICE}"
           short_sha="${GITHUB_SHA::7}"
           source_tag="sha-${short_sha}"
+          local_image="pulsestream/${SERVICE}:candidate"
+          source_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          digest=""
 
-          # A commit must map to exactly one digest per service, and a Java
-          # build is not byte-reproducible: rebuilding this commit would publish
-          # different contents under a tag a release may already have promoted.
-          # So an existing per-commit tag is reused rather than overwritten,
-          # which also makes a re-run of this workflow a no-op instead of a
-          # silent repoint.
+          # Keep one digest per commit. Labels alone cannot authenticate an
+          # existing tag: pin its digest and require a trusted signature binding
+          # it to this commit before pulling or recording any reused content.
           if docker buildx imagetools inspect "${image}:${source_tag}" > /dev/null 2>&1; then
-            echo "${image}:${source_tag} already exists - reusing it rather than rebuilding this commit."
+            digest="$(docker buildx imagetools inspect "${image}:${source_tag}" --format '{{.Manifest.Digest}}')"
+            if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid digest for ${image}:${source_tag}"
+              exit 1
+            fi
+            cosign verify \
+              --certificate-identity "${source_url}/.github/workflows/publish-images.yml@refs/heads/main" \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              -a "source-commit=${GITHUB_SHA}" \
+              "${image}@${digest}" > /dev/null
+
+            source_revision="$(docker buildx imagetools inspect "${image}@${digest}" --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}')"
+            recorded_source="$(docker buildx imagetools inspect "${image}@${digest}" --format '{{index .Image.Config.Labels "org.opencontainers.image.source"}}')"
+            if [ "${source_revision}" != "${GITHUB_SHA}" ] || [ "${recorded_source}" != "${source_url}" ]; then
+              echo "::error::Existing digest does not match the expected source repository and commit."
+              exit 1
+            fi
+            docker pull "${image}@${digest}"
+            docker tag "${image}@${digest}" "${local_image}"
             rebuilt="false"
           else
-            # OCI labels carry the source commit into the image itself, so an
-            # operator holding only a running pod's digest can find the code it
-            # was built from (see the release doc's traceability section).
-            docker build \
-              --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            # Build only in the local daemon. No registry tags are exposed
+            # until this exact image has passed the archive scan below.
+            # Keep a single-platform manifest so reuse can inspect its config;
+            # embedded BuildKit attestations would wrap it in an image index.
+            docker build --provenance=false \
+              --label "org.opencontainers.image.source=${source_url}" \
               --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
               --label "org.opencontainers.image.version=${source_tag}" \
               --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              -t "${image}:${source_tag}" \
-              "services/${{ matrix.service }}"
-            docker push "${image}:${source_tag}"
+              -t "${local_image}" \
+              "services/${SERVICE}"
             rebuilt="true"
           fi
 
-          digest="$(docker buildx imagetools inspect "${image}:${source_tag}" --format '{{.Manifest.Digest}}')"
-          if [ -z "${digest}" ]; then
-            echo "::error::Could not resolve a digest for ${image}:${source_tag}"
+          local_id="$(docker image inspect "${local_image}" --format '{{.Id}}')"
+          if ! [[ "${local_id}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not identify the local image to scan."
             exit 1
           fi
-
-          # Reusing a tag is safe only if the registry object still carries
-          # the commit identity this workflow expects. Fail closed if someone
-          # repointed the tag outside this workflow or if the object is not a
-          # single image whose OCI config can be inspected.
-          source_revision="$(docker buildx imagetools inspect "${image}:${source_tag}" --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true)"
-          if [ "${source_revision}" != "${GITHUB_SHA}" ]; then
-            echo "::error::${image}:${source_tag} is labelled for '${source_revision}', not ${GITHUB_SHA}; refusing to reuse a tag with the wrong source commit."
-            exit 1
-          fi
-
-          # `latest` is a convenience pointer for local pulls. It is moved onto
-          # the digest that was just published rather than onto a fresh build,
-          # so it can never name contents no per-commit tag also names.
-          # Preserve the source manifest format. The default prefer-index
-          # behavior can wrap a single-platform source in a new index and
-          # produce a different digest even though no layer was rebuilt.
-          docker buildx imagetools create --prefer-index=false --tag "${image}:latest" "${image}@${digest}"
-
-          latest_digest="$(docker buildx imagetools inspect "${image}:latest" --format '{{.Manifest.Digest}}')"
-          if [ "${latest_digest}" != "${digest}" ]; then
-            echo "::error::${image}:latest resolved to ${latest_digest}, not the published source digest ${digest}"
-            exit 1
-          fi
-
+          docker save --output candidate.tar "${local_id}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "local_id=${local_id}" >> "$GITHUB_OUTPUT"
           echo "source_tag=${source_tag}" >> "$GITHUB_OUTPUT"
           echo "rebuilt=${rebuilt}" >> "$GITHUB_OUTPUT"
 
-      - name: Scan the published digest
-        uses: aquasecurity/trivy-action@0.36.0
+      - name: Scan before publication
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.build.outputs.image }}@${{ steps.build.outputs.digest }}
+          input: candidate.tar
           format: table
           exit-code: '1'
           ignore-unfixed: true
           vuln-type: os,library
           severity: HIGH,CRITICAL
 
-      - name: Generate the digest-specific SBOM
+      - name: Generate the scanned image SBOM
         id: sbom
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ steps.build.outputs.image }}@${{ steps.build.outputs.digest }}
-          registry-username: ${{ github.actor }}
-          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image: docker-archive:candidate.tar
           format: spdx-json
           output-file: ${{ matrix.service }}.spdx.json
           artifact-name: ${{ matrix.service }}-sbom.spdx.json
           upload-artifact: true
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Attach the SBOM and sign the image digest
+      - name: Publish the scanned image
+        id: publish
         env:
           IMAGE: ${{ steps.build.outputs.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
+          LOCAL_ID: ${{ steps.build.outputs.local_id }}
+          SOURCE_TAG: ${{ steps.build.outputs.source_tag }}
+          REBUILT: ${{ steps.build.outputs.rebuilt }}
           SBOM: ${{ matrix.service }}.spdx.json
         run: |
           set -euo pipefail
-          cosign attach sbom --sbom "${SBOM}" --type spdxjson "${IMAGE}@${DIGEST}"
-          cosign sign --yes "${IMAGE}@${DIGEST}"
+
+          if [ "${REBUILT}" = "true" ]; then
+            docker tag "${LOCAL_ID}" "${IMAGE}:${SOURCE_TAG}"
+            docker push "${IMAGE}:${SOURCE_TAG}"
+            # Get the pushed digest from the local daemon, never from a mutable
+            # registry tag which another package writer could have repointed.
+            DIGEST="$(docker image inspect "${LOCAL_ID}" --format '{{range .RepoDigests}}{{println .}}{{end}}' | sed -n "s|^${IMAGE}@||p")"
+            if ! [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Could not resolve the digest pushed from the scanned local image."
+              exit 1
+            fi
+          fi
+
+          source_digest="$(docker buildx imagetools inspect "${IMAGE}:${SOURCE_TAG}" --format '{{.Manifest.Digest}}')"
+          if [ "${source_digest}" != "${DIGEST}" ]; then
+            echo "::error::Source tag changed; refusing to sign or move latest."
+            exit 1
+          fi
+          cosign attach sbom --sbom "${SBOM}" --type spdx "${IMAGE}@${DIGEST}"
+          if [ "${REBUILT}" = "true" ]; then
+            cosign sign --yes -a "source-commit=${GITHUB_SHA}" "${IMAGE}@${DIGEST}"
+          fi
+
+          # Expose the convenience tag only after the scan, SBOM and signature
+          # have succeeded. Retagging must preserve the source manifest digest.
+          docker buildx imagetools create --prefer-index=false --tag "${IMAGE}:latest" "${IMAGE}@${DIGEST}"
+          latest_digest="$(docker buildx imagetools inspect "${IMAGE}:latest" --format '{{.Manifest.Digest}}')"
+          if [ "${latest_digest}" != "${DIGEST}" ]; then
+            echo "::error::latest does not resolve to the scanned digest."
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Record the published digest
         run: |
@@ -174,7 +205,7 @@ jobs:
             "commit": "${GITHUB_SHA}",
             "repository": "${{ steps.build.outputs.image }}",
             "sourceTag": "${{ steps.build.outputs.source_tag }}",
-            "digest": "${{ steps.build.outputs.digest }}",
+            "digest": "${{ steps.publish.outputs.digest }}",
             "rebuilt": ${{ steps.build.outputs.rebuilt }},
             "runUrl": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           }
@@ -187,7 +218,7 @@ jobs:
             echo "| --- | --- |"
             echo "| Commit | \`${GITHUB_SHA}\` |"
             echo "| Build tag | \`${{ steps.build.outputs.source_tag }}\` |"
-            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| Digest | \`${{ steps.publish.outputs.digest }}\` |"
             echo "| Built this run | ${{ steps.build.outputs.rebuilt }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
