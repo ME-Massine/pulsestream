@@ -24,7 +24,7 @@
              #262: line 94.00%, branch 76.96%. -->
         <jacoco.coverage.line.minimum>0.90</jacoco.coverage.line.minimum>
         <jacoco.coverage.branch.minimum>0.70</jacoco.coverage.branch.minimum>
-        <opentelemetry.instrumentation.version>2.29.0</opentelemetry.instrumentation.version>
+        <opentelemetry.instrumentation.version>2.32.0</opentelemetry.instrumentation.version>
     </properties>
 
     <dependencyManagement>
