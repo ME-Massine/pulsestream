@@ -21,7 +21,7 @@ services:
       - pulsestream-net
 
   kafka:
-    image: confluentinc/cp-kafka:7.6.1
+    image: confluentinc/cp-kafka:8.3.2
     container_name: pulsestream-kafka
     depends_on:
       zookeeper:
@@ -77,7 +77,7 @@ services:
       - pulsestream-net
 
   kafka-init:
-    image: confluentinc/cp-kafka:7.6.1
+    image: confluentinc/cp-kafka:8.3.2
     container_name: pulsestream-kafka-init
     depends_on:
       kafka:
