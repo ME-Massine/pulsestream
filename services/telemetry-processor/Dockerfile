@@ -10,7 +10,7 @@ RUN mvn clean package -DskipTests
 
 RUN java -Djarmode=layertools -jar target/*.jar extract
 
-FROM eclipse-temurin:17-jre-jammy
+FROM eclipse-temurin:25-jre-jammy
 
 WORKDIR /app
 
