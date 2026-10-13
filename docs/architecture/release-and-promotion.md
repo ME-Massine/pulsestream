@@ -83,7 +83,12 @@ Rejected, with examples of why: `1.2.0` (no `v`), `v1.2` (no patch), `v1.2.0-rc`
 If that tag already exists — a re-run of the workflow, or a workflow re-triggered
 on the same commit — the existing image is **reused, not rebuilt**. Overwriting
 it would repoint a tag a release may already have promoted, and give one commit
-two digests for the same service.
+two digests for the same service. Reuse requires a verified publishing-workflow
+signature with a signed annotation for the expected source commit, matching OCI
+source/revision labels, and a fresh scan of the pinned digest. Existing unsigned
+content fails closed and never receives a new signature. New images are scanned
+locally before their commit tag is pushed; `latest` moves after SBOM attachment
+and signing succeed. See [security operations](../security.md).
 
 Each build records its digest in three places, so it can be found later without
 guessing:
@@ -96,7 +101,8 @@ After publication, the workflow pulls each exact `repository@digest` reference,
 checks its configured non-root user, and probes `/livez`, `/readyz`, and the
 management health path. It emits `validated-image-digests` only if every probe
 passes. Promotion downloads that artifact from a successful publish run for the
-selected commit, verifies its OCI revision label, and re-tags its digest
+selected commit, verifies its OCI revision label and publishing signature
+including the signed source commit, and re-tags its digest
 directly; it never resolves `sha-<short>` as promotion input.
 
 Pull-request CI rehearses the same immutable-reference path against an

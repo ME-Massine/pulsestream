@@ -36,6 +36,8 @@ $releaseWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workfl
 $publishWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\publish-images.yml") -Raw
 $ciWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\ci.yml") -Raw
 $prIssueWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\pr-issue-alignment.yml") -Raw
+$codeqlWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\codeql.yml") -Raw
+$dependencyWorkflow = Get-Content -LiteralPath (Join-Path $repoRoot ".github\workflows\dependency-review.yml") -Raw
 $containerValidation = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\validate-container-images.ps1") -Raw
 
 function Assert-Equal {
@@ -538,10 +540,18 @@ Assert-True -What "CI runs standalone Java service verification on Java 17" -Con
     $ciWorkflow -match 'java-version:\s+"17"' -and
     $ciWorkflow -match '\./mvnw\b[^\r\n]*\bverify\b'
 )
+Assert-True -What "CodeQL manually builds each standalone service on Java 17" -Condition (
+    $codeqlWorkflow -match 'build-mode:\s*manual' -and
+    $codeqlWorkflow -match 'java-version:\s*["'']17["'']' -and
+    $codeqlWorkflow -match 'working-directory: services/\$\{\{ matrix.service \}\}' -and
+    $codeqlWorkflow -match 'bash ./mvnw[^\r\n]*clean package' -and
+    $codeqlWorkflow.IndexOf('name: Initialize CodeQL') -lt $codeqlWorkflow.IndexOf('name: Build the service for extraction') -and
+    $codeqlWorkflow.IndexOf('name: Build the service for extraction') -lt $codeqlWorkflow.IndexOf('- name: Analyze')
+)
 
-# CI checks appear in ci.yml, release-promotion.yml (the promotion gate), and
-# the ruleset JSON (the merge gate). The PR-only issue alignment check also
-# belongs in the merge gate. Compare the produced and required check names so a
+# CI and CodeQL checks belong in the promotion gate and the merge ruleset.
+# PR-only issue alignment and dependency review also belong in the merge gate.
+# Compare the produced and required check names so a
 # rename cannot block every merge or silently stop protecting a job.
 function Get-WorkflowCheckNames {
     param([Parameter(Mandatory)] [string] $Workflow)
@@ -615,7 +625,9 @@ function Get-WorkflowCheckNames {
 
 $ciCheckNames = @(Get-WorkflowCheckNames -Workflow $ciWorkflow)
 $prCheckNames = @(Get-WorkflowCheckNames -Workflow $prIssueWorkflow)
-$mergeCheckNames = @($ciCheckNames) + @($prCheckNames)
+$codeqlCheckNames = @(Get-WorkflowCheckNames -Workflow $codeqlWorkflow)
+$dependencyCheckNames = @(Get-WorkflowCheckNames -Workflow $dependencyWorkflow)
+$mergeCheckNames = @($ciCheckNames) + @($prCheckNames) + @($codeqlCheckNames) + @($dependencyCheckNames)
 $rulesetPath = Join-Path $repoRoot ".github/rulesets/main-branch-protection.json"
 $ruleset = Get-Content -LiteralPath $rulesetPath -Raw | ConvertFrom-Json
 $rulesetContexts = @(
@@ -625,7 +637,7 @@ $rulesetContexts = @(
         ForEach-Object { $_.context }
 )
 $promotionChecks = @(
-    [regex]::Match($releaseWorkflow, '(?ms)^\s*REQUIRED_CHECKS:\s*\|\s*\r?\n(?<body>(?:[ \t]+\S[^\r\n]*\r?\n)+)').Groups["body"].Value -split "\r?\n" |
+    [regex]::Match($releaseWorkflow, '(?m)^  REQUIRED_CHECKS: \|\r?\n(?<body>(?:    \S[^\r\n]*\r?\n)+)').Groups["body"].Value -split "\r?\n" |
         ForEach-Object { $_.Trim() } |
         Where-Object { $_ }
 )
@@ -637,10 +649,36 @@ Assert-True -What "the promotion gate's required checks were discovered ($($prom
 $missingFromRuleset = @($mergeCheckNames | Where-Object { $rulesetContexts -notcontains $_ })
 $unknownInRuleset = @($rulesetContexts | Where-Object { $mergeCheckNames -notcontains $_ })
 $missingFromPromotion = @($ciCheckNames | Where-Object { $promotionChecks -notcontains $_ })
+$missingSecurityFromPromotion = @($codeqlCheckNames | Where-Object { $promotionChecks -notcontains $_ })
 
 Assert-True -What "every CI and PR check is a required context in the main ruleset (missing: $($missingFromRuleset -join ', '))" -Condition ($missingFromRuleset.Count -eq 0)
 Assert-True -What "every required ruleset context is produced by a CI or PR job (unknown: $($unknownInRuleset -join ', '))" -Condition ($unknownInRuleset.Count -eq 0)
 Assert-True -What "every CI check is a required check of the promotion gate (missing: $($missingFromPromotion -join ', '))" -Condition ($missingFromPromotion.Count -eq 0)
+Assert-True -What "CodeQL emits the three actual check-run names without a workflow prefix" -Condition (
+    $codeqlCheckNames.Count -eq 3 -and
+    @($services | Where-Object { $codeqlCheckNames -notcontains "Analyze $_" }).Count -eq 0
+)
+Assert-True -What "dependency review is discovered as a merge check" -Condition (
+    $dependencyCheckNames.Count -eq 1 -and $dependencyCheckNames -contains 'Dependency review'
+)
+Assert-True -What "promotion requires all actual CodeQL checks (missing: $($missingSecurityFromPromotion -join ', '))" -Condition ($missingSecurityFromPromotion.Count -eq 0)
+
+# Exercise the real configured contexts against emitted check names. A model
+# that invented a 'CodeQL /' prefix used to pass the generic gate unit tests.
+$emittedPromotionChecks = @($ciCheckNames) + @($codeqlCheckNames) + @(
+    'Build and push ingestion-service', 'Build and push telemetry-processor', 'Build and push query-service'
+)
+$successfulRuns = @($emittedPromotionChecks | ForEach-Object {
+    [pscustomobject]@{ Name = $_; Status = 'completed'; Conclusion = 'success' }
+})
+$configuredGate = Test-PromotionGate -Required $promotionChecks -Gate $successfulRuns
+Assert-True -What "actual successful emitted checks satisfy the configured promotion gate" -Condition $configuredGate.Ok
+foreach ($securityCheck in $codeqlCheckNames) {
+    $withoutSecurityCheck = Test-PromotionGate -Required $promotionChecks -Gate @(
+        $successfulRuns | Where-Object { $_.Name -ne $securityCheck }
+    )
+    Assert-True -What "promotion fails closed when $securityCheck is missing" -Condition (-not $withoutSecurityCheck.Ok)
+}
 Assert-True -What "the ruleset pull_request rule uses only documented parameters" -Condition (
     @($ruleset.rules | Where-Object { $_.type -eq "pull_request" } | ForEach-Object { $_.parameters.PSObject.Properties.Name } |
         Where-Object { @(

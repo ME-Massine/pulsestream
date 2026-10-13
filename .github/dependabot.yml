@@ -1,0 +1,46 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /services/ingestion-service
+    schedule:
+      interval: weekly
+    groups:
+      spring-and-test:
+        patterns:
+          - org.springframework*
+          - org.junit*
+          - org.mockito*
+
+  - package-ecosystem: maven
+    directory: /services/telemetry-processor
+    schedule:
+      interval: weekly
+    groups:
+      spring-and-test:
+        patterns:
+          - org.springframework*
+          - org.junit*
+          - org.mockito*
+
+  - package-ecosystem: maven
+    directory: /services/query-service
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directories:
+      - /services/ingestion-service
+      - /services/telemetry-processor
+      - /services/query-service
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker-compose
+    directory: /infrastructure/docker
+    schedule:
+      interval: weekly

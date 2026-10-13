@@ -76,7 +76,10 @@ name the same bytes. See
 [Release and Container Image Promotion](release-and-promotion.md).
 
 If the per-commit tag already exists when a publish runs, the existing image is
-reused rather than rebuilt. A Java build is not byte-reproducible, so
+reused rather than rebuilt only after verifying the publishing workflow's
+signature and signed source commit, checking the OCI source/revision labels,
+and rescanning the pinned digest. Unsigned or mismatched content fails closed
+and is never signed by a rerun. A Java build is not byte-reproducible, so
 overwriting the tag would give one commit two digests for the same service and
 repoint a tag a release may already have promoted.
 
@@ -91,8 +94,12 @@ relied on for reproducible deploys.
 
 Publishing is automated by
 [`.github/workflows/publish-images.yml`](../../.github/workflows/publish-images.yml).
-It builds and pushes all three service images on every push to `main`, tagging
-`sha-<short>` and moving `latest` onto that same digest.
+It builds all three service images locally on every push to `main`, scans a
+saved archive before any image push, and generates an SPDX JSON SBOM from that
+same archive. After the checks pass, it pushes `sha-<short>`, attaches the SBOM
+to the pushed digest, signs newly built content with its source commit, and
+moves `latest` onto that same digest. See [security operations](../security.md)
+for the trust requirements for reuse and signature verification.
 
 Pull requests do **not** publish, so forks cannot push images and unmerged work
 never reaches the registry. Neither do `v*` tags: a version is applied to an

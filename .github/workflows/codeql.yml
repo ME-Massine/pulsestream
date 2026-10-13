@@ -1,0 +1,55 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - ingestion-service
+          - telemetry-processor
+          - query-service
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+          build-mode: manual
+          source-root: services/${{ matrix.service }}
+
+      - name: Build the service for extraction
+        working-directory: services/${{ matrix.service }}
+        run: bash ./mvnw --batch-mode --no-transfer-progress clean package -DskipTests
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:java-kotlin/service:${{ matrix.service }}
