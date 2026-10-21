@@ -6,8 +6,7 @@ This directory contains the `Docker Compose` setup used to run the `PulseStream`
 
 The local platform includes:
 
-- `Zookeeper`
-- `Kafka`
+- `Kafka` (single KRaft node, no `ZooKeeper`)
 - `PostgreSQL`
 - `Redis`
 - `Prometheus`
@@ -68,7 +67,6 @@ docker compose down -v
 
 | Service    | Port |
 | :--------- | :--- |
-| Zookeeper  | 2181 |
 | Kafka      | 9092 |
 | PostgreSQL | 5432 |
 | Redis      | 6379 |
@@ -84,7 +82,9 @@ The broker is configured for local development with the following defaults:
 
 | Setting | Value | Description |
 | :------ | :---- | :---------- |
-| `KAFKA_BROKER_ID` | 1 | Single broker for local dev |
+| `KAFKA_NODE_ID` | 1 | Single combined broker/controller node for local dev |
+| `KAFKA_PROCESS_ROLES` | broker,controller | `KRaft` mode; the node is its own metadata quorum |
+| `KAFKA_CLUSTER_ID` | `MkU3OEVBNTcwNTJENDM2Qk` | Cluster id used to format the `KRaft` log directory on first start |
 | `KAFKA_NUM_PARTITIONS` | 3 | Broker default partition count |
 | `KAFKA_LOG_RETENTION_HOURS` | 168 | 7-day message retention |
 | `KAFKA_LOG_RETENTION_BYTES` | 1 GB | Max log size per partition |
@@ -110,6 +110,24 @@ docker exec pulsestream-kafka check-health
 ```
 
 Alternatively, wait for the `Docker` health status to show `healthy`.
+
+#### Kafka KRaft upgrade
+
+The broker runs `confluentinc/cp-kafka` 8.x in `KRaft` mode. Confluent Platform 8 removed
+`ZooKeeper` support, so the former `zookeeper` service and its volumes are gone, and the
+broker stores its data in the new `kafka_kraft_data` volume. A `ZooKeeper`-mode log
+directory cannot be reused by a `KRaft` node.
+
+An existing local environment keeps its old volumes until they are removed. Messages
+held in the old broker are not migrated; `kafka-init` recreates the topics on the next
+start, and the processed results already live in `PostgreSQL`. To clean up after
+upgrading:
+
+```bash
+docker compose down --remove-orphans
+docker volume rm pulsestream-local_kafka_data pulsestream-local_zookeeper_data pulsestream-local_zookeeper_log
+docker compose up -d
+```
 
 #### DLQ Topic Validation
 
