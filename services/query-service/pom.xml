@@ -19,7 +19,7 @@
 
     <properties>
         <java.version>17</java.version>
-        <jacoco.version>0.8.12</jacoco.version>
+        <jacoco.version>0.8.15</jacoco.version>
         <!-- Non-regression floors set just under the baseline measured at
              #262: line 33.33%. The service is a single bootstrap class with
              no branches (0/0), so the branch floor cannot enforce anything yet;
