@@ -47,6 +47,36 @@ jobs:
           test -d docs/decisions
           test -d docs/diagrams
 
+      - name: Prepare artifact compatibility fixture
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/artifact-source"
+          printf '{"commit":"%s","validated":true}\n' "${GITHUB_SHA}" \
+            > "${RUNNER_TEMP}/artifact-source/provenance.json"
+
+      - name: Upload artifact compatibility fixture
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artifact-source/provenance.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Download artifact compatibility fixture
+        uses: actions/download-artifact@v8
+        with:
+          name: artifact-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artifact-downloaded
+
+      - name: Verify artifact content and extraction path
+        shell: bash
+        run: |
+          cmp "${RUNNER_TEMP}/artifact-source/provenance.json" \
+            "${RUNNER_TEMP}/artifact-downloaded/provenance.json"
+          jq -e --arg commit "${GITHUB_SHA}" \
+            '.commit == $commit and .validated == true' \
+            "${RUNNER_TEMP}/artifact-downloaded/provenance.json"
+
   service-verify:
     name: Service verify (${{ matrix.service }})
     runs-on: ubuntu-latest

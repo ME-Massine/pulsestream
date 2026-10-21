@@ -30,6 +30,8 @@ cancels the run it supersedes.
 The workflow runs these checks:
 
 - Repository file and directory sanity checks.
+- Artifact upload/download compatibility, including exact provenance JSON content
+  and extraction path, within the repository sanity check job.
 - A Java 17 Maven `verify` matrix for `ingestion-service`,
   `telemetry-processor`, and `query-service`, with Maven dependency caching.
 - JaCoCo reports and per-service non-regression coverage floors, uploaded as
