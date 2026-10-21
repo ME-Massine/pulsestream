@@ -159,7 +159,7 @@ The local development environment is defined with Docker Compose. Configuration 
 *   [infrastructure/docker/docker-compose.yml](./infrastructure/docker/docker-compose.yml)
 *   [infrastructure/docker/README.md](./infrastructure/docker/README.md)
 
-The local environment includes pre-configured instances of **Kafka**, **Zookeeper**, **PostgreSQL**, **Redis**, **Prometheus**, **Grafana**, and **Jaeger**.
+The local environment includes pre-configured instances of **Kafka** (KRaft mode), **PostgreSQL**, **Redis**, **Prometheus**, **Grafana**, and **Jaeger**.
 
 ---
 
