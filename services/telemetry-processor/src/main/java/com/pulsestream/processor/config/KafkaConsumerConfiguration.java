@@ -18,7 +18,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.CommonContainerStoppingErrorHandler;
 import org.springframework.kafka.listener.MessageListenerContainer;
-import org.springframework.kafka.support.serializer.JsonDeserializer;
+import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
 
 @Configuration
 public class KafkaConsumerConfiguration {
@@ -34,8 +34,8 @@ public class KafkaConsumerConfiguration {
         consumerProperties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, kafkaProperties.getConsumer().getKeyDeserializer());
         consumerProperties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, kafkaProperties.getConsumer().getValueDeserializer());
         consumerProperties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, kafkaProperties.getConsumer().getAutoOffsetReset());
-        consumerProperties.put(JsonDeserializer.VALUE_DEFAULT_TYPE, TelemetryEvent.class.getName());
-        consumerProperties.put(JsonDeserializer.TRUSTED_PACKAGES, TelemetryEvent.class.getPackageName());
+        consumerProperties.put(JacksonJsonDeserializer.VALUE_DEFAULT_TYPE, TelemetryEvent.class.getName());
+        consumerProperties.put(JacksonJsonDeserializer.TRUSTED_PACKAGES, TelemetryEvent.class.getPackageName());
 
         consumerProperties.putAll(kafkaProperties.getConsumer().getProperties());
 
@@ -71,8 +71,8 @@ public class KafkaConsumerConfiguration {
         consumerProperties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, kafkaProperties.getConsumer().getKeyDeserializer());
         consumerProperties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, kafkaProperties.getConsumer().getValueDeserializer());
         consumerProperties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, kafkaProperties.getConsumer().getAutoOffsetReset());
-        consumerProperties.put(JsonDeserializer.VALUE_DEFAULT_TYPE, DeadLetterEvent.class.getName());
-        consumerProperties.put(JsonDeserializer.TRUSTED_PACKAGES, DeadLetterEvent.class.getPackageName());
+        consumerProperties.put(JacksonJsonDeserializer.VALUE_DEFAULT_TYPE, DeadLetterEvent.class.getName());
+        consumerProperties.put(JacksonJsonDeserializer.TRUSTED_PACKAGES, DeadLetterEvent.class.getPackageName());
 
         return new DefaultKafkaConsumerFactory<>(consumerProperties);
     }

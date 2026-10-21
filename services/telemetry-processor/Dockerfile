@@ -8,7 +8,7 @@ RUN mvn -B -q -e -DskipTests dependency:go-offline
 COPY src ./src
 RUN mvn clean package -DskipTests
 
-RUN java -Djarmode=layertools -jar target/*.jar extract
+RUN java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destination extracted
 
 FROM eclipse-temurin:17-jre-jammy
 
@@ -16,10 +16,10 @@ WORKDIR /app
 
 RUN groupadd -r spring && useradd -r -g spring spring
 
-COPY --from=builder /app/dependencies/ ./
-COPY --from=builder /app/snapshot-dependencies/ ./
-COPY --from=builder /app/spring-boot-loader/ ./
-COPY --from=builder /app/application/ ./
+COPY --from=builder /app/extracted/dependencies/ ./
+COPY --from=builder /app/extracted/snapshot-dependencies/ ./
+COPY --from=builder /app/extracted/spring-boot-loader/ ./
+COPY --from=builder /app/extracted/application/ ./
 
 RUN chown -R spring:spring /app
 

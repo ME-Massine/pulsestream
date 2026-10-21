@@ -1,8 +1,9 @@
 package com.pulsestream.ingestion.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.pulsestream.ingestion.config.PulsestreamKafkaProperties;
 import com.pulsestream.ingestion.exception.TelemetryPublishingException;
 import com.pulsestream.ingestion.model.TelemetryEvent;
@@ -42,7 +43,7 @@ class KafkaProducerServiceTest {
     @SuppressWarnings("unchecked")
     private final KafkaTemplate<String, String> dlqKafkaTemplate = mock(KafkaTemplate.class);
 
-    private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     private final PulsestreamKafkaProperties kafkaProperties = new PulsestreamKafkaProperties();
 
@@ -140,7 +141,7 @@ class KafkaProducerServiceTest {
 
     @Test
     @DisplayName("should reroute the failed event to the DLQ topic wrapped with error metadata")
-    void shouldRerouteFailedEventToDeadLetterQueueWithMetadata() throws JsonProcessingException {
+    void shouldRerouteFailedEventToDeadLetterQueueWithMetadata() {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         KafkaException kafkaException = new KafkaException("broker unavailable");
 
@@ -180,13 +181,13 @@ class KafkaProducerServiceTest {
 
     @Test
     @DisplayName("should preserve the payload and metadata in the DLQ even when the envelope cannot be serialized")
-    void shouldRerouteToDeadLetterQueueWhenEnvelopeSerializationFails() throws JsonProcessingException {
+    void shouldRerouteToDeadLetterQueueWhenEnvelopeSerializationFails() {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         KafkaException kafkaException = new KafkaException("broker unavailable");
 
         ObjectMapper failingObjectMapper = mock(ObjectMapper.class);
         when(failingObjectMapper.writeValueAsString(any()))
-                .thenThrow(new JsonProcessingException("boom") {});
+                .thenThrow(new JacksonException("boom") {});
 
         KafkaProducerService serviceWithFailingObjectMapper = new KafkaProducerService(
                 kafkaTemplate, dlqKafkaTemplate, failingObjectMapper, kafkaProperties, fixedClock
