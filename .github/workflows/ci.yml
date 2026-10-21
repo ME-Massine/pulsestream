@@ -93,11 +93,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Java 17
+      - name: Set up Java 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "25"
           cache: maven
           cache-dependency-path: services/${{ matrix.service }}/pom.xml
 

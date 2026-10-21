@@ -15,7 +15,7 @@ Each service uses a two-stage build:
 ### Stage 1 — Builder
 
 ```dockerfile
-FROM maven:3.9.9-eclipse-temurin-17 AS builder
+FROM maven:3.10.0-eclipse-temurin-25 AS builder
 
 WORKDIR /app
 
@@ -37,7 +37,7 @@ RUN java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destina
 ### Stage 2 — Runtime
 
 ```dockerfile
-FROM eclipse-temurin:17-jre-jammy
+FROM eclipse-temurin:25-jre-jammy
 
 WORKDIR /app
 
@@ -65,8 +65,8 @@ ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.la
 
 | Concern            | Standard                                                                                   |
 | ------------------ | ------------------------------------------------------------------------------------------ |
-| Base (build) image | `maven:3.9.9-eclipse-temurin-17`                                                            |
-| Base (runtime) image | `eclipse-temurin:17-jre-jammy` (JRE only, smaller runtime)                                |
+| Base (build) image | `maven:3.10.0-eclipse-temurin-25`                                                           |
+| Base (runtime) image | `eclipse-temurin:25-jre-jammy` (JRE only, smaller runtime)                                |
 | Build strategy     | Multi-stage; Spring Boot layered jar extracted with the `tools` jar mode                    |
 | Non-root execution | Dedicated `spring` user/group; `/app` owned by `spring`; `USER spring:spring`              |
 | JVM runtime options | `-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError`           |

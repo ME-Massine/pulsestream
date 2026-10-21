@@ -503,7 +503,7 @@ foreach ($serviceName in $ServiceNames) {
     #
     # A TCP connect is the assertion rather than a Kafka client call because the
     # service images carry a JRE and a shell, not the Kafka CLI. bash is present
-    # in the eclipse-temurin:17-jre-jammy base image both services build on.
+    # in the eclipse-temurin:25-jre-jammy base image both services build on.
     $bootstrapHost = ($podBootstrap -split ",")[0].Split(":")[0]
     $bootstrapHostPort = ($podBootstrap -split ",")[0].Split(":")[1]
 

@@ -292,7 +292,7 @@ if ($SkipDatabase) {
     # TCP connect from inside the processor pod, against the endpoint that pod
     # actually runs with. This exercises the service's own DNS resolution and
     # network path to Postgres, so a namespace mismatch that only affects this
-    # service is caught here. bash is present in the eclipse-temurin:17-jre-jammy
+    # service is caught here. bash is present in the eclipse-temurin:25-jre-jammy
     # base image the service builds on.
     Invoke-WithRetry -TimeoutSeconds $TimeoutSeconds -FailureMessage "'$ProcessorServiceName' could not reach Postgres at '$postgresHost`:$postgresPort' within $TimeoutSeconds seconds." -Operation {
         $tcpProbe = Invoke-Kubectl -KubectlArgs @(

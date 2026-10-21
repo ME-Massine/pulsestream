@@ -18,7 +18,7 @@
     <description>PulseStream ingestion service</description>
 
     <properties>
-        <java.version>17</java.version>
+        <java.version>25</java.version>
         <jacoco.version>0.8.15</jacoco.version>
         <!-- Non-regression floors set just under the baseline measured at
              #262: line 90.20%, branch 57.14%. -->
