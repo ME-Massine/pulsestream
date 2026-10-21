@@ -3,7 +3,7 @@ package com.pulsestream.processor.consumer;
 import com.pulsestream.processor.model.TelemetryEvent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.kafka.support.serializer.JsonDeserializer;
+import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -35,7 +35,7 @@ class TelemetryEventDeserializationTest {
                 }
                 """;
 
-        JsonDeserializer<TelemetryEvent> deserializer = new JsonDeserializer<>(TelemetryEvent.class);
+        JacksonJsonDeserializer<TelemetryEvent> deserializer = new JacksonJsonDeserializer<>(TelemetryEvent.class);
         deserializer.addTrustedPackages("com.pulsestream.processor.model");
 
         TelemetryEvent event = deserializer.deserialize(

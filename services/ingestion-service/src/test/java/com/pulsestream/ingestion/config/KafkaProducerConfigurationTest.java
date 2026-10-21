@@ -1,8 +1,7 @@
 package com.pulsestream.ingestion.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.json.JsonMapper;
 import com.pulsestream.ingestion.model.TelemetryEvent;
 import com.pulsestream.ingestion.model.TelemetryPayload;
 import java.math.BigDecimal;
@@ -20,15 +19,15 @@ class KafkaProducerConfigurationTest {
     private final KafkaProducerConfiguration configuration = new KafkaProducerConfiguration();
 
     @Test
-    @DisplayName("should serialize telemetry event timestamps as ISO-8601 using the configured object mapper")
-    void shouldSerializeTelemetryEventTimestampsAsIso8601UsingConfiguredObjectMapper() {
+    @DisplayName("should serialize telemetry event timestamps as ISO-8601 using the configured JSON mapper")
+    void shouldSerializeTelemetryEventTimestampsAsIso8601UsingConfiguredJsonMapper() {
         PulsestreamKafkaProperties properties = new PulsestreamKafkaProperties();
-        ObjectMapper objectMapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        JsonMapper jsonMapper = JsonMapper.builder()
+                .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .build();
 
         ProducerFactory<String, TelemetryEvent> producerFactory =
-                configuration.telemetryProducerFactory(properties, objectMapper);
+                configuration.telemetryProducerFactory(properties, jsonMapper);
 
         assertThat(producerFactory).isInstanceOf(DefaultKafkaProducerFactory.class);
 

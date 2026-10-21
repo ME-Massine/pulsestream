@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.kafka.core.ConsumerFactory;
-import org.springframework.kafka.support.serializer.JsonDeserializer;
+import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -24,7 +24,7 @@ class KafkaConsumerConfigurationTest {
                     "pulsestream.kafka.bootstrap-servers=localhost:9092",
                     "pulsestream.kafka.consumer.group-id=telemetry-processor",
                     "pulsestream.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.StringDeserializer",
-                    "pulsestream.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.JsonDeserializer",
+                    "pulsestream.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.JacksonJsonDeserializer",
                     "pulsestream.kafka.consumer.auto-offset-reset=earliest",
                     "pulsestream.kafka.consumer.concurrency=2",
                     "pulsestream.kafka.consumer.properties.spring.json.trusted.packages=com.pulsestream.processor.dto",
@@ -54,7 +54,7 @@ class KafkaConsumerConfigurationTest {
                     .containsEntry(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
                     .containsEntry(ConsumerConfig.GROUP_ID_CONFIG, "telemetry-processor")
                     .containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
-                    .containsEntry(JsonDeserializer.VALUE_DEFAULT_TYPE, "com.pulsestream.processor.model.TelemetryEvent");
+                    .containsEntry(JacksonJsonDeserializer.VALUE_DEFAULT_TYPE, "com.pulsestream.processor.model.TelemetryEvent");
         });
     }
 
@@ -77,7 +77,7 @@ class KafkaConsumerConfigurationTest {
                     .containsEntry(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
                     .containsEntry(ConsumerConfig.GROUP_ID_CONFIG, "telemetry-processor-dlq-replay")
                     .containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
-                    .containsEntry(JsonDeserializer.VALUE_DEFAULT_TYPE, "com.pulsestream.processor.model.DeadLetterEvent");
+                    .containsEntry(JacksonJsonDeserializer.VALUE_DEFAULT_TYPE, "com.pulsestream.processor.model.DeadLetterEvent");
         });
     }
 
@@ -113,7 +113,7 @@ class KafkaConsumerConfigurationTest {
                     }
                     """;
 
-            try (JsonDeserializer<?> deserializer = new JsonDeserializer<>()) {
+            try (JacksonJsonDeserializer<?> deserializer = new JacksonJsonDeserializer<>()) {
                 deserializer.configure(dlqConsumerFactory.getConfigurationProperties(), false);
 
                 Object deserialized = deserializer.deserialize(

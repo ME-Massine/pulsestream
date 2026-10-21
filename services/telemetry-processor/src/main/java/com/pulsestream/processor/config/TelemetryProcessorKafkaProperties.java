@@ -6,8 +6,8 @@ import java.util.Map;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.kafka.support.serializer.JsonDeserializer;
-import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
+import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 
 @ConfigurationProperties(prefix = "pulsestream.kafka")
 public class TelemetryProcessorKafkaProperties {
@@ -48,7 +48,7 @@ public class TelemetryProcessorKafkaProperties {
 
         private String keyDeserializer = StringDeserializer.class.getName();
 
-        private String valueDeserializer = JsonDeserializer.class.getName();
+        private String valueDeserializer = JacksonJsonDeserializer.class.getName();
 
         private String autoOffsetReset = "earliest";
 
@@ -129,7 +129,7 @@ public class TelemetryProcessorKafkaProperties {
 
         private String keySerializer = StringSerializer.class.getName();
 
-        private String valueSerializer = JsonSerializer.class.getName();
+        private String valueSerializer = JacksonJsonSerializer.class.getName();
 
         private String acknowledgements = "all";
 
