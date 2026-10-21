@@ -6,7 +6,7 @@ import java.util.Map;
 
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 
 @ConfigurationProperties(prefix = "pulsestream.kafka")
 public class PulsestreamKafkaProperties {
@@ -39,7 +39,7 @@ public class PulsestreamKafkaProperties {
 
         private String keySerializer = StringSerializer.class.getName();
 
-        private String valueSerializer = JsonSerializer.class.getName();
+        private String valueSerializer = JacksonJsonSerializer.class.getName();
 
         private String acknowledgements = "all";
 

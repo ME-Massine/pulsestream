@@ -1,8 +1,9 @@
 package com.pulsestream.processor.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
@@ -40,7 +41,7 @@ class DeadLetterPublisherTest {
 
     private DeadLetterPublisher deadLetterPublisher;
 
-    private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     private static final Instant FIXED_INSTANT = Instant.parse("2026-04-01T09:30:00Z");
 
@@ -55,7 +56,7 @@ class DeadLetterPublisherTest {
 
     @Test
     @DisplayName("should publish the failed event to the DLQ topic with the shared envelope contract")
-    void shouldPublishFailedEventToDlqTopicWithMetadata() throws JsonProcessingException {
+    void shouldPublishFailedEventToDlqTopicWithMetadata() {
         TelemetryEvent event = telemetryEvent("evt-001", "factory-01");
         RuntimeException cause = new IllegalStateException("normalization exploded");
         CompletableFuture<SendResult<String, String>> future = CompletableFuture.completedFuture(null);

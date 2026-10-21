@@ -39,7 +39,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.MessageListener;
-import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 import org.springframework.kafka.test.EmbeddedKafkaKraftBroker;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 
@@ -217,9 +217,9 @@ class DeadLetterReplayRedeliveryTest {
     private long produceDeadLetterEvent(String topic) throws Exception {
         Map<String, Object> producerProps = KafkaTestUtils.producerProps(broker);
         producerProps.put("key.serializer", StringSerializer.class);
-        producerProps.put("value.serializer", JsonSerializer.class);
+        producerProps.put("value.serializer", JacksonJsonSerializer.class);
         // Consumers rely on VALUE_DEFAULT_TYPE (producers are separate services), not type headers.
-        producerProps.put(JsonSerializer.ADD_TYPE_INFO_HEADERS, false);
+        producerProps.put(JacksonJsonSerializer.ADD_TYPE_INFO_HEADERS, false);
 
         try (Producer<String, DeadLetterEvent> producer =
                 new DefaultKafkaProducerFactory<String, DeadLetterEvent>(producerProps).createProducer()) {

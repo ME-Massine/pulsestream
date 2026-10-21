@@ -1,6 +1,6 @@
 package com.pulsestream.processor.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.pulsestream.processor.model.TelemetryEnvelope;
 import java.util.HashMap;
 import java.util.Map;
@@ -12,7 +12,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
-import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 
 @Configuration
 public class KafkaProducerConfiguration {
@@ -20,7 +20,7 @@ public class KafkaProducerConfiguration {
     @Bean
     ProducerFactory<String, TelemetryEnvelope> telemetryProducerFactory(
             TelemetryProcessorKafkaProperties kafkaProperties,
-            ObjectMapper objectMapper
+            JsonMapper jsonMapper
     ) {
         Map<String, Object> producerProperties = new HashMap<>();
         producerProperties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaProperties.getBootstrapServers());
@@ -38,8 +38,8 @@ public class KafkaProducerConfiguration {
         DefaultKafkaProducerFactory<String, TelemetryEnvelope> producerFactory =
                 new DefaultKafkaProducerFactory<>(producerProperties);
 
-        if (JsonSerializer.class.getName().equals(kafkaProperties.getProducer().getValueSerializer())) {
-            producerFactory.setValueSerializer(new JsonSerializer<>(objectMapper));
+        if (JacksonJsonSerializer.class.getName().equals(kafkaProperties.getProducer().getValueSerializer())) {
+            producerFactory.setValueSerializer(new JacksonJsonSerializer<>(jsonMapper));
         }
 
         return producerFactory;
