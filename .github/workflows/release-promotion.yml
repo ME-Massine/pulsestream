@@ -83,7 +83,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # The source tree used by the gate must be the same tree named by the
           # source_commit input. The ancestry check below still needs history.
@@ -185,7 +185,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Keep manifest generation on the exact source tree that passed the
           # gate; a workflow ref can move or differ from the input otherwise.
