@@ -75,7 +75,7 @@ services:
       - pulsestream-net
 
   postgres:
-    image: postgres:16
+    image: postgres:18
     container_name: pulsestream-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-pulsestream}
@@ -84,7 +84,11 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PostgreSQL 18 images keep PGDATA in a major-version subdirectory
+      # (/var/lib/postgresql/18/docker), so the volume is mounted one level up.
+      # Version 16 data lived in postgres_data and needs a dump/restore to move
+      # here (see README: "PostgreSQL 18 upgrade").
+      - postgres18_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pulsestream} -d ${POSTGRES_DB:-pulsestream}"]
       interval: 10s
@@ -162,7 +166,7 @@ services:
 
 volumes:
   kafka_kraft_data:
-  postgres_data:
+  postgres18_data:
   redis_data:
   prometheus_data:
   grafana_data:

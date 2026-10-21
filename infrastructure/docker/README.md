@@ -76,6 +76,38 @@ docker compose down -v
 | Jaeger OTLP gRPC | 4317 |
 | Jaeger OTLP HTTP | 4318 |
 
+### PostgreSQL 18 upgrade
+
+The `postgres` service runs `postgres:18`. PostgreSQL 18 images keep `PGDATA` in a
+major-version subdirectory (`/var/lib/postgresql/18/docker`), so the Compose file mounts
+the new `postgres18_data` volume at `/var/lib/postgresql`. Data files from a different
+major version cannot be opened directly, so an existing PostgreSQL 16 environment
+(`postgres_data` volume) moves over with a dump and restore. Run these commands from this
+directory **before** pulling the PostgreSQL 18 change, while the version 16 container is
+still defined:
+
+```bash
+docker compose up -d postgres
+docker exec pulsestream-postgres pg_dumpall -U pulsestream --clean --if-exists > pulsestream-pg16.sql
+docker compose stop postgres
+```
+
+Then, with the PostgreSQL 18 Compose file:
+
+```bash
+docker compose up -d postgres
+docker exec -i pulsestream-postgres psql -U pulsestream -d postgres < pulsestream-pg16.sql
+docker exec pulsestream-postgres psql -U pulsestream -d pulsestream -c "SELECT count(*) FROM platform.processed_telemetry;"
+```
+
+The restore reports that the current user cannot be dropped and that the `pulsestream`
+role already exists; those messages are expected because the container creates the role
+on first start. The old `postgres_data` volume is left untouched, so rolling
+back only requires checking out the version 16 Compose file. Once the restored data is
+verified, remove it with `docker volume rm pulsestream-local_postgres_data` and delete the
+dump file. A fresh environment needs no migration: start the stack and apply
+`postgres/init.sql` as described above.
+
 ### Kafka Broker Configuration
 
 The broker is configured for local development with the following defaults:
