@@ -257,6 +257,34 @@ Override the defaults with `-GrafanaBaseUrl`, `-GrafanaUser`, and `-GrafanaPassw
 
 Dashboard JSON is version-controlled under [`observability/grafana/dashboards`](../../observability/grafana/dashboards) as the single source of truth. The Compose file mounts that directory into the `Grafana` container at `/etc/grafana/dashboards`, and the file provider in `grafana/provisioning/dashboards/dashboards.yml` loads every dashboard into the `PulseStream` folder on startup. See the [dashboards README](../../observability/grafana/dashboards/README.md) for the list of dashboards and instructions on re-importing or exporting changes.
 
+#### Prometheus 3 and Grafana 13 upgrade
+
+The stack runs `prom/prometheus:v3.15.0` and `grafana/grafana:13.2.3` (the version the
+Kubernetes Grafana Deployment already uses). Both reuse their existing volumes:
+
+- `Prometheus` 3 reads the TSDB written by 2.x, so metrics collected before the upgrade
+  stay queryable. The committed scrape configuration and every dashboard query work
+  unchanged.
+- `Grafana` migrates `grafana.db` in `grafana_data` on first start, keeping users,
+  datasources, and dashboards created in the UI. Provisioned dashboards reload from
+  `observability/grafana/dashboards`.
+
+Neither migration can be reversed by switching the image back: `Grafana` does not support
+downgrading a migrated database, and `Prometheus` supports downgrading a
+version 3 TSDB only to 2.55 or later. Back up both volumes before upgrading an existing
+environment:
+
+```bash
+docker compose stop prometheus grafana
+docker run --rm -v pulsestream-local_grafana_data:/data:ro -v "$PWD":/backup alpine tar czf /backup/grafana-data.tgz -C /data .
+docker run --rm -v pulsestream-local_prometheus_data:/data:ro -v "$PWD":/backup alpine tar czf /backup/prometheus-data.tgz -C /data .
+```
+
+To roll back, stop both services, restore each archive into an emptied volume (`tar xzf`
+with the same mounts), and check out the previous Compose file. In Git Bash on Windows,
+prefix the `docker run` commands with `MSYS_NO_PATHCONV=1` so `/backup` is not rewritten
+to a Windows path.
+
 ### Jaeger
 
 `Jaeger` is the local distributed tracing backend. The all-in-one container runs the collector, storage, and query UI in a single process, with the OTLP receiver enabled via `COLLECTOR_OTLP_ENABLED`.

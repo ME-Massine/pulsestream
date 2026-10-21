@@ -110,7 +110,7 @@ services:
       - pulsestream-net
 
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v3.15.0
     container_name: pulsestream-prometheus
     depends_on:
       - kafka
@@ -142,7 +142,7 @@ services:
       - pulsestream-net
 
   grafana:
-    image: grafana/grafana:11.1.4
+    image: grafana/grafana:13.2.3
     container_name: pulsestream-grafana
     depends_on:
       - prometheus
