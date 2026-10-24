@@ -56,7 +56,7 @@ public class TelemetryProcessingService {
                 PROCESSED_EVENT_TYPE,
                 rawEvent.timestamp() != null ? rawEvent.timestamp() : Instant.now(clock),
                 PROCESSED_SOURCE,
-                TelemetryEventNormalizer.defaultIfBlank(rawEvent.version(), DEFAULT_VERSION),
+                DEFAULT_VERSION,
                 TelemetryEventNormalizer.normalizePayload(rawEvent.payload())
         );
 

@@ -9,6 +9,10 @@ PulseStream is a cloud-native distributed event processing platform designed for
 
 > **Project status.** **Phase 6 — Kubernetes Deployment** is implemented but awaiting live target-cluster validation. Phase 7 — Production Readiness and Platform Hardening begins only after that validation meets its entry criteria. The authoritative, up-to-date status is maintained in [PROJECT_STATE.md](./PROJECT_STATE.md).
 
+Kafka JSON values use [versioned event contracts](contracts/README.md) for raw,
+processed, anomaly and shared dead-letter events, with producer/consumer fixture
+validation and a compatibility gate in CI.
+
 The project is engineered with a primary focus on several critical domains of modern software development:
 *   **Event-driven architecture** for decoupled and scalable service interaction.
 *   **Distributed systems design** to ensure high availability and fault tolerance.

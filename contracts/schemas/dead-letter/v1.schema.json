@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pulsestream.dev/contracts/dead-letter/v1.schema.json",
+  "title": "PulseStream shared dead-letter envelope v1",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$",
+      "default": "1.0"
+    },
+    "event": {
+      "type": "object",
+      "description": "Original failed event. Deliberately unconstrained: invalid or unsupported telemetry must remain recoverable.",
+      "additionalProperties": true
+    },
+    "errorMessage": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "sourceService": {
+      "enum": [
+        "ingestion-service",
+        "telemetry-processor"
+      ]
+    },
+    "failedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "event",
+    "errorMessage",
+    "sourceService",
+    "failedAt"
+  ],
+  "additionalProperties": true
+}

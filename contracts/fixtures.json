@@ -1,0 +1,42 @@
+[
+  {
+    "fixture": "fixtures/raw-v1.json",
+    "schema": "schemas/raw/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/raw-v1-extensions.json",
+    "schema": "schemas/raw/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/processed-v1.json",
+    "schema": "schemas/processed/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/processed-v1-missing-metadata.json",
+    "schema": "schemas/processed/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/anomaly-v1.json",
+    "schema": "schemas/anomaly/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/anomaly-v1-missing-reading.json",
+    "schema": "schemas/anomaly/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/dead-letter-v1-ingestion-service.json",
+    "schema": "schemas/dead-letter/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/dead-letter-v1-telemetry-processor.json",
+    "schema": "schemas/dead-letter/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/dead-letter-v1-legacy.json",
+    "schema": "schemas/dead-letter/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/dead-letter-v1-invalid-event.json",
+    "schema": "schemas/dead-letter/v1.schema.json"
+  }
+]

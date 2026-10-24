@@ -1,6 +1,7 @@
 package com.pulsestream.processor.service;
 
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.model.DeadLetterEvent;
 import com.pulsestream.processor.model.TelemetryEvent;
@@ -93,11 +94,11 @@ public class DeadLetterPublisher {
             return objectMapper.writeValueAsString(deadLetterEvent);
         } catch (Exception ex) {
             log.warn(
-                    "Falling back to non-JSON DLQ representation for eventId={} due to serialization failure",
+                    "Using independent JSON mapper for DLQ eventId={} due to serialization failure",
                     deadLetterEvent.event().eventId(),
                     ex
             );
-            return String.valueOf(deadLetterEvent);
+            return JsonMapper.builder().build().writeValueAsString(deadLetterEvent);
         }
     }
 

@@ -1,5 +1,6 @@
 package com.pulsestream.ingestion.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
@@ -7,6 +8,7 @@ import java.math.BigDecimal;
 /**
  * Payload DTO for telemetry reading events.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record TelemetryPayloadDto(
         @NotBlank(message = ValidationMessages.DEVICE_ID_REQUIRED) String deviceId,
         @NotBlank(message = ValidationMessages.DEVICE_TYPE_REQUIRED) String deviceType,

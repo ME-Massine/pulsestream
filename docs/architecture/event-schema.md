@@ -2,15 +2,24 @@
 
 ## Overview
 
-PulseStream is an event-driven platform. All services communicate through events transported by Kafka. To ensure consistency and interoperability between services, all events follow a standardized envelope structure.
+PulseStream transports JSON events through Kafka. The authoritative contracts are
+the versioned JSON Schema Draft 2020-12 files below. This document explains their
+meaning; [the contract policy](../../contracts/README.md) defines compatibility,
+shared fixtures, validation, version mapping and deprecation.
 
-This document defines the canonical event schema used across the platform.
+| Topic | Authoritative schema |
+| --- | --- |
+| `telemetry.events.raw` | [raw v1](../../contracts/schemas/raw/v1.schema.json) |
+| `telemetry.events.processed` | [processed v1](../../contracts/schemas/processed/v1.schema.json) |
+| `telemetry.events.anomalies` | [anomaly v1](../../contracts/schemas/anomaly/v1.schema.json) |
+| `telemetry.events.dlq` | [shared dead-letter v1](../../contracts/schemas/dead-letter/v1.schema.json) |
 
 ---
 
 ## Event Envelope
 
-Every event published to the streaming platform must follow the canonical event envelope.
+Raw, processed and anomaly events use the telemetry envelope. DLQ values instead
+use the shared wrapper described below. Query APIs read PostgreSQL projections.
 
 ```json
 {
@@ -61,9 +70,23 @@ Generated when telemetry readings violate anomaly rules.
 
 #### Dead Letter Events
 
-Generated when event processing fails.
+Generated when raw publication or event processing fails. These use a wrapper
+with `event`, `errorMessage`, `sourceService`, `failedAt` and `version`; they do
+not have a top-level `eventType`. Both producers emit the same contract:
 
-*   `telemetry.deadletter`
+```json
+{
+  "version": "1.0",
+  "event": {"eventId": "evt_102", "version": "1.0", "payload": null},
+  "errorMessage": "IllegalStateException: processing failed",
+  "sourceService": "telemetry-processor",
+  "failedAt": "2026-10-24T12:00:00Z"
+}
+```
+
+The nested event may be invalid telemetry: preserving diagnostic evidence is the
+purpose of the DLQ. Historical wrappers without `version` mean v1.0. The complete
+producer and consumer examples live in [shared fixtures](../../contracts/fixtures).
 
 ### Telemetry Event Example
 
@@ -89,6 +112,10 @@ This event represents a telemetry reading sent by a device.
 ```
 
 ### Telemetry Payload Fields
+
+All six fields are required for new raw ingestion. Historical processed readings
+may lack descriptive metadata; anomaly readings may lack any payload field.
+Nullability and optionality are specified in the linked schemas.
 
 | Field      | Description                   |
 |------------|-------------------------------|
@@ -179,24 +206,21 @@ Events are routed through Kafka topics.
 
 ### Event Versioning
 
-Event schemas may evolve over time. To support backward compatibility, each event includes a version field.
-
-Guidelines:
-
-*   Schema changes must be backward compatible whenever possible
-*   New fields should be optional
-*   Existing fields should not change semantics
-*   Consumers should tolerate unknown fields
+The existing wire version is `MAJOR.MINOR`. Topic plus major selects the schema;
+v1 schemas accept `1.x`. Current processed/anomaly/DLQ producers declare `1.0`
+independently of the input minor version; replay preserves the raw event version.
+Historical DLQ wrappers without a version are implicitly `1.0`.
 
 ### Schema Evolution Strategy
 
-Future improvements may include:
-
-*   JSON Schema validation
-*   Schema Registry integration
-*   Avro or Protobuf event serialization
-
-For the MVP, events will use JSON encoding.
+CI compares schemas against the PR base or previous push commit. Optional field
+additions and annotation edits pass within a major. Existing field/constraint
+changes require a new major schema while retaining prior schemas and fixtures.
+Java consumers ignore unknown envelope and payload fields. Maven tests validate
+the schemas, producer output and consumer fixtures, including both DLQ producers.
+See [the evolution and retirement process](../../contracts/README.md#evolution-and-deprecation-process)
+and [ADR 0007](../decisions/0007-json-event-contracts.md). No registry deployment or
+Avro/Protobuf migration is included.
 
 ### Event Validation
 
@@ -208,7 +232,12 @@ Events received by the ingestion service must pass basic validation checks:
 
 Metric-specific bounds are handled by the telemetry processor anomaly detection rules rather than by the ingestion API.
 
-Invalid HTTP ingestion requests are rejected by the ingestion service validation layer. Events that fail asynchronous processing are routed to the dead-letter topic (`telemetry.events.dlq`) as `telemetry.deadletter` events, which the telemetry processor can replay back into the pipeline via a management endpoint.
+Invalid HTTP ingestion requests, unsupported raw event types and unsupported
+major versions return 400 through Bean Validation. JSON Schema conformance is
+enforced in build-time contract tests; a runtime schema validator is not added to
+Kafka listeners. Processing failures use the shared DLQ wrapper, which the
+processor can selectively replay via its existing management endpoint. Historical
+records and replay sources are not rewritten.
 
 ## Summary
 

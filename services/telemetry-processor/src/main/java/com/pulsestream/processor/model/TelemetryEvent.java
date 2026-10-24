@@ -1,8 +1,11 @@
 package com.pulsestream.processor.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import com.fasterxml.jackson.annotation.JsonFormat;
 import java.time.Instant;
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record TelemetryEvent(
         String eventId,
         String tenantId,

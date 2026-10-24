@@ -1,6 +1,7 @@
 package com.pulsestream.ingestion.service;
 
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.pulsestream.ingestion.config.PulsestreamKafkaProperties;
 import com.pulsestream.ingestion.exception.TelemetryPublishingException;
 import com.pulsestream.ingestion.model.DeadLetterEvent;
@@ -97,7 +98,7 @@ public class KafkaProducerService {
         // Render the DLQ value up-front as a String using logic that is independent of the
         // raw-topic JSON path. Even when the raw publish failed because the event could not
         // be serialized, the original payload and failure metadata are still preserved here
-        // (falling back to the envelope's text form if needed).
+        // (using an independent JSON mapper if the configured mapper fails).
         String dlqValue = renderDeadLetterValue(deadLetterEvent);
 
         try {
@@ -123,19 +124,19 @@ public class KafkaProducerService {
     /**
      * Produces the string value published to the DLQ. Preferring JSON keeps the DLQ
      * record consistent with the raw topic, but because a raw-topic serialization
-     * failure would recur here, any serialization error falls back to the envelope's
-     * text representation so the original payload and metadata are never silently dropped.
+     * failure could recur here, serialization errors use an independent JSON mapper
+     * so the shared DLQ contract and replayable original event are preserved.
      */
     private String renderDeadLetterValue(DeadLetterEvent deadLetterEvent) {
         try {
             return objectMapper.writeValueAsString(deadLetterEvent);
         } catch (Exception ex) {
             log.warn(
-                    "Falling back to non-JSON DLQ representation for eventId={} due to serialization failure",
+                    "Using independent JSON mapper for DLQ eventId={} due to serialization failure",
                     deadLetterEvent.event().eventId(),
                     ex
             );
-            return String.valueOf(deadLetterEvent);
+            return JsonMapper.builder().build().writeValueAsString(deadLetterEvent);
         }
     }
 

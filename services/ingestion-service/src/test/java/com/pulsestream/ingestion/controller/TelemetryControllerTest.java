@@ -45,6 +45,33 @@ class TelemetryControllerTest {
     private MockMvc mockMvc;
 
     @Test
+    void shouldAcceptCompatibleMinorVersionsWithUnknownOptionalFields() throws Exception {
+        String fixture;
+        try (var input = getClass().getResourceAsStream("/contracts/fixtures/raw-v1-extensions.json")) {
+            fixture = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        TelemetryEvent event = tools.jackson.databind.json.JsonMapper.builder().build().readValue(fixture, TelemetryEvent.class);
+        when(telemetryEventMapper.toModel(any(TelemetryIngestionRequestDto.class))).thenReturn(event);
+        mockMvc.perform(post("/api/v1/events").contentType(MediaType.APPLICATION_JSON).content(fixture))
+                .andExpect(status().isAccepted());
+        verify(kafkaProducerService).publishTelemetryEvent(event);
+    }
+
+    @Test
+    void shouldRejectUnsupportedContractVersionOrEventTypeBeforePublishing() throws Exception {
+        String fixture;
+        try (var input = getClass().getResourceAsStream("/contracts/fixtures/raw-v1.json")) {
+            fixture = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        for (String body : new String[] {fixture.replace("1.0", "2.0"),
+                fixture.replace("telemetry.reading", "telemetry.processed")}) {
+            mockMvc.perform(post("/api/v1/events").contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(telemetryEventMapper, kafkaProducerService);
+    }
+
+    @Test
     @DisplayName("should reject invalid telemetry request when required field is missing")
     void shouldRejectInvalidTelemetryRequestWhenEventIdMissing() throws Exception {
         String requestBody = """

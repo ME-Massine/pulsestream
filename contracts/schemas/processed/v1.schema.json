@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pulsestream.dev/contracts/processed/v1.schema.json",
+  "title": "PulseStream processed event v1",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "tenantId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "eventType": {
+      "const": "telemetry.processed"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "const": "telemetry-processor"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "deviceType": {
+          "type": ["string", "null"]
+        },
+        "metric": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": ["string", "null"]
+        },
+        "location": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": [
+        "deviceId",
+        "metric",
+        "value"
+      ],
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "eventId",
+    "tenantId",
+    "eventType",
+    "timestamp",
+    "source",
+    "version",
+    "payload"
+  ],
+  "additionalProperties": true
+}
