@@ -2,8 +2,8 @@
 
 The telemetry processor owns the `platform` schema through Flyway SQL migrations
 packaged in `services/telemetry-processor/src/main/resources/db/migration`.
-This implements #265. Query endpoints (#266) and application anomaly persistence
-(#267) remain separate work.
+The migration foundation implements #265. Processed telemetry queries (#266)
+and anomaly persistence/queries (#267) use this processor-owned schema.
 
 Flyway keeps PostgreSQL DDL as ordered SQL files, integrates with the existing
 Spring Boot startup lifecycle, and validates applied migration checksums. The
@@ -23,8 +23,14 @@ error fails startup; disabling database health checks does not bypass migration.
 column types, lengths, numeric precision, timestamp defaults, primary and unique
 constraints, and six lookup indexes for `platform.processed_telemetry` and
 `platform.anomalies`. Hibernate remains `ddl-auto: none` and never changes tables.
-The anomaly table is provisioned, but application anomaly persistence is not
-implemented by this change.
+`V2__persist_anomaly_metadata.sql` adds JSONB reasons, detection time, optional
+device metadata and a tenant/time/ID index. It preserves legacy anomaly rows,
+IDs, thresholds and type/severity labels, setting their detection time to the
+original ingestion time and reasons to an empty array. Missing-reading fields
+(device, metric, value) and threshold become nullable, matching existing detector
+results without inventing values. The original V1 checksum is unchanged.
+See [the anomaly contract](../api/anomalies.md) for duplicate/replay semantics,
+metrics, grants, migration lock effects and rollback considerations.
 
 Flyway creates its own `pulsestream_migrations` schema and records successful
 versions and checksums in `pulsestream_migrations.flyway_schema_history`.
@@ -150,7 +156,8 @@ isolated from production migration SQL.
 
 Container image validation also provisions and removes a disposable PostgreSQL
 16 container and its anonymous data volume, and verifies that the exact processor
-image records successful V1.
+image records successful V1 and V2. Query image validation prepares both migrations
+before startup; query-service itself never owns migrations.
 It does not use a developer's persisted database.
 
 References: [Spring Boot database initialization](https://docs.spring.io/spring-boot/how-to/data-initialization.html),

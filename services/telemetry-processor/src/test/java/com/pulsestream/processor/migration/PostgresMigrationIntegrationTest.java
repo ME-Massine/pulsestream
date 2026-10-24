@@ -58,7 +58,7 @@ class PostgresMigrationIntegrationTest {
     void emptyDatabaseStartsProcessorAndPersistsUsingTheMigratedContract() {
         application.run(context -> {
             assertThat(context).hasNotFailed();
-            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("1");
+            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("2");
             ProcessedTelemetryEntity saved = context.getBean(ProcessedTelemetryRepository.class).saveAndFlush(event("fresh"));
             assertThat(saved.getId()).isEqualTo(1L);
             assertThat(jdbc.queryForObject("SELECT value FROM platform.processed_telemetry", BigDecimal.class))
@@ -67,7 +67,7 @@ class PostgresMigrationIntegrationTest {
             assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class))
                     .isEqualByComparingTo("40.0000");
             assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_indexes WHERE schemaname = 'platform'", Integer.class))
-                    .isEqualTo(10); // Two primary keys, two unique constraints, six lookup indexes.
+                    .isEqualTo(11); // Two primary keys, two unique constraints, seven lookup indexes.
         });
     }
 
@@ -173,7 +173,7 @@ class PostgresMigrationIntegrationTest {
         application.withPropertyValues("spring.flyway.locations=classpath:db/migration,classpath:db/forward")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
-                    assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("2");
+                    assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("3");
                     assertThat(context.getBean(ProcessedTelemetryRepository.class).findByEventId("before-upgrade")).isPresent();
                     assertThat(jdbc.queryForObject("SELECT quality FROM platform.processed_telemetry", String.class)).isEqualTo("unknown");
                 });
@@ -193,7 +193,7 @@ class PostgresMigrationIntegrationTest {
             var first = executor.submit(migrate);
             var second = executor.submit(migrate);
             start.countDown();
-            assertThat(first.get(30, TimeUnit.SECONDS) + second.get(30, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(first.get(30, TimeUnit.SECONDS) + second.get(30, TimeUnit.SECONDS)).isEqualTo(2);
             application.run(context -> assertThat(context).hasNotFailed());
         } finally {
             executor.shutdownNow();
@@ -211,6 +211,21 @@ class PostgresMigrationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT to_regclass('platform.failed_migration')", String.class)).isNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomalies", Integer.class)).isEqualTo(1);
         application.run(context -> assertThat(context).hasNotFailed());
+    }
+
+    @Test
+    void upgradesAnAlreadyVersionedV1WithoutLosingLegacyAnomalyMetadata() {
+        Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations")
+                .target("1").load().migrate();
+        insertAnomaly();
+        application.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("2");
+            assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class)).isEqualByComparingTo("40");
+            assertThat(jdbc.queryForObject("SELECT anomaly_type FROM platform.anomalies", String.class)).isEqualTo("threshold");
+            assertThat(jdbc.queryForObject("SELECT reasons::text FROM platform.anomalies", String.class)).isEqualTo("[]");
+            assertThat(jdbc.queryForObject("SELECT detected_at = ingested_at FROM platform.anomalies", Boolean.class)).isTrue();
+        });
     }
 
     private void legacySchema() throws Exception {

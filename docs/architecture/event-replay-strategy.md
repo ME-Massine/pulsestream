@@ -115,8 +115,7 @@ distinct DLQ failure classes:
   a `processed_telemetry` row for that `event_id` **already exists**, even though the event landed in
   the DLQ.
 
-Because the replay path cannot tell these two apart up front — and the anomaly path
-(`AnomalyProcessingService`) has no persistence at all — replay must **not** assume a plain insert for
+Because the replay path cannot tell these two apart up front, replay must **not** assume a plain insert for
 DLQ-sourced events. Instead, **both DLQ-sourced and raw-topic replay use the same persistence
 contract: upsert by `event_id`** (insert-or-replace) rather than the ordinary redelivery
 skip-on-duplicate no-op. This guarantees a replay supersedes any prior row if one exists and creates
@@ -128,33 +127,35 @@ original one, re-triggering a replay upserts the same row again rather than crea
 — the persisted state converges to the latest replay's result instead of accumulating duplicates.
 
 **Limitation: convergence holds only when classification does not cross the normal/anomaly boundary.**
-The processor persists a `processed_telemetry` row only for **normal** events;
-`AnomalyProcessingService` publishes to `telemetry.events.anomalies` and writes **no** row. So the
-upsert-by-`event_id` convergence above is complete only for normal→normal replays. The boundary cases
-are *not* reconciled by upsert alone:
+The processor persists normal events in `processed_telemetry` and anomalies in
+`anomalies` before publishing to the corresponding Kafka topic. Since #267,
+anomaly→anomaly replays atomically replace the same tenant's projection by event
+ID; ordinary duplicates keep the first row. The row ID and first ingestion time
+stay stable. See [the anomaly persistence contract](../api/anomalies.md). The
+boundary cases are not reconciled by upsert alone:
 
 - **Normal → anomaly on replay:** the new run takes the anomaly branch and never touches
   `processed_telemetry`, so the original (now-incorrect) normal row is **left behind** — upsert never
   fires because nothing writes the table.
-- **Anomaly → normal on replay:** the new run inserts a normal row (none existed, since anomalies were
-  never persisted); the previously emitted anomaly message on `telemetry.events.anomalies` remains as
-  historical audit.
+- **Anomaly → normal on replay:** the new run inserts or updates a normal row,
+  leaving the existing anomaly projection and previously emitted anomaly message
+  unreconciled. Both query APIs can therefore expose contradictory classifications.
 
 Reconciling reclassification — i.e. **retracting, tombstoning, or versioning** the stale
 `processed_telemetry` row when an event flips normal→anomaly (and defining how consumers of the
 anomalies topic supersede an earlier classification) — is **not solved by this doc and is assigned to
-#126**. Until #126 defines it, this is a documented limitation: replay converges persisted state only
+#271**. Until #271 defines it, this is a documented limitation: replay converges persisted state only
 when the classification is unchanged.
 
 **Downstream idempotency is explicitly deferred, not solved here.** Reusing `eventId` as the Kafka
 message key preserves partition affinity but does **not** deduplicate messages: every replay execution
 emits a fresh message to `telemetry.events.processed` and, for anomalies,
-`telemetry.events.anomalies`. Consumers of those topics (today only `processed_telemetry` persistence;
-`query-service` is planned) therefore see the same `eventId` more than once and must define how they
-converge — e.g. upsert-by-`event_id` for the persistence consumer, and an equivalent contract for
-`query-service` when it is built. Establishing that consumer-side dedup contract is **out of scope for
-this strategy doc** and is tracked in the replay safeguards follow-up (#126); this document only
-guarantees replay does not *silently* duplicate persisted state via the upsert rule above.
+`telemetry.events.anomalies`. Downstream consumers can see the same `eventId`
+more than once and need a deduplication/replacement contract. The processor
+currently writes both PostgreSQL projections directly; query-service reads
+those tables and consumes no Kafka topic. Database commit and Kafka publication
+remain separate operations. Recoverable delivery consistency is tracked in
+#270; downstream reclassification/supersession is tracked in #271.
 
 ---
 
@@ -178,12 +179,12 @@ guarantees replay does not *silently* duplicate persisted state via the upsert r
 4. The resulting `TelemetryEvent` is published back to `telemetry.events.raw`.
 5. `telemetry-processor` consumes it through its **existing** subscription to `telemetry.events.raw` —
    no new topic subscription or listener is required, for either DLQ-sourced or raw-sourced replays.
-   `query-service` is listed as a **planned** consumer of `telemetry.events.processed` and
-   `telemetry.events.anomalies` (see [topics.md](./topics.md)); it does not consume from Kafka today,
-   so it is not part of the replay consumption path yet.
+   `query-service` reads both PostgreSQL projections directly and consumes no
+   Kafka topic. Replayed projection updates become visible through its APIs.
 6. Persistence upserts by `event_id` rather than skipping the duplicate, for **both** DLQ-sourced and
    raw-sourced replays (see [Replay Event Identity and Idempotency](#replay-event-identity-and-idempotency));
-   this persistence change is tracked as a follow-up implementation issue.
+   this is implemented for normal→normal and anomaly→anomaly paths. Transitions
+   between classifications remain #271.
 7. Each replay run is logged: source, selection criteria, record count, initiator, and timestamp — for audit and troubleshooting.
 
 ```mermaid

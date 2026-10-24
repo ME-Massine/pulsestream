@@ -12,7 +12,7 @@ import org.springframework.util.Assert;
 
 /**
  * Builds the enriched anomaly envelope from a raw telemetry event and its detection result, then
- * publishes it to the anomalies topic. Mirrors {@link TelemetryProcessingService} so the anomalous
+ * persists it before publishing to the anomalies topic. Mirrors {@link TelemetryProcessingService} so the anomalous
  * flow is kept clearly separate from the normal processed flow.
  */
 @Service
@@ -23,19 +23,25 @@ public class AnomalyProcessingService {
     private static final String DEFAULT_VERSION = "1.0";
 
     private final AnomalyTelemetryPublisher anomalyPublisher;
+    private final AnomalyPersistenceService persistenceService;
     private final Clock clock;
 
     @Autowired
-    public AnomalyProcessingService(AnomalyTelemetryPublisher anomalyPublisher) {
-        this(anomalyPublisher, Clock.systemUTC());
+    public AnomalyProcessingService(AnomalyTelemetryPublisher anomalyPublisher, AnomalyPersistenceService persistenceService) {
+        this(anomalyPublisher, persistenceService, Clock.systemUTC());
     }
 
-    AnomalyProcessingService(AnomalyTelemetryPublisher anomalyPublisher, Clock clock) {
+    AnomalyProcessingService(AnomalyTelemetryPublisher anomalyPublisher, AnomalyPersistenceService persistenceService, Clock clock) {
         this.anomalyPublisher = anomalyPublisher;
+        this.persistenceService = persistenceService;
         this.clock = clock;
     }
 
     public TelemetryAnomalyEvent process(TelemetryEvent rawEvent, TelemetryAnomalyResult anomalyResult) {
+        return process(rawEvent, anomalyResult, false);
+    }
+
+    public TelemetryAnomalyEvent process(TelemetryEvent rawEvent, TelemetryAnomalyResult anomalyResult, boolean replayed) {
         Assert.notNull(rawEvent, "rawEvent must not be null");
         Assert.notNull(rawEvent.payload(), "rawEvent payload must not be null");
         Assert.notNull(anomalyResult, "anomalyResult must not be null");
@@ -54,6 +60,7 @@ public class AnomalyProcessingService {
                 Instant.now(clock)
         );
 
+        persistenceService.persist(anomalyEvent, replayed);
         anomalyPublisher.publish(anomalyEvent);
         return anomalyEvent;
     }

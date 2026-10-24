@@ -175,6 +175,26 @@ class TelemetryEventConsumerTest {
         verifyNoInteractions(deadLetterPublisher);
     }
 
+    @Test
+    void anomalyPersistenceFailureRoutesOrdinaryDeliveryToDlqAndKeepsReplayAtItsOriginalDlqSource() {
+        var event = telemetryEvent();
+        var normalized = normalizedTelemetryEvent();
+        var result = TelemetryAnomalyResult.anomalous(normalized, AnomalySeverity.WARNING, List.of("threshold"));
+        var failure = new org.springframework.dao.DataAccessResourceFailureException("database unavailable");
+        when(normalizationService.normalize(event)).thenReturn(normalized);
+        when(anomalyDetectionService.detect(normalized)).thenReturn(result);
+        when(anomalyProcessingService.process(event, result)).thenThrow(failure);
+        consumer.consumeTelemetryEvent(event);
+        verify(deadLetterPublisher).publish(event, failure);
+        org.mockito.Mockito.reset(deadLetterPublisher);
+        when(anomalyProcessingService.process(event, result, true)).thenThrow(failure);
+        var record = new ConsumerRecord<String, TelemetryEvent>("raw", 0, 0, event.eventId(), event);
+        record.headers().add("pulsestream.replay", "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        consumer.consumeTelemetryRecord(record);
+        verify(anomalyProcessingService).process(event, result, true);
+        verifyNoInteractions(deadLetterPublisher, processingService);
+    }
+
     private TelemetryEvent telemetryEvent() {
         return new TelemetryEvent(
                 "evt-001",

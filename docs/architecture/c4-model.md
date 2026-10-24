@@ -19,7 +19,7 @@ The System Context view shows how PulseStream interacts with external users and 
 
 ## Description
 
-PulseStream is a cloud-native platform that ingests IoT telemetry events, processes them through a streaming backbone, detects anomalies, and persists processed telemetry. Processed telemetry query access is implemented (#266), with authenticated tenant integration pending.
+PulseStream is a cloud-native platform that ingests IoT telemetry events, processes them through a streaming backbone, detects anomalies, and persists processed telemetry and anomaly projections. Both query APIs are implemented (#266/#267), with authenticated tenant integration pending.
 
 External actors include:
 
@@ -175,7 +175,7 @@ Notes
 
 - The processor is the main data-processing engine of the platform.
 - Anomaly detection rules should be isolated and extensible.
-- Output flows are separated into processed, anomalous, and persistent paths. Anomaly persistence is planned but not implemented in application code yet.
+- Both normal and anomalous projections are persisted before Kafka publication. Anomaly persistence and tenant-scoped queries are implemented in #267; authenticated tenant integration and cross-classification replay consistency remain pending.
 
 ## Level 4 — Code View
 

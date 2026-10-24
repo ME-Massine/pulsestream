@@ -21,13 +21,14 @@ sequenceDiagram
     Processor->>Processor: Normalize reading
     Processor->>Processor: Apply anomaly detection
     alt Anomaly detected
+        Processor->>DB: Store anomaly projection by event ID
         Processor->>Anomalies: Publish telemetry.anomaly
     else Normal reading
         Processor->>DB: Store processed telemetry
         Processor->>Processed: Publish telemetry.processed
     end
-    Dashboard->>Query: GET /api/v1/telemetry with authenticated tenant principal
-    Query->>DB: Read processed telemetry for the authorized tenant
+    Dashboard->>Query: GET telemetry or anomalies with authenticated tenant principal
+    Query->>DB: Read the requested projection for the authorized tenant
     Query->>Dashboard: Return bounded page
 ```
 
@@ -38,4 +39,4 @@ sequenceDiagram
 *   The telemetry-processor applies anomaly detection rules asynchronously.
 *   Normal processed telemetry is stored in PostgreSQL.
 *   Events that fail processing are routed to `telemetry.events.dlq` and can be replayed back into the pipeline via a management endpoint on the telemetry processor.
-*   Anomaly events are currently published to Kafka only; anomaly persistence and queries remain Phase 7 work (#267). The [processed telemetry API](../api/processed-telemetry.md) is implemented (#266), with authenticated tenant integration pending.
+*   Anomalies are persisted before Kafka publication and can be queried through the [anomaly API](../api/anomalies.md) (#267). Both it and the [processed telemetry API](../api/processed-telemetry.md) (#266) require the pending authenticated tenant integration. Cross-classification replay consistency remains #271.

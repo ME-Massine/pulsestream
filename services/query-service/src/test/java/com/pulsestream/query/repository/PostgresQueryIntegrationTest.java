@@ -2,6 +2,8 @@ package com.pulsestream.query.repository;
 
 import com.pulsestream.query.service.ProcessedTelemetryService;
 import com.pulsestream.query.service.TelemetryQuery;
+import com.pulsestream.query.service.AnomalyService;
+import com.pulsestream.query.service.AnomalyQuery;
 import java.math.BigDecimal;
 import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,7 +44,7 @@ class PostgresQueryIntegrationTest {
         var jdbc = new JdbcTemplate(owner);
         jdbc.execute("CREATE ROLE query_reader LOGIN PASSWORD 'query-test-only'");
         jdbc.execute("GRANT USAGE ON SCHEMA platform TO query_reader");
-        jdbc.execute("GRANT SELECT ON platform.processed_telemetry TO query_reader");
+        jdbc.execute("GRANT SELECT ON platform.processed_telemetry, platform.anomalies TO query_reader");
         properties.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         properties.add("spring.datasource.username", () -> "query_reader");
         properties.add("spring.datasource.password", () -> "query-test-only");
@@ -50,6 +52,8 @@ class PostgresQueryIntegrationTest {
 
     @Autowired ProcessedTelemetryRepository repository;
     @Autowired ProcessedTelemetryService service;
+    @Autowired AnomalyService anomalies;
+    @Autowired AnomalyRepository anomalyRepository;
     @Autowired JdbcTemplate queryJdbc;
     @Autowired MockMvc mvc;
     private JdbcTemplate owner;
@@ -57,11 +61,15 @@ class PostgresQueryIntegrationTest {
     @BeforeEach
     void seed() {
         owner = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
-        owner.execute("TRUNCATE platform.processed_telemetry RESTART IDENTITY");
+        owner.execute("TRUNCATE platform.processed_telemetry, platform.anomalies RESTART IDENTITY");
         insert("a-old", "tenant-a", "sensor-1", TIME.minusSeconds(1));
         insert("a-first", "tenant-a", "sensor-1", TIME);
         insert("a-second", "tenant-a", "sensor-2", TIME);
         insert("b-secret", "tenant-b", "sensor-1", TIME.plusSeconds(1));
+        insertAnomaly("a-old", "tenant-a", "sensor-1", "WARNING", "temperature", TIME.minusSeconds(1));
+        insertAnomaly("a-first", "tenant-a", "sensor-1", "CRITICAL", "temperature", TIME);
+        insertAnomaly("a-second", "tenant-a", "sensor-2", "WARNING", "humidity", TIME);
+        insertAnomaly("b-secret", "tenant-b", "sensor-1", "CRITICAL", "temperature", TIME.plusSeconds(1));
     }
 
     @Test
@@ -136,18 +144,22 @@ class PostgresQueryIntegrationTest {
     }
 
     @Test
-    void databaseRoleCannotWriteCreateObjectsOrReadAnomalies() {
+    void databaseRoleCanReadBothProjectionsButCannotWriteCreateObjectsOrReadMigrationHistory() {
         assertThatThrownBy(() -> queryJdbc.update("DELETE FROM platform.processed_telemetry"))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThatThrownBy(() -> queryJdbc.execute("CREATE TABLE platform.forbidden (id int)"))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
-        assertThatThrownBy(() -> queryJdbc.queryForList("SELECT * FROM platform.anomalies"))
+        assertThat(queryJdbc.queryForList("SELECT * FROM platform.anomalies")).hasSize(4);
+        assertThatThrownBy(() -> queryJdbc.update("DELETE FROM platform.anomalies"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(() -> queryJdbc.queryForList("SELECT * FROM pulsestream_migrations.flyway_schema_history"))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
     }
 
     @Test
     void healthPolicyKeepsLivenessUpAndMakesReadinessAndQueriesFailWhenDatabaseIsUnavailable() throws Exception {
-        mvc.perform(get("/readyz")).andExpect(status().isOk());
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(15))
+                .untilAsserted(() -> mvc.perform(get("/readyz")).andExpect(status().isOk()));
         try {
             owner.execute("ALTER ROLE query_reader NOLOGIN");
             owner.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'query_reader'");
@@ -156,10 +168,107 @@ class PostgresQueryIntegrationTest {
             mvc.perform(get("/livez")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/telemetry").principal(() -> "tenant-a"))
                     .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.status").value(503));
+            mvc.perform(get("/api/v1/anomalies").principal(() -> "tenant-a"))
+                    .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.detail").value("Anomalies are temporarily unavailable."));
         } finally {
             owner.execute("ALTER ROLE query_reader LOGIN");
         }
-        mvc.perform(get("/readyz")).andExpect(status().isOk());
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(15))
+                .untilAsserted(() -> mvc.perform(get("/readyz")).andExpect(status().isOk()));
+    }
+
+    @Test
+    void anomalyFiltersCombineAndPreserveDecimalReasonsAndDetectionMetadata() {
+        var query = new AnomalyQuery(new TelemetryQuery("sensor-1", TIME, TIME.plusSeconds(1), 0, 50), "CRITICAL", "temperature");
+        var page = anomalies.query("tenant-a", query);
+        assertThat(page.content()).hasSize(1);
+        var row = page.content().get(0);
+        assertThat(row.eventId()).isEqualTo("a-first");
+        assertThat(row.tenantId()).isEqualTo("tenant-a");
+        assertThat(row.value()).isEqualByComparingTo("95.1234");
+        assertThat(row.threshold()).isNull();
+        assertThat(row.anomalyType()).isEqualTo("rule_violation");
+        assertThat(row.reasons()).containsExactly("threshold", "quote: \" and Unicode: é");
+        assertThat(row.detectedAt()).isEqualTo(TIME.plusSeconds(2));
+        assertThat(row.timestamp()).isEqualTo(TIME);
+        assertThat(row.deviceType()).isEqualTo("sensor");
+        assertThat(row.unit()).isEqualTo("C");
+        assertThat(row.location()).isEqualTo("room");
+        assertThat(row.ingestedAt()).isEqualTo(TIME.plusSeconds(3));
+    }
+
+    @Test
+    void anomalyPaginationBreaksTiesAndBoundsLookaheadAndEmptyPages() {
+        var first = anomalies.query("tenant-a", anomalyQuery(0, 1));
+        var second = anomalies.query("tenant-a", anomalyQuery(1, 1));
+        var last = anomalies.query("tenant-a", anomalyQuery(2, 1));
+        assertThat(first.content()).extracting("eventId").containsExactly("a-second");
+        assertThat(second.content()).extracting("eventId").containsExactly("a-first");
+        assertThat(last.content()).extracting("eventId").containsExactly("a-old");
+        assertThat(first.hasNext()).isTrue();
+        assertThat(last.hasNext()).isFalse();
+        assertThat(anomalies.query("tenant-a", anomalyQuery(10000, 100)).content()).isEmpty();
+        owner.execute("""
+                INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, device_id, metric, value, anomaly_type, severity)
+                SELECT 'bulk-' || n, 'tenant-c', now(), 'device', 'temperature', 95, 'rule_violation', 'WARNING'
+                FROM generate_series(1, 105) n
+                """);
+        assertThat(anomalyRepository.find("tenant-c", anomalyQuery(0, 100))).hasSize(101);
+        assertThat(anomalies.query("tenant-c", anomalyQuery(0, 100)).content()).hasSize(100);
+        assertThat(anomalies.query("tenant-c", anomalyQuery(0, 100)).hasNext()).isTrue();
+        assertThat(anomalies.query("tenant-c", anomalyQuery(1, 100)).content()).hasSize(5);
+    }
+
+    @Test
+    void independentAnomalyFiltersAndInjectionStringsCannotWidenScope() {
+        assertThat(anomalies.query("tenant-a", new AnomalyQuery(new TelemetryQuery(null, TIME, null, 0, 50), null, null)).content()).hasSize(2);
+        assertThat(anomalies.query("tenant-a", new AnomalyQuery(new TelemetryQuery(null, null, TIME, 0, 50), null, null)).content()).hasSize(1);
+        assertThat(anomalies.query("tenant-a", new AnomalyQuery(new TelemetryQuery(null, null, null, 0, 50), "WARNING", null)).content()).hasSize(2);
+        assertThat(anomalies.query("tenant-a", new AnomalyQuery(new TelemetryQuery(null, null, null, 0, 50), null, "humidity")).content()).hasSize(1);
+        assertThat(anomalies.query("tenant-a", new AnomalyQuery(new TelemetryQuery("sensor-1", null, null, 0, 50), null, null)).content()).hasSize(2);
+        String injection = "' OR 1=1 --";
+        assertThat(anomalies.query(injection, anomalyQuery(0, 50)).content()).isEmpty();
+        assertThat(anomalies.query("tenant-a", new AnomalyQuery(new TelemetryQuery(injection, null, null, 0, 50), null, null)).content()).isEmpty();
+        assertThat(anomalies.query("tenant-a", new AnomalyQuery(new TelemetryQuery(null, null, null, 0, 50), injection, null)).content()).isEmpty();
+        assertThat(anomalies.query("tenant-a", new AnomalyQuery(new TelemetryQuery(null, null, null, 0, 50), null, injection)).content()).isEmpty();
+    }
+
+    @Test
+    void anomalyApiEnforcesIdentityAndSerializesLegacyAndMissingFields() throws Exception {
+        mvc.perform(get("/api/v1/anomalies").principal(() -> "tenant-a").param("severity", "CRITICAL").param("metric", "temperature"))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.content.length()").value(1)).andExpect(jsonPath("$.content[0].eventId").value("a-first"))
+                .andExpect(jsonPath("$.content[0].reasons[0]").value("threshold"));
+        mvc.perform(get("/api/v1/anomalies").principal(() -> "tenant-a").param("tenantId", "tenant-b"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/anomalies").header("X-Tenant-Id", "tenant-a")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/anomalies").principal(() -> " ")).andExpect(status().isUnauthorized());
+        owner.update("""
+                INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, anomaly_type, severity)
+                VALUES ('missing', 'tenant-d', ?, 'rule_violation', 'CRITICAL')
+                """, java.sql.Timestamp.from(TIME));
+        var missing = anomalies.query("tenant-d", anomalyQuery(0, 50)).content().get(0);
+        assertThat(missing.value()).isNull();
+        assertThat(missing.deviceId()).isNull();
+        assertThat(missing.metric()).isNull();
+        assertThat(missing.reasons()).isEmpty();
+        owner.update("UPDATE platform.anomalies SET threshold = 80, anomaly_type = 'threshold', severity = 'high' WHERE event_id = 'missing'");
+        var legacy = anomalies.query("tenant-d", new AnomalyQuery(new TelemetryQuery(null, null, null, 0, 50), "high", null)).content().get(0);
+        assertThat(legacy.threshold()).isEqualByComparingTo("80");
+        assertThat(legacy.anomalyType()).isEqualTo("threshold");
+    }
+
+    private AnomalyQuery anomalyQuery(int page, int size) {
+        return new AnomalyQuery(new TelemetryQuery(null, null, null, page, size), null, null);
+    }
+
+    private void insertAnomaly(String event, String tenant, String device, String severity, String metric, Instant timestamp) {
+        owner.update("""
+                INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, device_id, device_type, metric,
+                    value, unit, location, anomaly_type, severity, reasons, detected_at, ingested_at)
+                VALUES (?, ?, ?, ?, 'sensor', ?, 95.1234, 'C', 'room', 'rule_violation', ?, CAST(? AS jsonb), ?, ?)
+                """, event, tenant, java.sql.Timestamp.from(timestamp), device, metric, severity,
+                "[\"threshold\",\"quote: \\\" and Unicode: é\"]", java.sql.Timestamp.from(TIME.plusSeconds(2)), java.sql.Timestamp.from(TIME.plusSeconds(3)));
     }
 
     private void insert(String event, String tenant, String device, Instant timestamp) {

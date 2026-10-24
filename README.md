@@ -5,7 +5,7 @@
 ![Last Commit](https://img.shields.io/github/last-commit/ME-Massine/pulsestream)
 ![Repo Size](https://img.shields.io/github/repo-size/ME-Massine/pulsestream)
 
-PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes. The query service implements a [tenant-scoped processed telemetry API](docs/api/processed-telemetry.md); successful calls require a Phase 7 authentication integration to supply the servlet principal. Anomaly persistence and queries, authentication integration, and simulator tooling remain gaps.
+PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry and anomalies, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes. The query service implements tenant-scoped [processed telemetry](docs/api/processed-telemetry.md) and [anomaly](docs/api/anomalies.md) APIs; successful calls require a Phase 7 authentication integration to supply the servlet principal. Authentication integration, cross-classification replay consistency and simulator tooling remain gaps.
 
 > **Project status.** **Phase 6 — Kubernetes Deployment** is implemented but awaiting live target-cluster validation. Phase 7 — Production Readiness and Platform Hardening begins only after that validation meets its entry criteria. The authoritative, up-to-date status is maintained in [PROJECT_STATE.md](./PROJECT_STATE.md).
 
@@ -54,7 +54,7 @@ flowchart LR
     M --> N
 ```
 
-The dead-letter topic (`telemetry.events.dlq`) captures failed events; a management endpoint on the telemetry processor replays them back into the pipeline. The `query-service` exposes `GET /api/v1/telemetry` with device/time filters and bounded pagination. It fails closed with 401 until the security boundary establishes an authenticated tenant principal.
+The dead-letter topic (`telemetry.events.dlq`) captures failed events; a management endpoint on the telemetry processor replays them back into the pipeline. The `query-service` exposes `GET /api/v1/telemetry` and `GET /api/v1/anomalies` with filters and bounded pagination. Both fail closed with 401 until the security boundary establishes an authenticated tenant principal.
 
 Comprehensive documentation regarding the system's architecture and visual representations can be found in the following directories:
 *   [Architecture Documentation](./docs/architecture/)
@@ -118,7 +118,7 @@ observability/
 services/
 ├─ ingestion-service/     # REST ingest gateway
 ├─ telemetry-processor/   # stream processor, anomaly detection, DLQ + replay
-└─ query-service/         # processed telemetry query API
+└─ query-service/         # processed telemetry and anomaly query APIs
 ```
 
 ---
