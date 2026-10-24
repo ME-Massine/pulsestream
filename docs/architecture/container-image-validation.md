@@ -20,9 +20,11 @@ Out of scope: registry publishing and Kubernetes deployment.
 For each service the validation:
 
 1. Builds the image locally with `docker build`.
-2. Runs the container on the selected Docker network. Processor validation
-   provisions a disposable PostgreSQL 16 container on that network, including
+2. Runs the container on the selected Docker network. Processor and query validation
+   provision a disposable PostgreSQL 16 container on that network, including
    when `-Network bridge` is used in CI.
+   Query validation prepares its database with the canonical processor migration
+   before startup; the query image itself contains no migration runner.
 3. Polls `/actuator/health` until it reports `UP` (readiness confirmation).
 4. Verifies successful migration V1 for the processor and tears down the service
    and disposable database containers, including the database's anonymous data
@@ -82,20 +84,26 @@ and fails, so the startup error is visible.
 
 ## Manual equivalent (single service)
 
-The script wraps these steps; run them directly to validate one image by hand:
+For a standalone query image run, initialize PostgreSQL through the processor
+first and export `PULSESTREAM_POSTGRES_URL`, `PULSESTREAM_POSTGRES_USERNAME` and
+`PULSESTREAM_POSTGRES_PASSWORD` with a read-only query login. The URL must be
+reachable from the container (use `host.docker.internal` for host PostgreSQL).
+The scripted validator provisions its own disposable database instead.
 
 ```powershell
 # 1. Build
 docker build -t pulsestream/query-service:local services/query-service
 
 # 2. Run on the platform network, publishing the health port
-#    (host port 19082 matches what validate-container-images.ps1 uses)
+#    (host port 19084 matches what validate-container-images.ps1 uses)
 docker run -d --name pulsestream-validate-query-service `
   --network pulsestream-local_pulsestream-net `
-  -p 19082:8083 pulsestream/query-service:local
+  -e PULSESTREAM_POSTGRES_URL -e PULSESTREAM_POSTGRES_USERNAME `
+  -e PULSESTREAM_POSTGRES_PASSWORD `
+  -p 19084:8083 pulsestream/query-service:local
 
 # 3. Verify health
-curl http://localhost:19082/actuator/health   # expect {"status":"UP"}
+curl http://localhost:19084/actuator/health   # expect {"status":"UP"}
 
 # 4. Tear down
 docker rm -f pulsestream-validate-query-service

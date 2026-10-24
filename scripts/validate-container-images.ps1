@@ -295,7 +295,7 @@ try {
             Build-ServiceImage $service
         }
 
-        if ($service -eq "telemetry-processor") {
+        if ($service -in @("telemetry-processor", "query-service")) {
             # Use a disposable real database on the selected network, including the
             # default Docker bridge used by CI. No host port or existing data volume
             # is needed. Migrations remain enabled so image validation exercises V1.
@@ -326,6 +326,18 @@ try {
             $serviceConfig[$service].Env.PULSESTREAM_POSTGRES_URL = "jdbc:postgresql://${databaseAddress}:5432/pulsestream"
             $serviceConfig[$service].Env.PULSESTREAM_POSTGRES_USERNAME = "pulsestream"
             $serviceConfig[$service].Env.PULSESTREAM_POSTGRES_PASSWORD = $databasePassword
+            if ($service -eq "query-service") {
+                # Query images never own migrations. Prepare the disposable database
+                # with the canonical processor SQL before checking query readiness.
+                $migration = Join-Path $repoRoot "services/telemetry-processor/src/main/resources/db/migration/V1__create_platform_tables.sql"
+                $copyArgs = @("cp", $migration, "${validationDatabase}:/tmp/platform.sql")
+                Invoke-Docker @copyArgs | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Failed to copy the platform migration." }
+                $schemaArgs = @("exec", $validationDatabase, "psql", "-v", "ON_ERROR_STOP=1",
+                    "-U", "pulsestream", "-d", "pulsestream", "-f", "/tmp/platform.sql")
+                Invoke-Docker @schemaArgs | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Failed to initialize the query validation database." }
+            }
         }
 
         Test-ServiceContainer $service
@@ -337,6 +349,8 @@ try {
                 -Condition ($LASTEXITCODE -eq 0 -and $migrationCount -eq "1") `
                 -SuccessMessage "Processor image applied the initial PostgreSQL migration" `
                 -FailureMessage "Processor image did not record successful schema migration V1."
+        }
+        if ($null -ne $validationDatabase) {
             Invoke-Docker rm -fv $validationDatabase | Out-Null
             $validationDatabase = $null
         }

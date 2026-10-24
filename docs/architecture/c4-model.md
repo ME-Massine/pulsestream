@@ -19,7 +19,7 @@ The System Context view shows how PulseStream interacts with external users and 
 
 ## Description
 
-PulseStream is a cloud-native platform that ingests IoT telemetry events, processes them through a streaming backbone, detects anomalies, and persists processed telemetry. Query access for downstream clients is planned.
+PulseStream is a cloud-native platform that ingests IoT telemetry events, processes them through a streaming backbone, detects anomalies, and persists processed telemetry. Processed telemetry query access is implemented (#266), with authenticated tenant integration pending.
 
 External actors include:
 
@@ -53,7 +53,7 @@ The Container view shows the major deployable/runtime building blocks of the pla
 
 Description
 
-PulseStream is composed of services and infrastructure that work together to ingest, process, and store telemetry data. Distributed tracing is implemented; the query container exists as a scaffold whose APIs are Phase 7 work.
+PulseStream is composed of services and infrastructure that work together to ingest, process, store and query telemetry data. Distributed tracing and processed telemetry reads are implemented. Anomaly queries remain planned (#267).
 
 Container Diagram
 
@@ -64,8 +64,8 @@ flowchart LR
 
     C --> D[Telemetry Processor]
     D --> E[(PostgreSQL)]
-    E -.->|planned reads| F[Query Service scaffold]
-    F -.->|planned APIs| G[API Clients / Dashboards]
+    E -->|processed telemetry reads| F[Query Service]
+    F -->|tenant principal required| G[API Clients / Dashboards]
 
     D --> H[(telemetry.events.processed)]
     D --> I[(telemetry.events.anomalies)]
@@ -96,7 +96,7 @@ flowchart LR
 | Ingestion Service   | Accept telemetry events and publish them to Kafka          | Spring Boot                                |
 | Kafka Cluster       | Event streaming backbone                                   | Apache Kafka                               |
 | Telemetry Processor | Consume telemetry events, normalize data, detect anomalies, route to DLQ and replay | Spring Boot                       |
-| Query Service       | Deployable scaffold; APIs for processed telemetry and anomaly data are Phase 7 work | Spring Boot                       |
+| Query Service       | Read-only processed telemetry API; authenticated tenant integration pending | Spring Boot                       |
 | PostgreSQL          | Persist processed telemetry records                        | PostgreSQL                                 |
 | Observability Stack | Metrics, version-controlled dashboards, and distributed tracing | Prometheus, Grafana, OpenTelemetry, Jaeger |
 | Device Simulator    | Planned synthetic telemetry traffic generator              | Spring Boot or lightweight simulator       |

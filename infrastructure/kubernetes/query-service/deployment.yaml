@@ -54,11 +54,12 @@ spec:
             - name: http
               containerPort: 8083
           # Runtime configuration is externalized (#136): non-sensitive values
-          # come from the ConfigMap (configmap.yaml). query-service reads no
-          # credentials today, so there is no companion Secret to reference.
+          # come from the ConfigMap; database credentials come from the Secret.
           envFrom:
             - configMapRef:
                 name: query-service-config
+            - secretRef:
+                name: query-service-secret
           resources:
             requests:
               cpu: 250m
@@ -68,8 +69,7 @@ spec:
               memory: 1Gi
           # Spring Boot Actuator Kubernetes probe groups, mirrored to /readyz and
           # /livez on the main port via management.endpoint.health.probes in
-          # application.yml. Readiness reflects ReadinessState so the pod only
-          # takes traffic once the context is ready; liveness reflects only
+          # application.yml. Readiness includes database availability; liveness reflects only
           # LivenessState, so a failing dependency does not trigger restart loops.
           readinessProbe:
             httpGet:

@@ -52,7 +52,10 @@ Normal processed telemetry readings are stored in PostgreSQL for historical quer
 
 ### Query APIs
 
-Dedicated query APIs are planned (Phase 7). A deployable `services/query-service` scaffold exists, but its REST endpoints and data access are not yet implemented.
+The query service implements a [processed telemetry API](../api/processed-telemetry.md)
+with tenant scoping, device/time filters and bounded pagination (#266). Successful
+calls require the Phase 7 authenticated servlet-principal integration. Anomaly
+queries remain planned (#267).
 
 ### Observability
 
@@ -71,7 +74,7 @@ The platform is composed of several distributed components that communicate thro
 | Ingestion Service | Accepts telemetry events from devices and publishes them to Kafka |
 | Kafka Cluster | Central streaming backbone responsible for event transport and buffering |
 | Telemetry Processor | Consumes telemetry streams, performs anomaly detection, and handles dead-letter routing and replay |
-| Query Service | Deployable scaffold; query APIs for processed telemetry and anomaly data are Phase 7 work |
+| Query Service | Read-only processed telemetry API; authenticated tenant integration and anomaly queries remain pending |
 | PostgreSQL | Stores processed telemetry data; processor Flyway migrations create both tables (application-level anomaly persistence is Phase 7 work) |
 | Observability Stack | Prometheus, Grafana dashboards, and OpenTelemetry tracing (Jaeger locally, OpenTelemetry Collector in Kubernetes) |
 | Device Simulator | Planned generator for synthetic telemetry |
@@ -97,7 +100,7 @@ Kafka Topics:
 ↓
 PostgreSQL
 ↓
-Query Service (scaffold; planned APIs)
+Query Service (processed telemetry reads; tenant principal required)
 ↓
 Dashboard / API Clients
 
@@ -163,7 +166,7 @@ The initial version of PulseStream focuses on a minimal but complete pipeline:
 Current gaps (addressed in Phase 7) include:
 
 - anomaly persistence from application code
-- query API for telemetry analytics (the `query-service` is a scaffold)
+- anomaly queries and telemetry aggregations (processed telemetry reads are implemented)
 - simulated IoT devices
 
 Dead-letter routing and event replay are implemented. Future iterations may expand into advanced analytics, device management, and large-scale telemetry simulations.

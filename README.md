@@ -5,7 +5,7 @@
 ![Last Commit](https://img.shields.io/github/last-commit/ME-Massine/pulsestream)
 ![Repo Size](https://img.shields.io/github/repo-size/ME-Massine/pulsestream)
 
-PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes. A `query-service` scaffold exists; query APIs, anomaly persistence, and simulator tooling are the primary remaining gaps addressed in Phase 7.
+PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes. The query service implements a [tenant-scoped processed telemetry API](docs/api/processed-telemetry.md); successful calls require a Phase 7 authentication integration to supply the servlet principal. Anomaly persistence and queries, authentication integration, and simulator tooling remain gaps.
 
 > **Project status.** **Phase 6 — Kubernetes Deployment** is implemented but awaiting live target-cluster validation. Phase 7 — Production Readiness and Platform Hardening begins only after that validation meets its entry criteria. The authoritative, up-to-date status is maintained in [PROJECT_STATE.md](./PROJECT_STATE.md).
 
@@ -29,8 +29,8 @@ flowchart LR
 
     C --> D[Telemetry Processor]
     D --> E[(PostgreSQL)]
-    E -.->|planned reads| F[Query Service scaffold]
-    F -.->|planned APIs| G[API Clients / Dashboards]
+    E -->|processed telemetry reads| F[Query Service]
+    F -->|tenant principal required| G[API Clients / Dashboards]
 
     D --> H[(telemetry.events.processed)]
     D --> I[(telemetry.events.anomalies)]
@@ -54,7 +54,7 @@ flowchart LR
     M --> N
 ```
 
-The dead-letter topic (`telemetry.events.dlq`) captures failed events; a management endpoint on the telemetry processor replays them back into the pipeline. The `query-service` is a deployable scaffold — its REST query logic is Phase 7 work.
+The dead-letter topic (`telemetry.events.dlq`) captures failed events; a management endpoint on the telemetry processor replays them back into the pipeline. The `query-service` exposes `GET /api/v1/telemetry` with device/time filters and bounded pagination. It fails closed with 401 until the security boundary establishes an authenticated tenant principal.
 
 Comprehensive documentation regarding the system's architecture and visual representations can be found in the following directories:
 *   [Architecture Documentation](./docs/architecture/)
@@ -118,7 +118,7 @@ observability/
 services/
 ├─ ingestion-service/     # REST ingest gateway
 ├─ telemetry-processor/   # stream processor, anomaly detection, DLQ + replay
-└─ query-service/         # deployable scaffold (query APIs are Phase 7 work)
+└─ query-service/         # processed telemetry query API
 ```
 
 ---

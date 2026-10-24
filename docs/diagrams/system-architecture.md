@@ -15,8 +15,8 @@ flowchart LR
     T4 -->|operator-triggered replay listener| C
 
     C --> D[PostgreSQL]
-    D -.->|planned reads| E[Query Service scaffold]
-    E -.->|planned APIs| F[Dashboard / API Clients]
+    D -->|processed telemetry reads| E[Query Service]
+    E -->|tenant principal required| F[Dashboard / API Clients]
 
     subgraph Observability
         P[Prometheus]
@@ -45,6 +45,6 @@ flowchart LR
 
 *   `telemetry.events.dlq` stores failed events; the telemetry processor can replay them back into the pipeline via a management endpoint.
 
-*   The `query-service` exists as a deployable scaffold; its REST query APIs are Phase 7 work.
+*   The `query-service` implements [processed telemetry reads](../api/processed-telemetry.md) (#266); authenticated tenant integration and anomaly queries remain pending.
 
 *   OpenTelemetry instrumentation exports OTLP traces to Jaeger (local) or an OpenTelemetry Collector (Kubernetes).

@@ -44,7 +44,8 @@ wired into the service ConfigMaps:
 - **Kafka** — `pulsestream-kafka-bootstrap:9092`, the bootstrap Service the
   Strimzi operator generates from the `Kafka` resource named `pulsestream`
   (`kafka/kafka-cluster.yaml`). Renaming that resource renames this Service.
-- **PostgreSQL** — `postgres:5432` (`telemetry-processor/configmap.yaml`). The
+- **PostgreSQL** — `postgres:5432` (processor and query ConfigMaps). Query uses
+  a separate read-only Secret and includes database connectivity in readiness. The
   DNS name is fixed here; provisioning the Postgres workload/Service itself is
   tracked separately.
 

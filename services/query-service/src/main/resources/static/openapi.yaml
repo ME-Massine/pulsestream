@@ -1,0 +1,172 @@
+openapi: 3.1.0
+info:
+  title: PulseStream processed telemetry query API
+  version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
+  description: >-
+    Internal read API. The Phase 7 authentication integration must supply an
+    authenticated servlet Principal whose name is the authorized tenant ID.
+    No authentication provider is implemented by this service. Raw tenant
+    headers are ignored and tenant query parameters are rejected. Without the
+    integration the endpoint fails closed with 401. See docs/api/processed-telemetry.md.
+servers:
+  - url: /
+x-tenant-identity: authenticated servlet Principal.getName()
+paths:
+  /api/v1/telemetry:
+    get:
+      operationId: queryProcessedTelemetry
+      summary: Read processed telemetry for the authenticated tenant
+      description: >-
+        Filters are combined with AND. Only the five documented query parameters
+        are accepted, once each. Ordering is always timestamp DESC, id DESC.
+        Pagination is zero-based and returns a bounded slice without totals.
+        Pages do not share a database snapshot: new ingestion or replay updates
+        between requests may shift offsets. No anomaly records are returned.
+        Query responses and controlled errors carry Cache-Control no-store.
+      parameters:
+        - name: deviceId
+          in: query
+          description: Exact device identifier; must not be blank.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: from
+          in: query
+          description: Inclusive event timestamp lower bound, with an explicit offset; years 0001 through 9999.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Exclusive event timestamp upper bound; must be later than from when both are present.
+          schema:
+            type: string
+            format: date-time
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10000
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: A bounded page; an unmatched tenant, filter, or page returns empty content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TelemetryPage'
+        '400':
+          description: Invalid, repeated, or unknown parameters, including tenant overrides.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Authenticated tenant identity is absent, blank, or longer than 100 characters.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Database access is temporarily unavailable. No database details are returned.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  schemas:
+    TelemetryPage:
+      type: object
+      additionalProperties: false
+      required: [content, page, size, hasNext]
+      properties:
+        content:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ProcessedTelemetry'
+        page:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        hasNext:
+          type: boolean
+          description: At least one more matching record existed at query time.
+    ProcessedTelemetry:
+      type: object
+      additionalProperties: false
+      required: [id, eventId, tenantId, eventType, timestamp, source, deviceId, deviceType, metric, value, unit, location, ingestedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Unique database row identifier; breaks timestamp sorting ties.
+        eventId:
+          type: string
+          maxLength: 50
+        tenantId:
+          type: string
+          maxLength: 100
+        eventType:
+          type: string
+          maxLength: 50
+        timestamp:
+          type: string
+          format: date-time
+        source:
+          type: string
+          maxLength: 100
+        deviceId:
+          type: string
+          maxLength: 100
+        deviceType:
+          type: string
+          maxLength: 100
+        metric:
+          type: string
+          maxLength: 100
+        value:
+          type: number
+          multipleOf: 0.0001
+          description: PostgreSQL NUMERIC(18,4), serialized directly from BigDecimal.
+        unit:
+          type: string
+          maxLength: 20
+        location:
+          type: string
+          maxLength: 100
+        ingestedAt:
+          type: string
+          format: date-time
+    Problem:
+      type: object
+      required: [type, title, status, detail, instance]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference

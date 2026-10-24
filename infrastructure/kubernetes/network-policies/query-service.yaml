@@ -7,9 +7,8 @@
 # only ingestion-service), so its ingress is restricted to the platform
 # namespace, plus one narrow exception for the in-cluster Prometheus (#154),
 # which lives in the separate `monitoring` namespace and needs to reach
-# /actuator/prometheus on this same port to scrape it. It reads no datastore
-# today (configmap.yaml), so its only egress is DNS; Kafka and Postgres paths
-# stay denied until it gains a backend.
+# /actuator/prometheus on this same port to scrape it. Egress permits DNS and
+# same-namespace PostgreSQL for processed telemetry reads; Kafka stays denied.
 #
 # ENFORCEMENT DEPENDS ON THE CNI (kindnet / Docker Desktop do not enforce
 # NetworkPolicy; Calico / Cilium do). See README.md in this directory.
@@ -63,10 +62,7 @@ spec:
         - port: http
           protocol: TCP
   egress:
-    # DNS only. query-service consumes no Kafka or datasource configuration
-    # today (configmap.yaml), so those egress paths are intentionally denied.
-    # When it gains a backend (e.g. Postgres for processed-event reads), add the
-    # matching egress rule here alongside this DNS one.
+    # DNS resolution for the datasource endpoint.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -78,4 +74,11 @@ spec:
         - port: 53
           protocol: UDP
         - port: 53
+          protocol: TCP
+    # PostgreSQL is provisioned separately, as for telemetry-processor. Tighten
+    # the selector when provisioning establishes stable PostgreSQL pod labels.
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 5432
           protocol: TCP

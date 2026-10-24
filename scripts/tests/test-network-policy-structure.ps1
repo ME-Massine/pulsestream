@@ -1,28 +1,22 @@
 # Exercises validate-network-policies.ps1 against the committed manifests
-# without applying anything to a cluster. kubectl's client-side serializer
-# supplies the same JSON shape that `kubectl get -o json` returns, then a local
-# function serves that JSON to the validator.
+# without applying anything to a cluster. The shared YAML reader supplies the
+# object graph, then a local function serves its JSON to the validator.
 #
 #   powershell -File scripts\tests\test-network-policy-structure.ps1
 #   pwsh -File scripts/tests/test-network-policy-structure.ps1
-# @requires-kube-api: kubectl needs a reachable API server for discovery.
 [CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
-$kubectlExecutable = (Get-Command kubectl -CommandType Application -ErrorAction Stop |
-    Select-Object -First 1).Source
+Import-Module (Join-Path $PSScriptRoot "../lib/PulseStreamYaml.psm1") -Force
 $policyDirectory = Join-Path $PSScriptRoot "../../infrastructure/kubernetes/network-policies"
 $validator = Join-Path $PSScriptRoot "../validate-network-policies.ps1"
 $global:PulseStreamPolicyJson = @{}
 
 foreach ($name in @("ingestion-service", "telemetry-processor", "query-service")) {
     $manifest = Join-Path $policyDirectory "$name.yaml"
-    $json = & $kubectlExecutable create --dry-run=client --validate=false -o json -f $manifest 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "kubectl could not serialize '$manifest'. $(@($json) -join [Environment]::NewLine)"
-    }
-    $global:PulseStreamPolicyJson[$name] = @($json) -join [Environment]::NewLine
+    $policy = ConvertFrom-KubernetesYaml -Path $manifest
+    $global:PulseStreamPolicyJson[$name] = $policy | ConvertTo-Json -Depth 30
 }
 
 # Each negative case below mutates one policy. Keeping a copy of the originals
@@ -230,6 +224,38 @@ try {
         -ExpectedMessage "query-service allows egress to 4318" `
         -Description "an OTLP egress rule on query-service, which emits no spans"
 
+    Set-PolicyObject -Name "query-service" -Policy $originalQuery
+
+    # Query database access (#266) must be present and narrowly scoped.
+    $query = Get-PolicyObject -Name "query-service"
+    $query.spec.egress = @($query.spec.egress | Where-Object {
+        @($_.ports | Where-Object { "$($_.port)" -eq "5432" }).Count -eq 0
+    })
+    Set-PolicyObject -Name "query-service" -Policy $query
+    Assert-ValidatorRejects -ExpectedMessage "Postgres egress must be exactly" `
+        -Description "query-service without database access"
+    Set-PolicyObject -Name "query-service" -Policy $originalQuery
+
+    $query = Get-PolicyObject -Name "query-service"
+    $query.spec.egress = @($query.spec.egress) + [pscustomobject]@{
+        ports = @([pscustomobject]@{ port = 5432; protocol = "TCP" })
+    }
+    Set-PolicyObject -Name "query-service" -Policy $query
+    Assert-ValidatorRejects -ExpectedMessage "Postgres egress must be exactly" `
+        -Description "query-service with an additional unrestricted database rule"
+    Set-PolicyObject -Name "query-service" -Policy $originalQuery
+
+    $query = Get-PolicyObject -Name "query-service"
+    $databaseRule = @($query.spec.egress | Where-Object {
+        @($_.ports | Where-Object { "$($_.port)" -eq "5432" }).Count -eq 1
+    })[0]
+    $databaseRule.to = @([pscustomobject]@{
+        namespaceSelector = [pscustomobject]@{}
+        podSelector = [pscustomobject]@{}
+    })
+    Set-PolicyObject -Name "query-service" -Policy $query
+    Assert-ValidatorRejects -ExpectedMessage "Postgres egress must be exactly" `
+        -Description "query-service with cross-namespace database access"
     Set-PolicyObject -Name "query-service" -Policy $originalQuery
 
     # --- Prometheus ingress (#154) -----------------------------------------
