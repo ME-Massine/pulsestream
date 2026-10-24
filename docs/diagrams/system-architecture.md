@@ -45,6 +45,6 @@ flowchart LR
 
 *   `telemetry.events.dlq` stores failed events; the telemetry processor can replay them back into the pipeline via a management endpoint.
 
-*   The `query-service` implements [processed telemetry reads](../api/processed-telemetry.md) (#266); authenticated tenant integration and anomaly queries remain pending.
+*   The `query-service` implements [processed telemetry reads](../api/processed-telemetry.md) (#266) and [anomaly reads](../api/anomalies.md) (#267); authenticated tenant integration remains pending.
 
 *   OpenTelemetry instrumentation exports OTLP traces to Jaeger (local) or an OpenTelemetry Collector (Kubernetes).

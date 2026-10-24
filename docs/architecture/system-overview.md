@@ -44,7 +44,7 @@ The platform analyzes telemetry streams and currently detects abnormal device be
 
 Missing-device-heartbeat detection is planned.
 
-Detected anomalies are emitted as dedicated Kafka events. The database schema includes an anomalies table, but application-level anomaly persistence is not implemented yet.
+Detected anomalies are persisted in PostgreSQL before publication as dedicated Kafka events. Atomic event-ID conflict handling preserves ordinary duplicates and replaces same-tenant explicit replays. The [anomaly API](../api/anomalies.md) provides tenant-scoped history with device, severity, metric and time filters (#267).
 
 ### Data Persistence
 
@@ -74,8 +74,8 @@ The platform is composed of several distributed components that communicate thro
 | Ingestion Service | Accepts telemetry events from devices and publishes them to Kafka |
 | Kafka Cluster | Central streaming backbone responsible for event transport and buffering |
 | Telemetry Processor | Consumes telemetry streams, performs anomaly detection, and handles dead-letter routing and replay |
-| Query Service | Read-only processed telemetry API; authenticated tenant integration and anomaly queries remain pending |
-| PostgreSQL | Stores processed telemetry data; processor Flyway migrations create both tables (application-level anomaly persistence is Phase 7 work) |
+| Query Service | Read-only processed telemetry and anomaly APIs; authenticated tenant integration remains pending |
+| PostgreSQL | Stores processed telemetry and anomaly projections; processor-owned Flyway migrations and writes |
 | Observability Stack | Prometheus, Grafana dashboards, and OpenTelemetry tracing (Jaeger locally, OpenTelemetry Collector in Kubernetes) |
 | Device Simulator | Planned generator for synthetic telemetry |
 
@@ -165,8 +165,8 @@ The initial version of PulseStream focuses on a minimal but complete pipeline:
 
 Current gaps (addressed in Phase 7) include:
 
-- anomaly persistence from application code
-- anomaly queries and telemetry aggregations (processed telemetry reads are implemented)
+- authenticated tenant integration for processed telemetry and anomaly queries
+- telemetry aggregations and cross-classification replay consistency
 - simulated IoT devices
 
 Dead-letter routing and event replay are implemented. Future iterations may expand into advanced analytics, device management, and large-scale telemetry simulations.

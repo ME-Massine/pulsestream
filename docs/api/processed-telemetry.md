@@ -112,12 +112,13 @@ grant only the read privileges below (execute as the database owner):
 ```sql
 GRANT CONNECT ON DATABASE pulsestream TO pulsestream_query;
 GRANT USAGE ON SCHEMA platform TO pulsestream_query;
-GRANT SELECT ON platform.processed_telemetry TO pulsestream_query;
+GRANT SELECT ON platform.processed_telemetry, platform.anomalies TO pulsestream_query;
 ```
 
 The role must not own schemas/tables, inherit write-capable roles, or have
-superuser privileges. No anomaly, sequence, DDL, Flyway history or write grants
-are needed. Both the pool and service transactions request read-only connections;
+superuser privileges. The anomaly SELECT grant supports the
+[anomaly API](anomalies.md) added in #267. No sequence, DDL, Flyway history or write
+grants are needed. Both the pool and service transactions request read-only connections;
 database grants enforce the boundary independently.
 
 Set `PULSESTREAM_POSTGRES_URL` (default

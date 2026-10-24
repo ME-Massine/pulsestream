@@ -32,12 +32,15 @@ class AnomalyProcessingServiceTest {
     @Mock
     private AnomalyTelemetryPublisher anomalyPublisher;
 
+    @Mock
+    private AnomalyPersistenceService persistenceService;
+
     private final Clock clock = Clock.fixed(DETECTED_AT, ZoneOffset.UTC);
 
     @Test
     @DisplayName("should build enriched anomaly event with detection metadata and publish it")
     void shouldBuildEnrichedAnomalyEventAndPublish() {
-        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, clock);
+        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 " evt-001 ",
                 " factory-01 ",
@@ -66,6 +69,9 @@ class AnomalyProcessingServiceTest {
         verify(anomalyPublisher).publish(captor.capture());
 
         TelemetryAnomalyEvent publishedEvent = captor.getValue();
+        var order = org.mockito.Mockito.inOrder(persistenceService, anomalyPublisher);
+        order.verify(persistenceService).persist(publishedEvent, false);
+        order.verify(anomalyPublisher).publish(publishedEvent);
         assertThat(anomalyEvent).isEqualTo(publishedEvent);
         assertThat(publishedEvent.eventId()).isEqualTo("evt-001");
         assertThat(publishedEvent.tenantId()).isEqualTo("factory-01");
@@ -86,7 +92,7 @@ class AnomalyProcessingServiceTest {
     @Test
     @DisplayName("should reject a result that is not anomalous")
     void shouldRejectNonAnomalousResult() {
-        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, clock);
+        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
         TelemetryEvent rawEvent = rawEvent();
         TelemetryAnomalyResult normalResult = TelemetryAnomalyResult.normal(normalizedEvent());
 
@@ -100,7 +106,7 @@ class AnomalyProcessingServiceTest {
     @Test
     @DisplayName("should reject raw telemetry events without payload")
     void shouldRejectRawTelemetryEventsWithoutPayload() {
-        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, clock);
+        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 "evt-001",
                 "factory-01",
@@ -119,6 +125,29 @@ class AnomalyProcessingServiceTest {
                 .hasMessage("rawEvent payload must not be null");
 
         verifyNoInteractions(anomalyPublisher);
+    }
+
+    @Test
+    void replayReplacesProjectionAndPersistenceFailurePreventsPublish() {
+        var service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
+        var result = TelemetryAnomalyResult.anomalous(normalizedEvent(), AnomalySeverity.WARNING, List.of("reason"));
+        var event = service.process(rawEvent(), result, true);
+        verify(persistenceService).persist(event, true);
+        org.mockito.Mockito.reset(anomalyPublisher);
+        org.mockito.Mockito.doThrow(new IllegalStateException("database unavailable"))
+                .when(persistenceService).persist(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(false));
+        assertThatThrownBy(() -> service.process(rawEvent(), result)).isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(anomalyPublisher);
+    }
+
+    @Test
+    void missingTimestampUsesDetectionClock() {
+        var service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
+        var raw = rawEvent();
+        var event = service.process(new TelemetryEvent(raw.eventId(), raw.tenantId(), raw.eventType(), null,
+                raw.source(), raw.version(), raw.payload()),
+                TelemetryAnomalyResult.anomalous(normalizedEvent(), AnomalySeverity.CRITICAL, List.of("reason")));
+        assertThat(event.timestamp()).isEqualTo(DETECTED_AT);
     }
 
     private TelemetryEvent rawEvent() {

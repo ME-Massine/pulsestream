@@ -58,7 +58,7 @@ The authoritative, up-to-date status of the platform is tracked in [PROJECT_STAT
 
 **Status:** Complete
 
-**Outcome:** Normal telemetry events flow from API to Kafka to processor to PostgreSQL. Anomalous events are published to `telemetry.events.anomalies`. Application-level anomaly persistence remains deferred to Phase 7. Processed telemetry queries are implemented in #266, with authenticated tenant integration pending.
+**Outcome:** Normal telemetry events flow from API to Kafka to processor to PostgreSQL. Anomalous events are persisted before publication to `telemetry.events.anomalies` (#267). Processed telemetry and anomaly queries are implemented in #266/#267, with authenticated tenant integration pending.
 
 ---
 
@@ -131,7 +131,7 @@ Issue #30 was closed on 2026-08-13 without a completion comment. Its manifest-de
     [processor startup process](architecture/database-migrations.md), live cluster validation pending)
 *   Processed-telemetry query API (implemented in #266; authenticated principal
     integration and live validation pending; [contract](api/processed-telemetry.md))
-    and persisted, queryable anomaly projections (planned in #267)
+    and persisted, queryable anomaly projections (implemented in #267; authenticated tenant integration pending)
 *   Versioned event contracts with compatibility validation
 *   Deterministic anomaly detection under horizontal scaling
 *   Reliable PostgreSQL and Kafka delivery consistency, and correct replay reclassification

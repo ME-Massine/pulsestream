@@ -74,6 +74,12 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
 *   Telemetry normalization and anomaly detection (threshold breach and sudden-deviation rules).
 *   Processed event publishing to `telemetry.events.processed`.
 *   Anomaly event publishing to `telemetry.events.anomalies`.
+*   Durable anomaly projections and tenant-scoped anomaly queries (#267), with
+    atomic event-ID deduplication/replay updates, detection metadata, persistence
+    metrics, device/severity/metric/time filters and bounded deterministic pages.
+    See [the anomaly API and recovery contract](docs/api/anomalies.md). Authenticated
+    tenant integration and live validation remain pending; cross-classification
+    replay reconciliation remains #271.
 *   PostgreSQL persistence for normal processed telemetry in `platform.processed_telemetry`.
 *   Tenant-scoped processed telemetry query API (#266), with device/time filters,
     bounded pagination, deterministic ordering, OpenAPI documentation and required
@@ -146,9 +152,11 @@ normal or anomalous projection; and recovery, load, and durability tests pass wi
 
 The Phase 6 live-deployment evidence required to begin Phase 7 is not yet recorded. The following Phase 7 capabilities are also not yet implemented:
 
-*   Application-level persistence of detected anomalies (anomalies are currently published to `telemetry.events.anomalies` only) — issue #267.
-*   Anomaly query endpoints — issue #267. Processed telemetry query logic is implemented
-    in #266; the authenticated tenant principal integration and live rollout remain pending.
+*   Authenticated tenant principal integration and live rollout for the processed
+    telemetry (#266) and anomaly (#267) APIs remain pending. Both query paths are
+    implemented and fail closed without an authenticated tenant principal.
+*   Consistent PostgreSQL/Kafka delivery (#270) and cross-classification replay
+    reconciliation (#271) remain pending.
 *   Authenticated and encrypted external ingestion — issue #273.
 *   Secured Kafka client communication and production secret management — issue #275.
 *   Versioned event contracts with compatibility validation — issue #268.

@@ -2,7 +2,7 @@
 
 PulseStream is a cloud-native event processing platform designed to ingest, process, and analyze IoT telemetry data at scale.
 
-The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence and querying of normal processed telemetry records, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for the application services, Kafka, and observability components; PostgreSQL must currently be supplied separately. The [processed telemetry API](api/processed-telemetry.md) requires the Phase 7 authenticated tenant integration. Anomaly queries and application-level anomaly persistence remain gaps addressed in Phase 7.
+The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence and querying of processed telemetry and anomalies, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for the application services, Kafka, and observability components; PostgreSQL must currently be supplied separately. The [processed telemetry](api/processed-telemetry.md) and [anomaly](api/anomalies.md) APIs require the pending Phase 7 authenticated tenant integration. Cross-classification replay consistency remains planned in #271.
 
 The system is designed using an event-driven architecture built around Apache Kafka. The authoritative platform status is maintained in [PROJECT_STATE.md](../PROJECT_STATE.md).
 
@@ -90,7 +90,7 @@ These services read from Kafka topics and produce new events downstream.
 
 ### Storage Layer
 
-Normal processed telemetry records are stored in PostgreSQL. Processor-owned Flyway migrations define an anomalies table, but the current application code publishes anomaly events to Kafka and does not persist them yet.
+Processed telemetry and anomaly projections are stored in PostgreSQL before Kafka publication. Processor-owned Flyway migrations define both tables. Anomalies preserve detection reasons and metadata, deduplicate by event ID and update same-tenant explicit replays atomically (#267).
 
 The database supports:
 

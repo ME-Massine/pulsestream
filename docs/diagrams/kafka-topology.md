@@ -24,7 +24,7 @@ flowchart LR
 |----------------------|-----------------------------------------|-------------------------------------------|-----------------------------------|
 | `telemetry.events.raw`      | Ingestion Service                       | telemetry-processor                       | Raw incoming telemetry events     |
 | `telemetry.events.processed`| telemetry-processor                     | Future query / downstream consumers | Normalized and enriched telemetry data |
-| `telemetry.events.anomalies`| telemetry-processor                     | Future alerting / query consumers | Detected anomaly events           |
+| `telemetry.events.anomalies`| telemetry-processor                     | Future alerting consumers         | Detected anomaly events           |
 | `telemetry.events.dlq`| telemetry-processor | telemetry-processor replay listener / inspection | Invalid or failed events          |
 
 ### Notes

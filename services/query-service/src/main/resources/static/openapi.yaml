@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: PulseStream processed telemetry query API
+  title: PulseStream telemetry and anomaly query API
   version: 0.1.0
   license:
     name: MIT
@@ -85,6 +85,50 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/v1/anomalies:
+    get:
+      operationId: queryAnomalies
+      summary: Read detected anomalies for the authenticated tenant
+      description: >-
+        All filters are combined with AND. Tenant identity comes only from the
+        authenticated servlet principal. Only the seven documented parameters
+        are accepted, once each. Ordering is timestamp DESC, id DESC; from is
+        inclusive and to is exclusive, both refer to event time. Offset pages
+        do not share a snapshot. Responses and errors use Cache-Control no-store.
+        See docs/api/anomalies.md for persistence and replay semantics.
+      parameters:
+        - $ref: '#/paths/~1api~1v1~1telemetry/get/parameters/0'
+        - $ref: '#/paths/~1api~1v1~1telemetry/get/parameters/1'
+        - $ref: '#/paths/~1api~1v1~1telemetry/get/parameters/2'
+        - $ref: '#/paths/~1api~1v1~1telemetry/get/parameters/3'
+        - $ref: '#/paths/~1api~1v1~1telemetry/get/parameters/4'
+        - name: severity
+          in: query
+          description: Exact case-sensitive severity; current labels WARNING and CRITICAL, historical labels also supported.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 20
+        - name: metric
+          in: query
+          description: Exact case-sensitive metric; must not be blank.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        '200':
+          description: A bounded anomaly page; no matches returns empty content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnomalyPage'
+        '400':
+          $ref: '#/paths/~1api~1v1~1telemetry/get/responses/400'
+        '401':
+          $ref: '#/paths/~1api~1v1~1telemetry/get/responses/401'
+        '503':
+          $ref: '#/paths/~1api~1v1~1telemetry/get/responses/503'
 components:
   schemas:
     TelemetryPage:
@@ -151,6 +195,83 @@ components:
         location:
           type: string
           maxLength: 100
+        ingestedAt:
+          type: string
+          format: date-time
+    AnomalyPage:
+      type: object
+      additionalProperties: false
+      required: [content, page, size, hasNext]
+      properties:
+        content:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Anomaly'
+        page:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        hasNext:
+          type: boolean
+    Anomaly:
+      type: object
+      additionalProperties: false
+      required: [id, eventId, tenantId, timestamp, deviceId, deviceType, metric, value, unit, location, threshold, anomalyType, severity, reasons, detectedAt, ingestedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        eventId:
+          type: string
+          maxLength: 50
+        tenantId:
+          type: string
+          maxLength: 100
+        timestamp:
+          type: string
+          format: date-time
+        deviceId:
+          type: [string, 'null']
+          maxLength: 100
+        deviceType:
+          type: [string, 'null']
+          maxLength: 100
+        metric:
+          type: [string, 'null']
+          maxLength: 100
+        value:
+          type: [number, 'null']
+          multipleOf: 0.0001
+          description: Missing-reading anomalies have null values; NUMERIC(18,4) otherwise.
+        unit:
+          type: [string, 'null']
+          maxLength: 20
+        location:
+          type: [string, 'null']
+          maxLength: 100
+        threshold:
+          type: [number, 'null']
+          multipleOf: 0.0001
+          description: Historical threshold if recorded; null for current detection results.
+        anomalyType:
+          type: string
+          maxLength: 50
+          description: rule_violation for new projections; historical labels are preserved.
+        severity:
+          type: string
+          maxLength: 20
+        reasons:
+          type: array
+          items:
+            type: string
+        detectedAt:
+          type: string
+          format: date-time
         ingestedAt:
           type: string
           format: date-time

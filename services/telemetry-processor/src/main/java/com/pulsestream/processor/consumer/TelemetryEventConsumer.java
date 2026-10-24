@@ -99,7 +99,11 @@ public class TelemetryEventConsumer {
                     anomalyResult.severity(),
                     anomalyResult.reasons()
             );
-            anomalyProcessingService.process(telemetryEvent, anomalyResult);
+            if (replayed) {
+                anomalyProcessingService.process(telemetryEvent, anomalyResult, true);
+            } else {
+                anomalyProcessingService.process(telemetryEvent, anomalyResult);
+            }
             return;
         }
 

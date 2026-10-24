@@ -89,17 +89,17 @@ The telemetry-processor consumes raw telemetry events and performs real-time ana
 
 **Status:** Processed telemetry querying is implemented at `services/query-service` (#266). Successful calls require the Phase 7 security integration to supply an authenticated tenant principal; live cluster validation remains pending.
 
-The Query Service exposes `GET /api/v1/telemetry` over the internal service, with tenant isolation, exact device filtering, timestamp bounds and bounded pagination ordered by timestamp and row ID. See [the API contract](../api/processed-telemetry.md). Anomaly queries and aggregations remain planned.
+The Query Service exposes `GET /api/v1/telemetry` and `GET /api/v1/anomalies` over the internal service, with tenant isolation, exact device filtering, timestamp bounds and bounded pagination ordered by timestamp and row ID. Anomaly queries also filter by severity and metric. See the [processed telemetry](../api/processed-telemetry.md) and [anomaly](../api/anomalies.md) contracts. Aggregations remain planned.
 
 **Responsibilities:**
 
 *   Expose REST APIs
-*   Query processed telemetry data
-*   Filter by device and time range with bounded pagination
+*   Query processed telemetry and anomaly projections
+*   Filter by device and time range, plus anomaly severity/metric, with bounded pagination
 
 **Primary data interaction:**
 
-*   Read-only PostgreSQL access to the processor-owned processed telemetry schema
+*   Read-only PostgreSQL access to both processor-owned projection tables
 
 **Characteristics:**
 
@@ -183,18 +183,18 @@ Kafka acts as the backbone of the platform.
 
 ### PostgreSQL
 
-PostgreSQL stores processed telemetry records. Processor-owned Flyway migrations also define an `anomalies` table, but the current telemetry processor publishes anomaly events to Kafka and does not persist anomaly records through application code yet.
+PostgreSQL stores processed telemetry and anomaly projections. Processor-owned Flyway migrations define both tables; application code persists each projection before publishing to its Kafka topic. Anomaly writes use atomic event-ID conflict handling, keeping ordinary duplicates and replacing explicit replays within the same tenant (#267).
 
 **Responsibilities:**
 
 *   Persistent storage of processed telemetry history
-*   Planned anomaly tracking
+*   Durable anomaly history with tenant-scoped queries
 *   Query support for dashboards
 
 **Example tables:**
 
 *   `platform.processed_telemetry`
-*   `platform.anomalies` (created by processor Flyway migrations; application persistence is not implemented yet)
+*   `platform.anomalies` (processor-owned migration and writes; SELECT-only query access)
 
 ---
 
@@ -227,10 +227,10 @@ Kafka Topic: telemetry.events.raw
 ↓
 telemetry-processor
 ├─ normal reading → PostgreSQL + telemetry.events.processed
-└─ anomalous reading → telemetry.events.anomalies
+└─ anomalous reading → PostgreSQL anomaly projection → telemetry.events.anomalies
 
-Planned follow-up:
-PostgreSQL / Kafka topics → Query Service → Dashboard / Clients
+Implemented reads (authenticated tenant integration pending):
+PostgreSQL projections → Query Service → Dashboard / Clients
 ```
 
 This asynchronous interaction model allows services to scale and evolve independently.

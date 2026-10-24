@@ -36,8 +36,11 @@ The workflow runs these checks:
   `telemetry-processor`, and `query-service`, with Maven dependency caching.
 - PostgreSQL 16 migration/startup integration tests in the processor's normal
   Maven test lifecycle. Docker is required; unavailable Docker fails the tests.
-- PostgreSQL 16 query repository/API integration tests in the query service's
-  normal Maven test lifecycle, including tenant isolation and database health policy.
+- PostgreSQL 16 anomaly projection tests for atomic inserts, duplicates, replay
+  updates and concurrent delivery in the processor's normal Maven test lifecycle.
+- PostgreSQL 16 processed telemetry/anomaly query repository/API integration
+  tests in the query service's normal Maven test lifecycle, including filters,
+  tenant isolation, read-only grants and database health policy.
 - JaCoCo reports and per-service non-regression coverage floors, uploaded as
   artifacts and summarized in the job output.
 - All service Dockerfiles built and started through the existing container
