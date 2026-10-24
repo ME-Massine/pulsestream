@@ -5,7 +5,7 @@ spring:
     enabled: false
   autoconfigure:
     exclude:
-      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+      - org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration
 
 management:
   # Run the management surface on its own random port during tests (the main service binds a random

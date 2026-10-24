@@ -35,7 +35,7 @@ Spring Boot will be used for:
 - observability integration
 - dependency injection and modular service design
 
-Java 17 will be used as the runtime baseline.
+Java 17 will be used as the runtime baseline. (Superseded: the baseline moved to Java 25 in [ADR 0006](./0006-java-25-runtime-baseline.md).)
 
 ## Consequences
 

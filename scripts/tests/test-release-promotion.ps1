@@ -536,13 +536,13 @@ Assert-True -What "CI validates all platform container images at runtime" -Condi
 Assert-True -What "CI makes each Unix Maven wrapper executable before running it" -Condition (
     $ciWorkflow -match 'chmod \+x ./mvnw'
 )
-Assert-True -What "CI runs standalone Java service verification on Java 17" -Condition (
-    $ciWorkflow -match 'java-version:\s+"17"' -and
+Assert-True -What "CI runs standalone Java service verification on Java 25" -Condition (
+    $ciWorkflow -match 'java-version:\s+"25"' -and
     $ciWorkflow -match '\./mvnw\b[^\r\n]*\bverify\b'
 )
-Assert-True -What "CodeQL manually builds each standalone service on Java 17" -Condition (
+Assert-True -What "CodeQL manually builds each standalone service on Java 25" -Condition (
     $codeqlWorkflow -match 'build-mode:\s*manual' -and
-    $codeqlWorkflow -match 'java-version:\s*["'']17["'']' -and
+    $codeqlWorkflow -match 'java-version:\s*["'']25["'']' -and
     $codeqlWorkflow -match 'working-directory: services/\$\{\{ matrix.service \}\}' -and
     $codeqlWorkflow -match 'bash ./mvnw[^\r\n]*clean package' -and
     $codeqlWorkflow.IndexOf('name: Initialize CodeQL') -lt $codeqlWorkflow.IndexOf('name: Build the service for extraction') -and

@@ -1,42 +1,25 @@
 name: pulsestream-local
 
 services:
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.1
-    container_name: pulsestream-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "${ZOOKEEPER_PORT:-2181}:2181"
-    volumes:
-      - zookeeper_data:/var/lib/zookeeper/data
-      - zookeeper_log:/var/lib/zookeeper/log
-    healthcheck:
-      test: [ "CMD", "cub", "zk-ready", "localhost:2181", "30" ]
-      interval: 10s
-      timeout: 35s
-      retries: 10
-    networks:
-      - pulsestream-net
-
   kafka:
-    image: confluentinc/cp-kafka:7.6.1
+    image: confluentinc/cp-kafka:8.3.2
     container_name: pulsestream-kafka
-    depends_on:
-      zookeeper:
-        condition: service_healthy
     ports:
       - "${KAFKA_EXTERNAL_PORT:-9092}:9092"
       - "${KAFKA_INTERNAL_PORT:-29092}:29092"
     environment:
-      KAFKA_BROKER_ID: ${KAFKA_BROKER_ID:-1}
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # KRaft: this single node is both the broker and its own metadata
+      # controller. Confluent Platform 8 no longer supports ZooKeeper.
+      KAFKA_NODE_ID: ${KAFKA_NODE_ID:-1}
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: ${KAFKA_NODE_ID:-1}@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
 
       # Listeners
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://kafka:9093
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
 
       # Replication / Reliability (Dev defaults)
@@ -58,10 +41,10 @@ services:
       # Partitions
       KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-3}
     volumes:
-      - kafka_data:/var/lib/kafka/data
-      - ./kafka/wait-and-run.sh:/usr/bin/wait-and-run:ro
+      # A ZooKeeper-mode log directory cannot be reused by a KRaft node, so KRaft
+      # data lives in its own volume (see README: "Kafka KRaft upgrade").
+      - kafka_kraft_data:/var/lib/kafka/data
       - ./kafka/check-health.sh:/usr/bin/check-health:ro
-    command: [ "bash", "/usr/bin/wait-and-run" ]
     deploy:
       resources:
         limits:
@@ -77,7 +60,7 @@ services:
       - pulsestream-net
 
   kafka-init:
-    image: confluentinc/cp-kafka:7.6.1
+    image: confluentinc/cp-kafka:8.3.2
     container_name: pulsestream-kafka-init
     depends_on:
       kafka:
@@ -92,7 +75,7 @@ services:
       - pulsestream-net
 
   postgres:
-    image: postgres:16
+    image: postgres:18
     container_name: pulsestream-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-pulsestream}
@@ -101,7 +84,11 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PostgreSQL 18 images keep PGDATA in a major-version subdirectory
+      # (/var/lib/postgresql/18/docker), so the volume is mounted one level up.
+      # Version 16 data lived in postgres_data and needs a dump/restore to move
+      # here (see README: "PostgreSQL 18 upgrade").
+      - postgres18_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pulsestream} -d ${POSTGRES_DB:-pulsestream}"]
       interval: 10s
@@ -127,7 +114,7 @@ services:
       - pulsestream-net
 
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v3.15.0
     container_name: pulsestream-prometheus
     depends_on:
       - kafka
@@ -159,7 +146,7 @@ services:
       - pulsestream-net
 
   grafana:
-    image: grafana/grafana:11.1.4
+    image: grafana/grafana:13.2.3
     container_name: pulsestream-grafana
     depends_on:
       - prometheus
@@ -178,10 +165,8 @@ services:
       - pulsestream-net
 
 volumes:
-  zookeeper_data:
-  zookeeper_log:
-  kafka_data:
-  postgres_data:
+  kafka_kraft_data:
+  postgres18_data:
   redis_data:
   prometheus_data:
   grafana_data:

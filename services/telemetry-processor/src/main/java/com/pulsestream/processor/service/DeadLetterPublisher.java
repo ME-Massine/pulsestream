@@ -1,6 +1,6 @@
 package com.pulsestream.processor.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.model.DeadLetterEvent;
 import com.pulsestream.processor.model.TelemetryEvent;

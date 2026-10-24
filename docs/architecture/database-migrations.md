@@ -8,6 +8,8 @@ This implements #265. Query endpoints (#266) and application anomaly persistence
 Flyway keeps PostgreSQL DDL as ordered SQL files, integrates with the existing
 Spring Boot startup lifecycle, and validates applied migration checksums. The
 Spring Boot dependency management supplies both its core and PostgreSQL modules.
+The Java 25 / Spring Boot 4 baseline uses `spring-boot-starter-flyway` to retain
+automatic migration startup and Boot-managed Testcontainers 2 for PostgreSQL tests.
 
 ## Ownership and startup
 
@@ -148,5 +150,5 @@ Container image validation also provisions and removes a disposable PostgreSQL
 16 container and verifies that the exact processor image records successful V1.
 It does not use a developer's persisted database.
 
-References: [Spring Boot 3.3 database initialization](https://docs.spring.io/spring-boot/3.3/how-to/data-initialization.html),
+References: [Spring Boot database initialization](https://docs.spring.io/spring-boot/how-to/data-initialization.html),
 [Flyway baseline behavior](https://documentation.red-gate.com/flyway/reference/configuration/flyway-namespace/flyway-baseline-on-migrate-setting).

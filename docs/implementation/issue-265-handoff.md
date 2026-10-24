@@ -4,6 +4,13 @@ Owner: Massine AMAKHTARI (`@ME-Massine`).
 Issue: [#265](https://github.com/ME-Massine/pulsestream/issues/265).
 Branch: `feature/265-postgresql-migrations`.
 
+PR #355 resolution baseline: `main` at
+`87ad6b51999e233796a912a3fc0c29d692a69a90`, with PR head
+`9d0e9184ba26991e5c1b8bb69267d66c6da5ca18`.
+The POM resolution retains Java 25 and Spring Boot 4.1.1, adds the Flyway starter
+required for automatic startup migrations, and uses Boot-managed Testcontainers 2.
+The migration suite and Kafka test exclusion follow the updated package names.
+
 ## Outcome and shared contracts
 
 The processor applies ordered Flyway migrations automatically before JPA and
@@ -29,14 +36,14 @@ review or live-cluster acceptance is claimed.
 
 | Check | Result |
 | --- | --- |
-| Java 17 Maven `verify`, ingestion | Passed; 23 tests and coverage gate |
-| Java 17 Maven `verify`, processor | Passed; 143 tests and coverage gate |
-| Java 17 Maven `verify`, query | Passed; 1 test and coverage gate |
+| Java 25 Maven `verify`, ingestion | Passed; 23 tests and coverage gate |
+| Java 25 Maven `verify`, processor | Passed; 143 tests and coverage gate |
+| Java 25 Maven `verify`, query | Passed; 1 test and coverage gate |
 | PostgreSQL 16 migration integration suite | Passed; 14 tests, no skips |
 | Processor coverage | 94.00% lines, 76.96% branches; floors unchanged |
 | PowerShell 7.5.4 / Windows PowerShell 5.1 offline suites | Passed; 56 sources parsed and 17 regression scripts per edition |
 | Compose configuration | Passed |
-| Processor Java 17 Docker image build | Passed |
+| Processor Java 25 Docker image build | Passed |
 | Container startup, probes, migration history, cleanup | Passed on Windows PowerShell 5.1 and PowerShell 7.5.4 |
 | Forced startup timeout | Returned failure and removed service/database validation containers |
 | Live Kubernetes rollout | Pending; Phase 6 validation gate remains open |
@@ -114,12 +121,12 @@ architecture docs, CONTRIBUTING.md, and PROJECT_STATE.md.
 Joint review required: processor/persistence, query, and platform owners.
 
 ## Validation
-- Java 17 Maven verify passed for all services; coverage gates unchanged.
+- Java 25 Maven verify passed for all services; coverage gates unchanged.
 - PostgreSQL 16 integration suite: 14 passing tests covering initialization,
   restart, populated legacy adoption, incompatible schemas, checksums, concurrent
   migrators, successful forward upgrade, and failed-migration rollback.
 - PowerShell 7.5.4 and Windows PowerShell 5.1 offline suites passed.
-- Compose configuration and processor Java 17 Docker image build passed.
+- Compose configuration and processor Java 25 Docker image build passed.
 - Processor image startup, main-port probes, management health, migration history,
   and disposable database cleanup passed on both PowerShell versions.
 - A forced startup timeout returned failure and left no validation containers.

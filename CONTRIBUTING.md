@@ -32,7 +32,7 @@ The workflow runs these checks:
 - Repository file and directory sanity checks.
 - Artifact upload/download compatibility, including exact provenance JSON content
   and extraction path, within the repository sanity check job.
-- A Java 17 Maven `verify` matrix for `ingestion-service`,
+- A Java 25 Maven `verify` matrix for `ingestion-service`,
   `telemetry-processor`, and `query-service`, with Maven dependency caching.
 - PostgreSQL 16 migration/startup integration tests in the processor's normal
   Maven test lifecycle. Docker is required; unavailable Docker fails the tests.

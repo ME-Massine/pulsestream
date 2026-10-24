@@ -31,7 +31,7 @@ spring:
       group-id: ${PULSESTREAM_KAFKA_CONSUMER_GROUP_ID:telemetry-processor}
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
       key-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_KEY_DESERIALIZER:org.apache.kafka.common.serialization.StringDeserializer}
-      value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JsonDeserializer}
+      value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JacksonJsonDeserializer}
       properties:
         spring.json.trusted.packages: ${PULSESTREAM_KAFKA_CONSUMER_TRUSTED_PACKAGES:com.pulsestream.processor.model}
         spring.json.use.type.headers: ${PULSESTREAM_KAFKA_CONSUMER_USE_TYPE_HEADERS:false}
@@ -100,7 +100,7 @@ pulsestream:
       group-id: ${PULSESTREAM_KAFKA_CONSUMER_GROUP_ID:telemetry-processor}
       dlq-group-id: ${PULSESTREAM_KAFKA_CONSUMER_DLQ_GROUP_ID:telemetry-processor-dlq-replay}
       key-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_KEY_DESERIALIZER:org.apache.kafka.common.serialization.StringDeserializer}
-      value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JsonDeserializer}
+      value-deserializer: ${PULSESTREAM_KAFKA_CONSUMER_VALUE_DESERIALIZER:org.springframework.kafka.support.serializer.JacksonJsonDeserializer}
       auto-offset-reset: ${PULSESTREAM_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
       concurrency: ${PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY:1}
       # Fallback idle signal for bounded DLQ replay (#125). The listener normally stops when it
@@ -114,7 +114,7 @@ pulsestream:
     producer:
       client-id: ${PULSESTREAM_KAFKA_PRODUCER_CLIENT_ID:telemetry-processor-producer}
       key-serializer: ${PULSESTREAM_KAFKA_PRODUCER_KEY_SERIALIZER:org.apache.kafka.common.serialization.StringSerializer}
-      value-serializer: ${PULSESTREAM_KAFKA_PRODUCER_VALUE_SERIALIZER:org.springframework.kafka.support.serializer.JsonSerializer}
+      value-serializer: ${PULSESTREAM_KAFKA_PRODUCER_VALUE_SERIALIZER:org.springframework.kafka.support.serializer.JacksonJsonSerializer}
       acknowledgements: ${PULSESTREAM_KAFKA_PRODUCER_ACKS:all}
       retries: ${PULSESTREAM_KAFKA_PRODUCER_RETRIES:3}
       delivery-timeout: ${PULSESTREAM_KAFKA_PRODUCER_DELIVERY_TIMEOUT:30s}

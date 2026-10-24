@@ -61,7 +61,7 @@ Key architectural choices are formalized through ADRs:
 Detailed records are maintained in the [Decisions](docs/decisions/) directory.
 
 ### Local Development Platform (Phase 2)
-A reproducible local platform environment is available. Developers can instantiate the entire infrastructure stack — Kafka, Zookeeper, PostgreSQL, Redis, Prometheus, Grafana, and Jaeger — with a single command:
+A reproducible local platform environment is available. Developers can instantiate the entire infrastructure stack — Kafka (KRaft mode), PostgreSQL, Redis, Prometheus, Grafana, and Jaeger — with a single command:
 ```bash
 docker compose up -d
 ```

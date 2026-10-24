@@ -20,7 +20,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PostgresMigrationIntegrationTest {
 
     @Container
-    private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16");
+    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16");
 
     private JdbcTemplate jdbc;
     private ApplicationContextRunner application;
@@ -49,7 +49,7 @@ class PostgresMigrationIntegrationTest {
                         "spring.datasource.url=" + url,
                         "spring.datasource.username=" + POSTGRES.getUsername(),
                         "spring.datasource.password=" + POSTGRES.getPassword(),
-                        "spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration",
+                        "spring.autoconfigure.exclude=org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration",
                         "otel.sdk.disabled=true");
     }
 

@@ -15,7 +15,7 @@ Each service uses a two-stage build:
 ### Stage 1 — Builder
 
 ```dockerfile
-FROM maven:3.9.9-eclipse-temurin-17 AS builder
+FROM maven:3.10.0-eclipse-temurin-25 AS builder
 
 WORKDIR /app
 
@@ -25,27 +25,28 @@ RUN mvn -B -q -e -DskipTests dependency:go-offline
 COPY src ./src
 RUN mvn clean package -DskipTests
 
-RUN java -Djarmode=layertools -jar target/*.jar extract
+RUN java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destination extracted
 ```
 
 * Dependencies are resolved (`dependency:go-offline`) before the source is copied,
   so Docker caches the dependency layer and only rebuilds when `pom.xml` changes.
-* The Spring Boot jar is unpacked with `layertools` so its layers can be copied
+* The Spring Boot jar is unpacked with the `tools` jar mode (`layertools` was
+  removed in Spring Boot 4) into `extracted/`, so its layers can be copied
   individually into the runtime image, maximizing layer reuse across rebuilds.
 
 ### Stage 2 — Runtime
 
 ```dockerfile
-FROM eclipse-temurin:17-jre-jammy
+FROM eclipse-temurin:25-jre-jammy
 
 WORKDIR /app
 
 RUN groupadd -r spring && useradd -r -g spring spring
 
-COPY --from=builder /app/dependencies/ ./
-COPY --from=builder /app/snapshot-dependencies/ ./
-COPY --from=builder /app/spring-boot-loader/ ./
-COPY --from=builder /app/application/ ./
+COPY --from=builder /app/extracted/dependencies/ ./
+COPY --from=builder /app/extracted/snapshot-dependencies/ ./
+COPY --from=builder /app/extracted/spring-boot-loader/ ./
+COPY --from=builder /app/extracted/application/ ./
 
 RUN chown -R spring:spring /app
 
@@ -64,9 +65,9 @@ ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.la
 
 | Concern            | Standard                                                                                   |
 | ------------------ | ------------------------------------------------------------------------------------------ |
-| Base (build) image | `maven:3.9.9-eclipse-temurin-17`                                                            |
-| Base (runtime) image | `eclipse-temurin:17-jre-jammy` (JRE only, smaller runtime)                                |
-| Build strategy     | Multi-stage; Spring Boot layered jar extracted with `layertools`                           |
+| Base (build) image | `maven:3.10.0-eclipse-temurin-25`                                                           |
+| Base (runtime) image | `eclipse-temurin:25-jre-jammy` (JRE only, smaller runtime)                                |
+| Build strategy     | Multi-stage; Spring Boot layered jar extracted with the `tools` jar mode                    |
 | Non-root execution | Dedicated `spring` user/group; `/app` owned by `spring`; `USER spring:spring`              |
 | JVM runtime options | `-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError`           |
 | Entrypoint         | `exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher`                  |
@@ -88,7 +89,7 @@ ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.la
 ### Spring Boot launcher path
 
 Spring Boot 3.2+ moved the launcher to `org.springframework.boot.loader.launch.JarLauncher`.
-All services run Spring Boot 3.3.5 and must use this path. The pre-3.2 path
+All services run Spring Boot 4.1.1 and must use this path. The pre-3.2 path
 `org.springframework.boot.loader.JarLauncher` no longer exists and must not be used.
 
 ---
