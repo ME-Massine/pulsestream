@@ -31,6 +31,14 @@ The local platform includes:
 
 ### Usage
 
+Application services run on the host. The [query API setup](../../docs/api/processed-telemetry.md)
+requires processor migrations first and a dedicated read-only PostgreSQL role.
+Export `PULSESTREAM_POSTGRES_URL`, `PULSESTREAM_POSTGRES_USERNAME` and
+`PULSESTREAM_POSTGRES_PASSWORD` to the query JVM; Compose's `.env` is not loaded
+by host processes. Query readiness requires the database. Query requests require
+an authenticated tenant principal from the Phase 7 integration and return 401
+without it.
+
 #### 1. Create environment file
 
 Copy the example file:

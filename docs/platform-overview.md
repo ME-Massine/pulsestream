@@ -2,7 +2,7 @@
 
 PulseStream is a cloud-native event processing platform designed to ingest, process, and analyze IoT telemetry data at scale.
 
-The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence of normal processed telemetry records, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for the application services, Kafka, and observability components; PostgreSQL must currently be supplied separately. Query APIs and application-level anomaly persistence are the primary remaining gaps, addressed in Phase 7.
+The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence and querying of normal processed telemetry records, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for the application services, Kafka, and observability components; PostgreSQL must currently be supplied separately. The [processed telemetry API](api/processed-telemetry.md) requires the Phase 7 authenticated tenant integration. Anomaly queries and application-level anomaly persistence remain gaps addressed in Phase 7.
 
 The system is designed using an event-driven architecture built around Apache Kafka. The authoritative platform status is maintained in [PROJECT_STATE.md](../PROJECT_STATE.md).
 
@@ -18,7 +18,7 @@ PulseStream provides the following capabilities:
 *   Durable processed telemetry storage
 *   Dead-letter routing and event replay
 *   Distributed tracing, metrics, and dashboards
-*   Planned real-time querying APIs
+*   Processed telemetry queries with tenant, device and time scoping (#266)
 
 ---
 
@@ -105,14 +105,14 @@ Redis may be used as a caching layer for frequently requested data.
 
 ### Query Service
 
-**Status:** Scaffold. A deployable `services/query-service` module and its Kubernetes manifests exist, but the REST query endpoints and data access are Phase 7 work.
+**Status:** Processed telemetry API implemented (#266); authenticated tenant integration and live validation pending.
 
-The query service is intended to expose APIs for retrieving processed telemetry data.
+The query service exposes a tenant-scoped API for retrieving processed telemetry data.
 
-**Planned responsibilities:**
+**Responsibilities:**
 
 *   Querying PostgreSQL
-*   Aggregating device telemetry
+*   Filtering by device/time with bounded pagination; aggregations remain planned
 *   Exposing REST endpoints
 
 ---

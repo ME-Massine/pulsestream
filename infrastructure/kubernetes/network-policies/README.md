@@ -32,17 +32,17 @@ Two rules apply throughout:
 | :--- | :--- | :--- |
 | `ingestion-service` | 8081 from **any** peer | DNS, Kafka `:9092`, OTLP `:4318` to `otel-collector` |
 | `telemetry-processor` | 8082 from the labelled `service-connectivity-probe` only | DNS, Kafka `:9092`, Postgres `:5432`, OTLP `:4318` to `otel-collector` |
-| `query-service` | 8083 from the **same namespace**, plus the `monitoring` Prometheus server pods (#154) | DNS |
+| `query-service` | 8083 from the **same namespace**, plus the `monitoring` Prometheus server pods (#154) | DNS, Postgres `:5432` |
 
 `query-service` has no OTLP egress because it exports no traces — it carries no `otel` configuration in `application.yml` (#157). The two OTLP holes are scoped to the `otel-collector` pods in the `observability` namespace, not to the namespace as a whole.
 
-Everything absent from this table is blocked when the CNI enforces policy — for example `query-service` cannot reach Kafka or Postgres, `ingestion-service` cannot reach Postgres, and nothing off-cluster can reach `query-service` or `telemetry-processor`.
+Everything absent from this table is blocked when the CNI enforces policy — for example `query-service` cannot reach Kafka, `ingestion-service` cannot reach Postgres, and nothing off-cluster can reach `query-service` or `telemetry-processor`.
 
 ### Three deliberate design points
 
 **`ingestion-service` port 8081 is open to every peer.** External producers reach it through the NodePort Service (#145), whose default `externalTrafficPolicy: Cluster` SNATs the client to a node IP; kubelet probes also arrive as a node IP. Neither is a pod, so no selector can match them, and the endpoint is meant to be reachable by "anything that can reach a node" (#145). 8081 is therefore left open while every other port on those pods stays denied.
 
-**Postgres egress is scoped by port, not by a Postgres label.** `telemetry-processor` allows egress to TCP 5432 within its own namespace (`podSelector: {}`) rather than to a labelled Postgres pod, because the Postgres workload is provisioned separately and its labels are not fixed here. Port 5432 still reaches only Postgres, since nothing else in the namespace listens there. Tighten it to a specific `podSelector` once Postgres provisioning lands.
+**Postgres egress is scoped by port, not by a Postgres label.** Both `telemetry-processor` and `query-service` allow egress to TCP 5432 within their own namespace (`podSelector: {}`) rather than to a labelled Postgres pod, because the Postgres workload is provisioned separately and its labels are not fixed here. Tighten it to a specific `podSelector` once Postgres provisioning lands. An external or cross-namespace database requires an explicit peer change alongside the datasource URL.
 
 **The service-connectivity probe has an explicit ingress identity.** The validator merged for #146 must reach every ClusterIP from outside the services themselves, including `telemetry-processor:8082/readyz`. Its throwaway pod carries `app.kubernetes.io/name=service-connectivity-probe` and `app.kubernetes.io/part-of=pulsestream`; the telemetry policy admits only that same-namespace identity on the `http` port. Ordinary pods remain blocked, while the repository's accepted connectivity check continues to work after these policies are enforced.
 

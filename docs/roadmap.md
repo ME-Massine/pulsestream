@@ -54,11 +54,11 @@ The authoritative, up-to-date status of the platform is tracked in [PROJECT_STAT
 *   Telemetry processor — implemented for raw event consumption, normalization, anomaly detection, and downstream publishing
 *   Event persistence in PostgreSQL — implemented for normal processed telemetry
 *   Anomaly persistence — planned (Phase 7, #267)
-*   Query API — planned (Phase 7, #266)
+*   Query API — processed telemetry reads implemented in #266; authenticated tenant integration pending
 
 **Status:** Complete
 
-**Outcome:** Normal telemetry events flow from API to Kafka to processor to PostgreSQL. Anomalous events are published to `telemetry.events.anomalies`. Application-level anomaly persistence and query APIs are deferred to Phase 7.
+**Outcome:** Normal telemetry events flow from API to Kafka to processor to PostgreSQL. Anomalous events are published to `telemetry.events.anomalies`. Application-level anomaly persistence remains deferred to Phase 7. Processed telemetry queries are implemented in #266, with authenticated tenant integration pending.
 
 ---
 
@@ -104,7 +104,7 @@ The authoritative, up-to-date status of the platform is tracked in [PROJECT_STAT
 **Deliverables:**
 
 *   Kubernetes manifests — implemented for the application services, Kafka, and observability components under `infrastructure/kubernetes/`; PostgreSQL is supplied separately
-*   Service deployments — implemented for `ingestion-service`, `telemetry-processor`, and the `query-service` scaffold
+*   Service deployments — implemented for `ingestion-service`, `telemetry-processor`, and `query-service`
 *   Kafka cluster deployment — implemented via the Strimzi operator
 *   Observability stack in Kubernetes — implemented (Grafana, OpenTelemetry Collector)
 *   Autoscaling — implemented (CPU-based and custom-metrics HPAs)
@@ -129,7 +129,9 @@ Issue #30 was closed on 2026-08-13 without a completion comment. Its manifest-de
 *   Complete CI quality gates and automated dependency, secret, code, and container security checks
 *   Version-controlled PostgreSQL schema migrations (implemented in #265;
     [processor startup process](architecture/database-migrations.md), live cluster validation pending)
-*   Processed-telemetry query API and persisted, queryable anomaly projections
+*   Processed-telemetry query API (implemented in #266; authenticated principal
+    integration and live validation pending; [contract](api/processed-telemetry.md))
+    and persisted, queryable anomaly projections (planned in #267)
 *   Versioned event contracts with compatibility validation
 *   Deterministic anomaly detection under horizontal scaling
 *   Reliable PostgreSQL and Kafka delivery consistency, and correct replay reclassification

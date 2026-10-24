@@ -46,9 +46,12 @@ The processor autoscales within `[2, 3]` on CPU utilization (issue #151), with t
 
 ### query-service — deferred
 
-`query-service` is currently a scaffold: an application class, configuration, and a context-load test, with no query endpoints implemented. There is no read traffic to scale against, so an autoscaler would only add moving parts to an idle deployment.
+`query-service` implements the processed telemetry read API (#266). Authenticated
+tenant integration and representative live query-load validation remain pending.
 
-It stays at a fixed 2 replicas. It is expected to become a straightforward CPU-scaled target once the read API exists (issue #266), with the added consideration that its floor is set by the PostgreSQL connection pool rather than by CPU.
+It stays at a fixed 2 replicas. An HPA requires measured read traffic and a
+PostgreSQL connection budget: the query pool permits five connections per replica.
+Readiness removes replicas from service when database connectivity is lost.
 
 ### Stateful components — excluded
 

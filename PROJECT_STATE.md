@@ -75,6 +75,11 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
 *   Processed event publishing to `telemetry.events.processed`.
 *   Anomaly event publishing to `telemetry.events.anomalies`.
 *   PostgreSQL persistence for normal processed telemetry in `platform.processed_telemetry`.
+*   Tenant-scoped processed telemetry query API (#266), with device/time filters,
+    bounded pagination, deterministic ordering, OpenAPI documentation and required
+    PostgreSQL tests. Successful HTTP calls require a Phase 7 integration supplying
+    an authenticated servlet principal; absent identities fail closed with 401.
+    Database availability gates query readiness. See [the API contract](docs/api/processed-telemetry.md).
 *   Version-controlled Flyway migrations owned by the telemetry processor (#265),
     applied at startup in local development and Kubernetes. V1 initializes empty
     databases and adopts compatible legacy telemetry/anomaly tables without
@@ -95,7 +100,7 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
 
 ### Kubernetes Deployment (Phase 6 — Implemented, Live Validation Pending)
 Kubernetes manifests are committed under [infrastructure/kubernetes/](infrastructure/kubernetes/) for the application, streaming, and observability workloads:
-*   Deployments, Services, and ConfigMaps for `ingestion-service`, `telemetry-processor`, and the `query-service` scaffold.
+*   Deployments, Services, and ConfigMaps for `ingestion-service`, `telemetry-processor`, and `query-service`; processor and query database credentials use separate Secrets.
 *   Kafka on Kubernetes via the Strimzi operator (`KafkaNodePool`, `Kafka`, and `KafkaTopic` resources).
 *   In-cluster observability: Prometheus, Grafana, an OpenTelemetry Collector, and Jaeger.
 *   Horizontal Pod Autoscalers, including CPU-based and Prometheus-adapter custom-metrics autoscaling.
@@ -142,7 +147,8 @@ normal or anomalous projection; and recovery, load, and durability tests pass wi
 The Phase 6 live-deployment evidence required to begin Phase 7 is not yet recorded. The following Phase 7 capabilities are also not yet implemented:
 
 *   Application-level persistence of detected anomalies (anomalies are currently published to `telemetry.events.anomalies` only) — issue #267.
-*   Query API business logic for processed telemetry and anomalies (the `query-service` is a scaffold only) — issues #266, #267.
+*   Anomaly query endpoints — issue #267. Processed telemetry query logic is implemented
+    in #266; the authenticated tenant principal integration and live rollout remain pending.
 *   Authenticated and encrypted external ingestion — issue #273.
 *   Secured Kafka client communication and production secret management — issue #275.
 *   Versioned event contracts with compatibility validation — issue #268.

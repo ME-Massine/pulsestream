@@ -136,6 +136,33 @@ function Test-EgressHasPort {
     return $false
 }
 
+# Query database access must stay on TCP 5432 within the platform namespace.
+# Inspect every rule opening the port, including ranges and unrestricted rules.
+function Test-QueryDatabaseEgress {
+    param($Policy)
+    $databaseRules = @($Policy.spec.egress | Where-Object {
+        if ($null -eq $_.ports -or @($_.ports).Count -eq 0) { return $true }
+        return @($_.ports | Where-Object {
+            if ($_.protocol -ne 'TCP') { return $false }
+            $start = $_.port -as [int]
+            if ($null -eq $start) { return $false }
+            $end = if ($null -ne $_.endPort) { [int] $_.endPort } else { $start }
+            return ($start -le 5432 -and $end -ge 5432)
+        }).Count -gt 0
+    })
+    if ($databaseRules.Count -ne 1) { return $false }
+    $rule = $databaseRules[0]
+    if (@($rule.ports).Count -ne 1 -or -not (Test-RuleHasPort $rule 5432 'TCP')) { return $false }
+    if ($null -ne $rule.ports[0].endPort) { return $false }
+    $peers = @($rule.to | Where-Object { $null -ne $_ })
+    if ($peers.Count -ne 1) { return $false }
+    $peer = $peers[0]
+    return ($null -ne $peer.podSelector) -and
+           ($null -eq $peer.podSelector.matchLabels) -and
+           ($null -eq $peer.podSelector.matchExpressions) -and
+           ($null -eq $peer.namespaceSelector) -and ($null -eq $peer.ipBlock)
+}
+
 # Ingress rule that admits every peer on a port: a rule with matching ports and
 # no `from` peers at all. An absent `from` serializes to null (not an empty
 # array), so the null test is what distinguishes "all peers" from "these peers".
@@ -338,9 +365,14 @@ Confirm-Condition `
     -FailureMessage "query-service has no ingress rule narrowly admitting the monitoring-namespace Prometheus server pods (app.kubernetes.io/name=prometheus, app.kubernetes.io/component=server, app.kubernetes.io/instance=prometheus) on 'http'. Prometheus cannot scrape it on an enforcing CNI"
 
 Confirm-Condition `
-    -Condition ((-not (Test-EgressHasPort $query 9092 'TCP')) -and (-not (Test-EgressHasPort $query 5432 'TCP'))) `
-    -SuccessMessage "query-service has no Kafka or Postgres egress (it reads no datastore today; both paths stay denied)" `
-    -FailureMessage "query-service allows egress to Kafka (9092) or Postgres (5432); it consumes neither today, so those paths are unnecessary and should stay denied"
+    -Condition (-not (Test-EgressHasPort $query 9092 'TCP')) `
+    -SuccessMessage "query-service has no Kafka egress" `
+    -FailureMessage "query-service allows unnecessary Kafka egress (9092)"
+
+Confirm-Condition -Permanent `
+    -Condition (Test-QueryDatabaseEgress $query) `
+    -SuccessMessage "query-service allows Postgres egress only on TCP 5432 within its namespace" `
+    -FailureMessage "query-service Postgres egress must be exactly TCP 5432 to same-namespace pods"
 
 Confirm-Condition `
     -Condition (@(Get-OtlpEgressRules $query).Count -eq 0) `

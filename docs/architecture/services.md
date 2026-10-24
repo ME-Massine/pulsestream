@@ -32,7 +32,7 @@ Each service can scale independently depending on workload demands.
 
 ## Core Services
 
-The current PulseStream checkout includes the ingestion service, the telemetry processor, and a query-service scaffold. Distributed tracing, dead-letter routing, and event replay are implemented. Query APIs, simulator tooling, and additional downstream consumers are planned extensions unless noted otherwise.
+The current PulseStream checkout includes ingestion, processing, and processed telemetry queries. Distributed tracing, dead-letter routing, and event replay are implemented. Anomaly queries, simulator tooling, and additional downstream consumers remain planned extensions.
 
 ### Ingestion Service
 
@@ -87,22 +87,21 @@ The telemetry-processor consumes raw telemetry events and performs real-time ana
 
 ### Query Service
 
-**Status:** Scaffold exists at `services/query-service`. Query business functionality (REST endpoints, data access) is still planned.
+**Status:** Processed telemetry querying is implemented at `services/query-service` (#266). Successful calls require the Phase 7 security integration to supply an authenticated tenant principal; live cluster validation remains pending.
 
-The Query Service is intended to expose APIs that allow external systems and dashboards to retrieve telemetry data and anomalies.
+The Query Service exposes `GET /api/v1/telemetry` over the internal service, with tenant isolation, exact device filtering, timestamp bounds and bounded pagination ordered by timestamp and row ID. See [the API contract](../api/processed-telemetry.md). Anomaly queries and aggregations remain planned.
 
-**Planned responsibilities:**
+**Responsibilities:**
 
 *   Expose REST APIs
 *   Query processed telemetry data
-*   Retrieve anomaly records
-*   Support filtering and aggregation queries
+*   Filter by device and time range with bounded pagination
 
-**Planned primary data interaction:**
+**Primary data interaction:**
 
-*   Reads from PostgreSQL
+*   Read-only PostgreSQL access to the processor-owned processed telemetry schema
 
-**Planned characteristics:**
+**Characteristics:**
 
 *   Read-oriented service
 *   Optimized for data retrieval
@@ -254,7 +253,7 @@ Each service can scale horizontally depending on system load.
 
 ### Query Service
 
-**Service status:** Scaffold. **Scaling status:** Planned until query APIs are implemented.
+**Service status:** Processed telemetry API implemented (#266); authenticated tenant integration pending. **Scaling status:** Fixed at two replicas until representative query-load validation.
 
 *   Scales based on query traffic
 *   Read replicas may be introduced later
