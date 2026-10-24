@@ -140,7 +140,7 @@ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_index i
             WHERE i.indexrelid = to_regclass(format('platform.%I', expected.index_name))
                 AND i.indrelid = to_regclass(format('platform.%I', expected.table_name))
-                AND i.indisvalid AND i.indpred IS NULL AND i.indnatts = 1
+                AND i.indisvalid AND NOT i.indisunique AND i.indpred IS NULL AND i.indnatts = 1
                 AND i.indoption[0] = expected.index_options
                 AND pg_get_indexdef(i.indexrelid, 1, false) = expected.index_column) THEN
             RAISE EXCEPTION 'Incompatible legacy index: platform.%', expected.index_name;

@@ -37,20 +37,21 @@ review or live-cluster acceptance is claimed.
 | Check | Result |
 | --- | --- |
 | Java 25 Maven `verify`, ingestion | Passed; 23 tests and coverage gate |
-| Java 25 Maven `verify`, processor | Passed; 143 tests and coverage gate |
+| Java 25 Maven `verify`, processor | Passed; 149 tests and coverage gate |
 | Java 25 Maven `verify`, query | Passed; 1 test and coverage gate |
-| PostgreSQL 16 migration integration suite | Passed; 14 tests, no skips |
+| PostgreSQL 16 migration integration suite | Passed; 20 tests, no skips; six new unique-index cases fail before the fix |
 | Processor coverage | 94.00% lines, 76.96% branches; floors unchanged |
 | PowerShell 7.5.4 / Windows PowerShell 5.1 offline suites | Passed; 56 sources parsed and 17 regression scripts per edition |
 | Compose configuration | Passed |
 | Processor Java 25 Docker image build | Passed |
 | Container startup, probes, migration history, cleanup | Passed on Windows PowerShell 5.1 and PowerShell 7.5.4 |
-| Forced startup timeout | Returned failure and removed service/database validation containers |
+| Success and forced startup timeout cleanup | Removed service/database validation containers and their observed anonymous database volumes on both PowerShell editions |
 | Live Kubernetes rollout | Pending; Phase 6 validation gate remains open |
 
 The PostgreSQL suite covers fresh startup and repository writes, repeated
 startup, populated legacy-table adoption, seven incompatible legacy definitions,
-checksum rejection, concurrent migrators, successful forward migration, and
+rejection of unique variants of all six lookup indexes, checksum rejection,
+concurrent migrators, successful forward migration, and
 transactional rollback after a failed forward migration.
 
 ## Operating effects
@@ -72,33 +73,17 @@ No commit, push, merge, or publication has been performed.
 
 ```powershell
 $issueFiles = @(
-    'CONTRIBUTING.md'
-    'PROJECT_STATE.md'
     'docs/architecture/container-image-validation.md'
     'docs/architecture/database-migrations.md'
-    'docs/architecture/services.md'
-    'docs/architecture/system-overview.md'
     'docs/implementation/issue-265-handoff.md'
-    'docs/platform-overview.md'
-    'docs/roadmap.md'
-    'infrastructure/docker/README.md'
-    'infrastructure/docker/postgres/init.sql'
-    'infrastructure/kubernetes/telemetry-processor/README.md'
-    'infrastructure/kubernetes/telemetry-processor/configmap.yaml'
     'scripts/validate-container-images.ps1'
-    'services/telemetry-processor/pom.xml'
-    'services/telemetry-processor/src/main/java/com/pulsestream/processor/model/ProcessedTelemetryEntity.java'
-    'services/telemetry-processor/src/main/resources/application.yml'
-    'services/telemetry-processor/src/main/resources/db/migration'
-    'services/telemetry-processor/src/test/java/com/pulsestream/processor/migration'
-    'services/telemetry-processor/src/test/java/com/pulsestream/processor/repository/ProcessedTelemetryRepositoryTest.java'
-    'services/telemetry-processor/src/test/resources/application-test.yml'
-    'services/telemetry-processor/src/test/resources/db'
+    'services/telemetry-processor/src/main/resources/db/migration/V1__create_platform_tables.sql'
+    'services/telemetry-processor/src/test/java/com/pulsestream/processor/migration/PostgresMigrationIntegrationTest.java'
 )
 git add -- $issueFiles
 git diff --cached --check
 git diff --cached --stat
-git commit -m "feat(database): introduce versioned PostgreSQL migrations"
+git commit -m "fix(database): reject unique lookup indexes and clean validation volumes"
 git push -u origin feature/265-postgresql-migrations
 ```
 
@@ -107,11 +92,22 @@ git push -u origin feature/265-postgresql-migrations
 Title: `feat(database): introduce versioned PostgreSQL migrations`
 
 ```markdown
-## Outcome
-Closes #265. The telemetry processor automatically applies Flyway migrations
+## Summary
+The telemetry processor automatically applies Flyway migrations
 before JPA and Kafka startup. Clean PostgreSQL databases initialize without SQL
 commands; compatible legacy tables retain data and sequence positions. Migration
 and checksum errors prevent startup.
+
+## Related Issue
+Closes #265. PR #355; query/anomaly follow-ups #266/#267.
+
+## Changes
+- Initialize empty databases and adopt compatible legacy tables through V1.
+- Reject unique variants of all six legacy lookup indexes before startup so
+  repeated tenants, devices, and timestamps remain valid.
+- Remove the disposable PostgreSQL container and anonymous data volume on
+  successful image validation and on failure.
+- Document startup, adoption, and recovery procedures.
 
 ## Ownership and contracts
 Owner: @ME-Massine. C-xx IDs: none assigned in #265.
@@ -120,16 +116,26 @@ POM/configuration, container validator, local/Kubernetes operating docs,
 architecture docs, CONTRIBUTING.md, and PROJECT_STATE.md.
 Joint review required: processor/persistence, query, and platform owners.
 
-## Validation
+## Testing
 - Java 25 Maven verify passed for all services; coverage gates unchanged.
-- PostgreSQL 16 integration suite: 14 passing tests covering initialization,
+- PostgreSQL 16 integration suite: 20 passing tests covering initialization,
   restart, populated legacy adoption, incompatible schemas, checksums, concurrent
-  migrators, successful forward upgrade, and failed-migration rollback.
+  migrators, successful forward upgrade, failed-migration rollback, and unique
+  definitions of all six lookup indexes. The six new cases fail before the fix.
 - PowerShell 7.5.4 and Windows PowerShell 5.1 offline suites passed.
 - Compose configuration and processor Java 25 Docker image build passed.
 - Processor image startup, main-port probes, management health, migration history,
   and disposable database cleanup passed on both PowerShell versions.
-- A forced startup timeout returned failure and left no validation containers.
+- Success and forced timeout runs removed the disposable database and its
+  anonymous volume on both PowerShell versions.
+
+## Checklist
+- [x] Code builds successfully.
+- [x] Tests pass; coverage gates unchanged.
+- [x] Documentation updated.
+- [x] Linked issue is referenced.
+- [x] Changes stay within the issue scope.
+- [ ] Joint review from processor/persistence, query, and platform owners.
 
 ## Operating effects
 PostgreSQL connectivity and schema DDL privileges are now startup requirements.

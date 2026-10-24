@@ -75,10 +75,12 @@ Before introducing migrations to a database with data, take and verify a backup,
 confirm the datasource points at the intended database, and use its existing
 schema owner. V1 uses `IF NOT EXISTS` to retain existing tables and rows, fills in
 missing initial objects, and validates the legacy columns, constraints, defaults,
-and index definitions before recording success. It does not reset sequences or
-delete persisted telemetry or anomalies. An incompatible legacy definition fails
-startup and rolls back V1 rather than rewriting data. Investigate the reported
-object and prepare a reviewed, data-preserving reconciliation before retrying.
+and index definitions before recording success. All six lookup indexes must be
+non-unique so repeated tenant, device, and timestamp values remain valid. It does
+not reset sequences or delete persisted telemetry or anomalies. An incompatible
+legacy definition fails startup and rolls back V1 rather than rewriting data.
+Investigate the reported object and prepare a reviewed, data-preserving
+reconciliation before retrying.
 
 The dedicated history schema must be new or already managed by this application.
 Automatic baselining is disabled: adoption executes and records V1 instead of
@@ -147,7 +149,8 @@ Existing H2 repository and HTTP tests remain
 isolated from production migration SQL.
 
 Container image validation also provisions and removes a disposable PostgreSQL
-16 container and verifies that the exact processor image records successful V1.
+16 container and its anonymous data volume, and verifies that the exact processor
+image records successful V1.
 It does not use a developer's persisted database.
 
 References: [Spring Boot database initialization](https://docs.spring.io/spring-boot/how-to/data-initialization.html),

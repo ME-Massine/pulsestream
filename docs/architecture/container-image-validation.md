@@ -25,7 +25,8 @@ For each service the validation:
    when `-Network bridge` is used in CI.
 3. Polls `/actuator/health` until it reports `UP` (readiness confirmation).
 4. Verifies successful migration V1 for the processor and tears down the service
-   and disposable database containers, including on failure.
+   and disposable database containers, including the database's anonymous data
+   volume, on success or failure.
 
 `telemetry-processor` serves its actuator surface on a separate, loopback-bound
 management port (`9083`) — see its `application.yml`. Validation sets

@@ -337,7 +337,7 @@ try {
                 -Condition ($LASTEXITCODE -eq 0 -and $migrationCount -eq "1") `
                 -SuccessMessage "Processor image applied the initial PostgreSQL migration" `
                 -FailureMessage "Processor image did not record successful schema migration V1."
-            Invoke-Docker rm -f $validationDatabase | Out-Null
+            Invoke-Docker rm -fv $validationDatabase | Out-Null
             $validationDatabase = $null
         }
         Write-Host ""
@@ -345,7 +345,7 @@ try {
 }
 finally {
     if ($null -ne $validationDatabase) {
-        Invoke-Docker rm -f $validationDatabase | Out-Null
+        Invoke-Docker rm -fv $validationDatabase | Out-Null
     }
 }
 

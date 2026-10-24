@@ -14,6 +14,7 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -123,6 +124,30 @@ class PostgresMigrationIntegrationTest {
         insertAnomaly();
         jdbc.execute(alteration);
         application.run(context -> assertThat(context).hasFailed());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomalies", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM pulsestream_migrations.flyway_schema_history WHERE version = '1'",
+                Integer.class)).isZero();
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "idx_telemetry_tenant, processed_telemetry, tenant_id",
+            "idx_telemetry_device, processed_telemetry, device_id",
+            "idx_telemetry_timestamp, processed_telemetry, timestamp DESC",
+            "idx_anomalies_tenant, anomalies, tenant_id",
+            "idx_anomalies_device, anomalies, device_id",
+            "idx_anomalies_timestamp, anomalies, timestamp DESC"
+    })
+    void uniqueLegacyLookupIndexPreventsProcessorStartup(String index, String table, String column) throws Exception {
+        legacySchema();
+        insertAnomaly();
+        jdbc.execute("DROP INDEX platform." + index);
+        jdbc.execute("CREATE UNIQUE INDEX " + index + " ON platform." + table + " (" + column + ")");
+
+        application.run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure()).hasStackTraceContaining("Incompatible legacy index: platform." + index);
+        });
         assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomalies", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM pulsestream_migrations.flyway_schema_history WHERE version = '1'",
                 Integer.class)).isZero();
