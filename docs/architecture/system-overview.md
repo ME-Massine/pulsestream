@@ -72,7 +72,7 @@ The platform is composed of several distributed components that communicate thro
 | Kafka Cluster | Central streaming backbone responsible for event transport and buffering |
 | Telemetry Processor | Consumes telemetry streams, performs anomaly detection, and handles dead-letter routing and replay |
 | Query Service | Deployable scaffold; query APIs for processed telemetry and anomaly data are Phase 7 work |
-| PostgreSQL | Stores processed telemetry data; anomaly table exists in schema script (application-level anomaly persistence is Phase 7 work) |
+| PostgreSQL | Stores processed telemetry data; processor Flyway migrations create both tables (application-level anomaly persistence is Phase 7 work) |
 | Observability Stack | Prometheus, Grafana dashboards, and OpenTelemetry tracing (Jaeger locally, OpenTelemetry Collector in Kubernetes) |
 | Device Simulator | Planned generator for synthetic telemetry |
 

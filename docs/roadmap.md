@@ -127,7 +127,8 @@ Issue #30 was closed on 2026-08-13 without a completion comment. Its manifest-de
 **Deliverables:**
 
 *   Complete CI quality gates and automated dependency, secret, code, and container security checks
-*   Version-controlled PostgreSQL schema migrations
+*   Version-controlled PostgreSQL schema migrations (implemented in #265;
+    [processor startup process](architecture/database-migrations.md), live cluster validation pending)
 *   Processed-telemetry query API and persisted, queryable anomaly projections
 *   Versioned event contracts with compatibility validation
 *   Deterministic anomaly detection under horizontal scaling

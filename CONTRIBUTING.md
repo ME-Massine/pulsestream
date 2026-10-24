@@ -34,6 +34,8 @@ The workflow runs these checks:
   and extraction path, within the repository sanity check job.
 - A Java 25 Maven `verify` matrix for `ingestion-service`,
   `telemetry-processor`, and `query-service`, with Maven dependency caching.
+- PostgreSQL 16 migration/startup integration tests in the processor's normal
+  Maven test lifecycle. Docker is required; unavailable Docker fails the tests.
 - JaCoCo reports and per-service non-regression coverage floors, uploaded as
   artifacts and summarized in the job output.
 - All service Dockerfiles built and started through the existing container
@@ -53,6 +55,10 @@ cd services/ingestion-service && ./mvnw verify
 # Compose configuration
 docker compose -f infrastructure/docker/docker-compose.yml config --quiet
 ```
+
+Processor migration tests require a running Docker engine and pull PostgreSQL 16
+through Testcontainers. See [database migrations](docs/architecture/database-migrations.md)
+for startup, legacy-data adoption, and migration recovery.
 
 ```powershell
 # Parse every script/module, then run each regression test in a child process

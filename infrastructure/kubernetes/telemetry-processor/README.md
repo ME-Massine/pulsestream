@@ -21,6 +21,21 @@ kubectl apply -f infrastructure/kubernetes/telemetry-processor/configmap.yaml \
 
 Provision the real `telemetry-processor-secret` separately, out-of-band, before applying the manifests above — see `secret.example.yaml` for its shape. Never `kubectl apply -f secret.example.yaml` directly.
 
+## PostgreSQL migrations
+
+PostgreSQL must be reachable before processor startup. The image applies Flyway
+migrations automatically before JPA and Kafka listeners initialize, using the
+datasource URL in `configmap.yaml` and credentials in the real Secret. The database
+role needs database `CREATE` permission and ownership of legacy platform objects.
+Replicas serialize migration through Flyway's PostgreSQL lock; no separate Job or
+manual SQL is required. Errors prevent startup and readiness.
+
+Follow the same [database migration procedure](../../../docs/architecture/database-migrations.md)
+as local development for existing-data adoption, forward-compatible changes,
+failure recovery, and rollback. Provision PostgreSQL separately; these manifests
+do not create a database server. Promote an image containing the migrations before
+expecting this behavior in-cluster. Live cluster validation remains pending.
+
 ## Autoscaling
 
 `hpa.yaml` scales the `telemetry-processor` Deployment on CPU utilization against the pod's `250m` request, at a 70% target (~`175m`), within a **2 to 3** replica range. The reasoning behind the metric and the bounds lives in [`docs/architecture/autoscaling-strategy.md`](../../../docs/architecture/autoscaling-strategy.md); the two points that matter most when reading the manifest:
