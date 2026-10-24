@@ -278,23 +278,75 @@ Write-Host "Validating platform container images: $($Services -join ', ')"
 Write-Host "Network: $Network"
 Write-Host ""
 
-foreach ($service in $Services) {
-    Write-Host "=== $service ===" -ForegroundColor Cyan
+$validationDatabase = $null
+try {
+    foreach ($service in $Services) {
+        Write-Host "=== $service ===" -ForegroundColor Cyan
 
-    if ($providedReference.Count -gt 0) {
-        $reference = Get-ImageReference $service
-        Write-Host "Pulling exact image $reference ..."
-        Invoke-Docker pull $reference | Out-Null
-        Confirm-Condition -Permanent `
-            -Condition ($LASTEXITCODE -eq 0) `
-            -SuccessMessage "Exact image pulled: $reference" `
-            -FailureMessage "docker pull failed for '$reference' (exit $LASTEXITCODE)."
-    } elseif (-not $SkipBuild) {
-        Build-ServiceImage $service
+        if ($providedReference.Count -gt 0) {
+            $reference = Get-ImageReference $service
+            Write-Host "Pulling exact image $reference ..."
+            Invoke-Docker pull $reference | Out-Null
+            Confirm-Condition -Permanent `
+                -Condition ($LASTEXITCODE -eq 0) `
+                -SuccessMessage "Exact image pulled: $reference" `
+                -FailureMessage "docker pull failed for '$reference' (exit $LASTEXITCODE)."
+        } elseif (-not $SkipBuild) {
+            Build-ServiceImage $service
+        }
+
+        if ($service -eq "telemetry-processor") {
+            # Use a disposable real database on the selected network, including the
+            # default Docker bridge used by CI. No host port or existing data volume
+            # is needed. Migrations remain enabled so image validation exercises V1.
+            $validationDatabase = "pulsestream-validate-postgres-$([guid]::NewGuid().ToString('N'))"
+            $databasePassword = [guid]::NewGuid().ToString('N')
+            $databaseArgs = @(
+                "run", "-d", "--name", $validationDatabase, "--network", $Network,
+                "-e", "POSTGRES_DB=pulsestream", "-e", "POSTGRES_USER=pulsestream",
+                "-e", "POSTGRES_PASSWORD=$databasePassword", "postgres:16"
+            )
+            Invoke-Docker @databaseArgs | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Failed to start validation PostgreSQL." }
+
+            $databaseReady = $false
+            $databaseDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
+            while ((Get-Date) -lt $databaseDeadline) {
+                $readyArgs = @("exec", $validationDatabase, "pg_isready", "-h", "127.0.0.1", "-U", "pulsestream", "-d", "pulsestream")
+                Invoke-Docker @readyArgs | Out-Null
+                if ($LASTEXITCODE -eq 0) { $databaseReady = $true; break }
+                Start-Sleep -Seconds 1
+            }
+            if (-not $databaseReady) { throw "Validation PostgreSQL did not become ready within $TimeoutSeconds seconds." }
+
+            $databaseAddress = (Invoke-Docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $validationDatabase | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($databaseAddress)) {
+                throw "Could not resolve validation PostgreSQL container address."
+            }
+            $serviceConfig[$service].Env.PULSESTREAM_POSTGRES_URL = "jdbc:postgresql://${databaseAddress}:5432/pulsestream"
+            $serviceConfig[$service].Env.PULSESTREAM_POSTGRES_USERNAME = "pulsestream"
+            $serviceConfig[$service].Env.PULSESTREAM_POSTGRES_PASSWORD = $databasePassword
+        }
+
+        Test-ServiceContainer $service
+        if ($service -eq "telemetry-processor") {
+            $historyArgs = @("exec", $validationDatabase, "psql", "-U", "pulsestream", "-d", "pulsestream", "-Atc",
+                "SELECT count(*) FROM pulsestream_migrations.flyway_schema_history WHERE version = '1' AND success")
+            $migrationCount = (Invoke-Docker @historyArgs | Out-String).Trim()
+            Confirm-Condition -Permanent `
+                -Condition ($LASTEXITCODE -eq 0 -and $migrationCount -eq "1") `
+                -SuccessMessage "Processor image applied the initial PostgreSQL migration" `
+                -FailureMessage "Processor image did not record successful schema migration V1."
+            Invoke-Docker rm -f $validationDatabase | Out-Null
+            $validationDatabase = $null
+        }
+        Write-Host ""
     }
-
-    Test-ServiceContainer $service
-    Write-Host ""
+}
+finally {
+    if ($null -ne $validationDatabase) {
+        Invoke-Docker rm -f $validationDatabase | Out-Null
+    }
 }
 
 Write-Host "[ok] All targeted service images built, started, and reported healthy." -ForegroundColor Green

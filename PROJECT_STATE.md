@@ -75,6 +75,11 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
 *   Processed event publishing to `telemetry.events.processed`.
 *   Anomaly event publishing to `telemetry.events.anomalies`.
 *   PostgreSQL persistence for normal processed telemetry in `platform.processed_telemetry`.
+*   Version-controlled Flyway migrations owned by the telemetry processor (#265),
+    applied at startup in local development and Kubernetes. V1 initializes empty
+    databases and adopts compatible legacy telemetry/anomaly tables without
+    deleting rows; PostgreSQL-backed tests cover restart and migration failures.
+    See [database migrations](docs/architecture/database-migrations.md).
 
 ### Observability and Monitoring (Phase 4)
 *   Spring Boot actuator health and Prometheus metrics endpoints in both runtime services.
@@ -138,7 +143,6 @@ The Phase 6 live-deployment evidence required to begin Phase 7 is not yet record
 
 *   Application-level persistence of detected anomalies (anomalies are currently published to `telemetry.events.anomalies` only) — issue #267.
 *   Query API business logic for processed telemetry and anomalies (the `query-service` is a scaffold only) — issues #266, #267.
-*   Version-controlled PostgreSQL schema migrations — issue #265.
 *   Authenticated and encrypted external ingestion — issue #273.
 *   Secured Kafka client communication and production secret management — issue #275.
 *   Versioned event contracts with compatibility validation — issue #268.

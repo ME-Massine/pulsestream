@@ -20,10 +20,12 @@ Out of scope: registry publishing and Kubernetes deployment.
 For each service the validation:
 
 1. Builds the image locally with `docker build`.
-2. Runs the container on the platform network so `kafka:29092` / `postgres:5432`
-   resolve.
+2. Runs the container on the selected Docker network. Processor validation
+   provisions a disposable PostgreSQL 16 container on that network, including
+   when `-Network bridge` is used in CI.
 3. Polls `/actuator/health` until it reports `UP` (readiness confirmation).
-4. Tears the container down.
+4. Verifies successful migration V1 for the processor and tears down the service
+   and disposable database containers, including on failure.
 
 `telemetry-processor` serves its actuator surface on a separate, loopback-bound
 management port (`9083`) — see its `application.yml`. Validation sets
@@ -35,8 +37,7 @@ reachable from the host. This override is for local validation only.
 ## Prerequisites
 
 - Docker running.
-- The local infrastructure stack up, so the services can reach Kafka and
-  Postgres by hostname:
+- The local infrastructure stack up when using the default platform network:
 
   ```powershell
   docker compose -f infrastructure/docker/docker-compose.yml up -d

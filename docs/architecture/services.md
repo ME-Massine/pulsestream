@@ -184,7 +184,7 @@ Kafka acts as the backbone of the platform.
 
 ### PostgreSQL
 
-PostgreSQL stores processed telemetry records. The schema script also defines an `anomalies` table, but the current telemetry processor publishes anomaly events to Kafka and does not persist anomaly records through application code yet.
+PostgreSQL stores processed telemetry records. Processor-owned Flyway migrations also define an `anomalies` table, but the current telemetry processor publishes anomaly events to Kafka and does not persist anomaly records through application code yet.
 
 **Responsibilities:**
 
@@ -195,7 +195,7 @@ PostgreSQL stores processed telemetry records. The schema script also defines an
 **Example tables:**
 
 *   `platform.processed_telemetry`
-*   `platform.anomalies` (schema exists in `postgres/init.sql`; application persistence is not implemented yet)
+*   `platform.anomalies` (created by processor Flyway migrations; application persistence is not implemented yet)
 
 ---
 

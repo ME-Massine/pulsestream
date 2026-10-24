@@ -12,7 +12,7 @@ import java.time.Instant;
 /**
  * JPA entity mapping a processed telemetry event to the {@code platform.processed_telemetry} table.
  *
- * <p>The schema is owned by {@code infrastructure/docker/postgres/init.sql}; this mapping is kept
+ * <p>The schema is owned by Flyway migrations in {@code classpath:db/migration}; this mapping is kept
  * consistent with those columns (Hibernate {@code ddl-auto} is {@code none}, so the entity never
  * generates or mutates the schema).
  */

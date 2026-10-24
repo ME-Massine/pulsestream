@@ -20,7 +20,7 @@ The local platform includes:
 - `.env.example` — example environment configuration
 - `prometheus/prometheus.yml` — `Prometheus` configuration
 - `grafana/provisioning/datasources/prometheus.yml` — `Grafana` datasource provisioning for `Prometheus`
-- `postgres/init.sql` — `PostgreSQL` schema script for processed telemetry and anomalies. The current Compose file does not mount this file into `/docker-entrypoint-initdb.d`, so apply it manually or add a mount before relying on automatic schema creation.
+- `../../services/telemetry-processor/src/main/resources/db/migration/` — versioned Flyway migrations for processed telemetry and anomalies, applied automatically when the processor starts. The manual `postgres/init.sql` path has been retired.
 - `kafka/init-topics.sh` — Kafka topic creation script (runs at startup)
 - `kafka/check-health.sh` — Kafka broker health-check script
 - `../../scripts/validate-prometheus-metrics.ps1` — validates local ingestion-service metrics collection through `Prometheus`
@@ -52,13 +52,23 @@ Copy-Item .env.example .env
 docker compose up -d
 ```
 
-#### 3. Stop the platform
+#### 3. Start the telemetry processor and initialize PostgreSQL
+
+Application services run on the host. After PostgreSQL is healthy, run
+`.\mvnw.cmd spring-boot:run` from `services/telemetry-processor` (`./mvnw` on Unix).
+Flyway initializes a clean database or adopts the compatible legacy tables without
+deleting rows. Migration failures prevent processor startup. Custom Compose
+database settings must be exported as matching `PULSESTREAM_POSTGRES_*` variables
+in the host shell. See [database migrations](../../docs/architecture/database-migrations.md)
+for the shared local/Kubernetes process, forward changes, failures, and rollback.
+
+#### 4. Stop the platform
 
 ```bash
 docker compose down
 ```
 
-#### 4. Stop and remove volumes
+#### 5. Stop and remove volumes (deletes persisted data)
 
 ```bash
 docker compose down -v

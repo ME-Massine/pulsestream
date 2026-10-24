@@ -1,4 +1,8 @@
 spring:
+  # HTTP/actuator tests do not exercise persistence. PostgreSQL migration tests
+  # explicitly enable Flyway and run against a disposable real database.
+  flyway:
+    enabled: false
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration

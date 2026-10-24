@@ -6,6 +6,15 @@ spring:
     username: ${PULSESTREAM_POSTGRES_USERNAME:pulsestream}
     password: ${PULSESTREAM_POSTGRES_PASSWORD:pulsestream}
     driver-class-name: org.postgresql.Driver
+  flyway:
+    locations: classpath:db/migration
+    # A separate history schema lets V1 adopt the legacy platform tables without
+    # baselining (and therefore skipping) their migration or deleting their data.
+    default-schema: pulsestream_migrations
+    schemas: pulsestream_migrations
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    clean-disabled: true
   jpa:
     database: postgresql
     open-in-view: false

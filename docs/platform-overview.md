@@ -90,7 +90,7 @@ These services read from Kafka topics and produce new events downstream.
 
 ### Storage Layer
 
-Normal processed telemetry records are stored in PostgreSQL. The schema script defines an anomalies table, but the current application code publishes anomaly events to Kafka and does not persist them yet.
+Normal processed telemetry records are stored in PostgreSQL. Processor-owned Flyway migrations define an anomalies table, but the current application code publishes anomaly events to Kafka and does not persist them yet.
 
 The database supports:
 
