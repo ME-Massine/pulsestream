@@ -18,10 +18,23 @@ SCHEMA_PATH = re.compile(r"contracts/schemas/([a-z-]+)/v([1-9][0-9]*)\.schema\.j
 TOPICS = {"raw", "processed", "anomaly", "dead-letter"}
 
 
+def json_equal(left, right):
+    """Compare JSON values recursively, keeping booleans distinct from numbers."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, dict):
+        return isinstance(right, dict) and left.keys() == right.keys() and all(
+            json_equal(value, right[key]) for key, value in left.items())
+    if isinstance(left, list):
+        return isinstance(right, list) and len(left) == len(right) and all(
+            json_equal(before, after) for before, after in zip(left, right))
+    return left == right
+
+
 def compare(old, new, path="$"):
     """Return all unsupported same-major changes, including unknown keywords."""
     if not isinstance(old, dict) or not isinstance(new, dict):
-        return [] if old == new else [f"{path}: validation rule changed"]
+        return [] if json_equal(old, new) else [f"{path}: validation rule changed"]
     errors = []
     for key in old.keys() | new.keys():
         if key in ANNOTATIONS:
@@ -44,7 +57,7 @@ def compare(old, new, path="$"):
         elif key in {"items", "additionalProperties", "contains", "propertyNames", "not", "if", "then", "else"} \
                 and isinstance(before, dict) and isinstance(after, dict):
             errors.extend(compare(before, after, f"{path}/{key}"))
-        elif before != after:
+        elif not json_equal(before, after):
             errors.append(f"{path}/{key}: validation rule changed")
     return errors
 

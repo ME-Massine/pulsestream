@@ -4,6 +4,7 @@ from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +13,17 @@ import unittest
 SPEC = importlib.util.spec_from_file_location("contracts", Path(__file__).with_name("check-event-contracts.py"))
 contracts = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(contracts)
+
+
+BOOLEAN_NUMBER_PAIRS = (
+    (True, 1),
+    (False, 0),
+    (True, 1.0),
+    (False, 0.0),
+    ({"enabled": True}, {"enabled": 1}),
+    ([False], [0]),
+    ({"flags": [True, {"enabled": False}]}, {"flags": [1, {"enabled": 0}]}),
+)
 
 
 class CompatibilityTest(unittest.TestCase):
@@ -56,6 +68,63 @@ class CompatibilityTest(unittest.TestCase):
             ({"const": {"description": "a"}}, {"const": {"description": "b"}}),
         ]:
             self.assertTrue(contracts.compare(old, new))
+
+    def test_boolean_number_constraints_are_distinct(self):
+        for boolean, number in BOOLEAN_NUMBER_PAIRS:
+            for before, after in ((boolean, number), (number, boolean)):
+                for keyword in ("const", "enum"):
+                    with self.subTest(before=before, after=after, keyword=keyword):
+                        old = {keyword: [before] if keyword == "enum" else before}
+                        new = {keyword: [after] if keyword == "enum" else after}
+                        self.assertEqual([f"$/{keyword}: validation rule changed"],
+                                         contracts.compare(old, new))
+        for before, after in ((True, 1), (1, True), (False, 0), (0, False)):
+            with self.subTest(before=before, after=after):
+                self.assertTrue(contracts.compare(before, after))
+
+    def test_equivalent_json_values_remain_compatible(self):
+        for before, after in (
+            (True, True),
+            (False, False),
+            (1, 1.0),
+            (0.0, 0),
+            ({"enabled": True, "values": [None, 1, False, "text"]},
+             {"values": [None, 1.0, False, "text"], "enabled": True}),
+        ):
+            for keyword in ("const", "enum"):
+                with self.subTest(before=before, after=after, keyword=keyword):
+                    old = {keyword: [before] if keyword == "enum" else before}
+                    new = {keyword: [after] if keyword == "enum" else after}
+                    self.assertEqual([], contracts.compare(old, new))
+
+    def test_git_baseline_rejects_boolean_number_constraints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copytree(Path(__file__).resolve().parents[2] / "contracts", root / "contracts")
+            schema_file = root / "contracts/schemas/raw/v1.schema.json"
+            baseline = json.loads(schema_file.read_text(encoding="utf-8"))
+            changes = []
+            for boolean, number in BOOLEAN_NUMBER_PAIRS:
+                for before, after in ((boolean, number), (number, boolean)):
+                    for keyword in ("const", "enum"):
+                        name = f"optionalConstraint{len(changes)}"
+                        baseline["properties"][name] = {
+                            keyword: [before] if keyword == "enum" else before}
+                        changes.append((name, keyword, [after] if keyword == "enum" else after))
+            schema_file.write_text(json.dumps(baseline), encoding="utf-8")
+            contracts.git(root, "init", "--quiet")
+            contracts.git(root, "add", ".")
+            contracts.git(root, "-c", "user.name=Contract Test", "-c", "user.email=contracts@example.invalid",
+                          "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Published contracts")
+            self.assertEqual([], contracts.check(root, "HEAD"))
+            for name, keyword, value in changes:
+                with self.subTest(property=name, keyword=keyword, value=value):
+                    candidate = deepcopy(baseline)
+                    candidate["properties"][name][keyword] = value
+                    schema_file.write_text(json.dumps(candidate), encoding="utf-8")
+                    self.assertEqual([
+                        f"contracts/schemas/raw/v1.schema.json: $/properties/{name}/{keyword}: validation rule changed"
+                    ], contracts.check(root, "HEAD"))
 
     def test_git_baseline_new_major_and_retention(self):
         with tempfile.TemporaryDirectory() as directory:

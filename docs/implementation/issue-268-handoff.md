@@ -90,30 +90,43 @@ Contract validation uses NetworkNT 3.0.7 only in Maven test scope.
   coverage floors remain unchanged. Authentication and delivery/reclassification
   work remains under its existing issues. Phase 6 live validation remains open.
 
+## Review follow-up: JSON boolean equality
+
+The compatibility comparator now uses recursive JSON equality for validation
+rules. Boolean values remain distinct from numbers in `const`, `enum`, nested
+objects and arrays, including unknown validation keywords. Numerically equivalent
+JSON numbers such as `1` and `1.0` still compare equal. Optional-field additions
+and annotation edits retain their existing behavior.
+
+Validation for this follow-up: seven Python regression tests passed, including
+28 full Git-baseline boolean/number scenarios covering both change directions.
+All 28 scenarios fail against the original comparator, confirming the bypass.
+The compatibility gate against `HEAD` (`b6b4819`) and `git diff --check` passed.
+Checks used a temporary Python 3.12.10 runtime outside the repository. Maven,
+PowerShell and infrastructure checks were not rerun for this Python-only fix;
+the table above records the original implementation validation.
+
+Owner: @ME-Massine. Issue: #268. C-xx IDs: none assigned. Shared files for this
+follow-up are the two CI compatibility scripts and this handoff. Joint review
+by event-contract consumers and CI/platform owners remains pending. Operating
+effect: same-major boolean/number constraint changes now fail CI and require a
+new retained schema major under the existing evolution policy.
+
 ## Developer Git commands
 
 Review the diff before staging. The three existing `mvnw.cmd` changes and
 untracked `AGENTS.md` / `Claude.md` predate this issue and are excluded below.
-Confirm the base branch contains prerequisite `0fd9a31` before creating the PR.
+These commands stage only the review follow-up on the existing feature branch.
 
 ```powershell
 git switch feature/268-versioned-event-contracts
 git diff --check
-git diff --stat
-git add -- .github/workflows/ci.yml CONTRIBUTING.md PROJECT_STATE.md README.md `
-    contracts docs/architecture/event-schema.md docs/architecture/topics.md `
-    docs/decisions/0007-json-event-contracts.md docs/decisions/README.md `
-    docs/roadmap.md docs/implementation/issue-268-handoff.md `
-    scripts/ci/check-event-contracts.py scripts/ci/test_event_contracts.py `
-    services/ingestion-service/pom.xml services/ingestion-service/src `
-    services/telemetry-processor/pom.xml services/telemetry-processor/src
+git add -- docs/implementation/issue-268-handoff.md `
+    scripts/ci/check-event-contracts.py scripts/ci/test_event_contracts.py
+git diff --cached --check
 git diff --cached --stat
-git commit -m "feat(contracts): version Kafka event schemas and enforce compatibility"
+git commit -m "fix(contracts): distinguish JSON booleans from numbers"
 git push -u origin feature/268-versioned-event-contracts
-# Save the PR text below in the specified file before running:
-gh pr create --draft --base main `
-    --title "feat(contracts): version Kafka event schemas and enforce compatibility" `
-    --body-file "$env:TEMP/pulsestream-268-pr.md"
 ```
 
 ## Copy-ready PR text
@@ -123,7 +136,8 @@ gh pr create --draft --base main `
 Kafka raw, processed, anomaly and dead-letter JSON values now have authoritative
 versioned JSON Schema contracts. Shared fixtures and producer/consumer tests
 prevent model drift. CI rejects incompatible edits to published major schemas;
-new majors retain old contracts and fixtures.
+new majors retain old contracts and fixtures. Recursive JSON comparisons
+distinguish booleans from numbers in scalar and nested validation constraints.
 
 ## Related Issue
 Closes #268. Phase: #254. Related foundations: #265, #266 and #267.
@@ -153,7 +167,13 @@ and external consumer migration separately from structural validation.
   no failures/skips; PostgreSQL tests included; coverage floors unchanged.
 - JaCoCo line/branch coverage: ingestion 90.24%/57.14%, processor 94.86%/78.67%,
   query 98.82%/97.50%.
-- Four compatibility-policy regression tests and the gate against 0fd9a31 passed.
+- Seven compatibility-policy regression tests passed, including 28 Git-baseline
+  boolean/number cases for const/enum constraints in both directions, with nested
+  objects and arrays. All 28 cases fail against the original comparator.
+- Follow-up compatibility gate against b6b4819 and git diff --check passed using
+  Python 3.12.10. Original schema-introduction gate against 0fd9a31 passed.
+- Maven, PowerShell and Compose results in this description are from the original
+  implementation; this Python-only follow-up did not rerun those checks.
 - Offline PowerShell checks passed on 7.5.4 and Windows 5.1: 56 parsed sources,
   18 regression files, no failures/skips on each edition.
 - Compose configuration and git diff --check passed.
