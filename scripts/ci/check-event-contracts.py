@@ -6,6 +6,7 @@ safe changes rather than guessing JSON Schema subsumption from sample payloads.
 """
 
 import argparse
+from decimal import Decimal
 import json
 from pathlib import Path
 import re
@@ -75,7 +76,7 @@ def check(root, base_ref):
         if not match or match[1] not in TOPICS:
             errors.append(f"{relative}: expected a known topic and v<major>.schema.json")
             continue
-        schema = json.loads(file.read_text(encoding="utf-8"))
+        schema = json.loads(file.read_text(encoding="utf-8"), parse_float=Decimal)
         current[relative] = schema
         expected_id = f"https://pulsestream.dev/contracts/{match[1]}/v{match[2]}.schema.json"
         if schema.get("$id") != expected_id:
@@ -125,7 +126,7 @@ def check(root, base_ref):
         if relative not in current:
             errors.append(f"{relative}: published schema removed; retain old majors during migration")
             continue
-        old = json.loads(git(root, "show", f"{base_ref}:{relative}"))
+        old = json.loads(git(root, "show", f"{base_ref}:{relative}"), parse_float=Decimal)
         errors.extend(f"{relative}: {error}" for error in compare(old, current[relative]))
 
     # Existing examples are compatibility promises too; replacing the examples
@@ -133,8 +134,9 @@ def check(root, base_ref):
     old_fixtures = git(root, "ls-tree", "-r", "--name-only", base_ref, "--", "contracts/fixtures")
     for relative in old_fixtures.splitlines():
         file = root / relative
-        if not file.is_file() or json.loads(file.read_text(encoding="utf-8")) != json.loads(
-                git(root, "show", f"{base_ref}:{relative}")):
+        if not file.is_file() or not json_equal(
+                json.loads(file.read_text(encoding="utf-8"), parse_float=Decimal),
+                json.loads(git(root, "show", f"{base_ref}:{relative}"), parse_float=Decimal)):
             errors.append(f"{relative}: published fixture changed/removed; add a new fixture")
     if "contracts/fixtures.json" in git(root, "ls-tree", "-r", "--name-only", base_ref,
                                        "--", "contracts/fixtures.json").splitlines():

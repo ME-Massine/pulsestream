@@ -27,6 +27,12 @@ BOOLEAN_NUMBER_PAIRS = (
 
 
 class CompatibilityTest(unittest.TestCase):
+    def publish(self, root):
+        contracts.git(root, "init", "--quiet")
+        contracts.git(root, "add", ".")
+        contracts.git(root, "-c", "user.name=Contract Test", "-c", "user.email=contracts@example.invalid",
+                      "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Published contracts")
+
     def setUp(self):
         self.old = json.loads((Path(__file__).resolve().parents[2] /
                                "contracts/schemas/raw/v1.schema.json").read_text(encoding="utf-8"))
@@ -125,6 +131,71 @@ class CompatibilityTest(unittest.TestCase):
                     self.assertEqual([
                         f"contracts/schemas/raw/v1.schema.json: $/properties/{name}/{keyword}: validation rule changed"
                     ], contracts.check(root, "HEAD"))
+
+    def test_git_baseline_preserves_decimal_precision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copytree(Path(__file__).resolve().parents[2] / "contracts", root / "contracts")
+            schema_file = root / "contracts/schemas/raw/v1.schema.json"
+            baseline = deepcopy(self.old)
+            precise = "1.0000000000000001"
+            baseline["properties"]["lowerBound"] = {"minimum": 1.0}
+            baseline["properties"]["upperBound"] = {"maximum": precise}
+
+            def write_schema(schema):
+                # Inject the exact JSON number without passing through a Python float.
+                schema_file.write_text(json.dumps(schema).replace(f'"{precise}"', precise), encoding="utf-8")
+
+            write_schema(baseline)
+            self.publish(root)
+            self.assertEqual([], contracts.check(root, "HEAD"))
+            for name, keyword, value in (
+                ("lowerBound", "minimum", precise),
+                ("upperBound", "maximum", 1.0),
+            ):
+                with self.subTest(property=name):
+                    candidate = deepcopy(baseline)
+                    candidate["properties"][name][keyword] = value
+                    write_schema(candidate)
+                    self.assertEqual([
+                        f"contracts/schemas/raw/v1.schema.json: $/properties/{name}/{keyword}: validation rule changed"
+                    ], contracts.check(root, "HEAD"))
+            equivalent = deepcopy(baseline)
+            equivalent["properties"]["lowerBound"]["minimum"] = 1
+            write_schema(equivalent)
+            self.assertEqual([], contracts.check(root, "HEAD"))
+
+    def test_git_baseline_fixture_equality(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copytree(Path(__file__).resolve().parents[2] / "contracts", root / "contracts")
+            relative = "contracts/fixtures/raw-v1.json"
+            fixture_file = root / relative
+            baseline = json.loads(fixture_file.read_text(encoding="utf-8"))
+            changes = []
+            for boolean, number in BOOLEAN_NUMBER_PAIRS:
+                for before, after in ((boolean, number), (number, boolean)):
+                    name = f"optionalExtension{len(changes)}"
+                    baseline[name] = before
+                    changes.append((name, after))
+            baseline["decimalExtension"] = 1.0
+            changes.append(("decimalExtension", "precise-number"))
+            fixture_file.write_text(json.dumps(baseline), encoding="utf-8")
+            self.publish(root)
+            self.assertEqual([], contracts.check(root, "HEAD"))
+            for name, value in changes:
+                with self.subTest(extension=name):
+                    candidate = deepcopy(baseline)
+                    candidate[name] = value
+                    fixture_file.write_text(json.dumps(candidate).replace(
+                        '"precise-number"', "1.0000000000000001"), encoding="utf-8")
+                    self.assertEqual([
+                        f"{relative}: published fixture changed/removed; add a new fixture"
+                    ], contracts.check(root, "HEAD"))
+            equivalent = deepcopy(baseline)
+            equivalent["decimalExtension"] = 1
+            fixture_file.write_text(json.dumps(equivalent, sort_keys=True, indent=2), encoding="utf-8")
+            self.assertEqual([], contracts.check(root, "HEAD"))
 
     def test_git_baseline_new_major_and_retention(self):
         with tempfile.TemporaryDirectory() as directory:

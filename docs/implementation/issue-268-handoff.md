@@ -112,10 +112,32 @@ by event-contract consumers and CI/platform owners remains pending. Operating
 effect: same-major boolean/number constraint changes now fail CI and require a
 new retained schema major under the existing evolution policy.
 
+## Review follow-up: decimal precision and fixture immutability
+
+Current and published schemas now parse decimal numbers losslessly with Python
+`Decimal`. A minimum changing from `1.0` to `1.0000000000000001` fails the gate.
+Published fixtures use the same lossless parsing and recursive JSON equality,
+so boolean/number substitutions in optional extensions, nested objects and arrays
+fail immutability checks. Equivalent numeric values and JSON formatting changes
+remain accepted.
+
+Validation: all nine Python regression tests passed. The two new Git-baseline
+tests cover decimal changes in both schema-loading directions, 14 boolean/number
+fixture edits, a decimal fixture edit and equivalent-value controls. The 17
+changed-value scenarios fail against the prior checker (`f1ac86a`), confirming
+both bypasses. The compatibility gate against `HEAD` (`f1ac86a`) and
+`git diff --check` passed using the temporary Python 3.12.10 runtime. Service,
+PowerShell and infrastructure checks were not rerun for this Python-only fix.
+
+Owner: @ME-Massine. Issue: #268. C-xx IDs: none assigned. Shared files: the two CI
+compatibility scripts and this handoff. Joint review by event-contract consumers
+and CI/platform owners remains pending. Operating effect: CI detects decimal
+constraint changes and published fixture edits previously hidden by Python
+numeric equality; service runtime behavior is unchanged.
+
 ## Developer Git commands
 
-Review the diff before staging. The three existing `mvnw.cmd` changes and
-untracked `AGENTS.md` / `Claude.md` predate this issue and are excluded below.
+Review the diff before staging. Untracked `AGENTS.md` / `Claude.md` are excluded below.
 These commands stage only the review follow-up on the existing feature branch.
 
 ```powershell
@@ -125,7 +147,7 @@ git add -- docs/implementation/issue-268-handoff.md `
     scripts/ci/check-event-contracts.py scripts/ci/test_event_contracts.py
 git diff --cached --check
 git diff --cached --stat
-git commit -m "fix(contracts): distinguish JSON booleans from numbers"
+git commit -m "fix(contracts): preserve decimal precision and fixture immutability"
 git push -u origin feature/268-versioned-event-contracts
 ```
 
@@ -137,7 +159,8 @@ Kafka raw, processed, anomaly and dead-letter JSON values now have authoritative
 versioned JSON Schema contracts. Shared fixtures and producer/consumer tests
 prevent model drift. CI rejects incompatible edits to published major schemas;
 new majors retain old contracts and fixtures. Recursive JSON comparisons
-distinguish booleans from numbers in scalar and nested validation constraints.
+distinguish booleans from numbers in scalar and nested validation constraints
+and published fixtures. Decimal parsing preserves exact schema and fixture values.
 
 ## Related Issue
 Closes #268. Phase: #254. Related foundations: #265, #266 and #267.
@@ -167,10 +190,13 @@ and external consumer migration separately from structural validation.
   no failures/skips; PostgreSQL tests included; coverage floors unchanged.
 - JaCoCo line/branch coverage: ingestion 90.24%/57.14%, processor 94.86%/78.67%,
   query 98.82%/97.50%.
-- Seven compatibility-policy regression tests passed, including 28 Git-baseline
+- Nine compatibility-policy regression tests passed, including 28 Git-baseline
   boolean/number cases for const/enum constraints in both directions, with nested
   objects and arrays. All 28 cases fail against the original comparator.
-- Follow-up compatibility gate against b6b4819 and git diff --check passed using
+- Two additional Git-baseline tests cover decimal schema precision and fixture
+  immutability. All 17 changed-value scenarios fail against the prior checker;
+  equivalent numbers and fixture formatting changes remain accepted.
+- Follow-up compatibility gate against f1ac86a and git diff --check passed using
   Python 3.12.10. Original schema-introduction gate against 0fd9a31 passed.
 - Maven, PowerShell and Compose results in this description are from the original
   implementation; this Python-only follow-up did not rerun those checks.
