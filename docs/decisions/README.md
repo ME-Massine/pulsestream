@@ -10,6 +10,7 @@ This directory contains the Architecture Decision Records (ADRs) for PulseStream
 - [ADR 0004: Use Docker Compose for local platform delivery before Kubernetes](./0004-docker-compose-before-kubernetes.md)
 - [ADR 0005: Use the Strimzi operator to deploy Kafka on Kubernetes](./0005-kafka-on-kubernetes-with-strimzi.md)
 - [ADR 0006: Use Java 25 LTS as the runtime baseline](./0006-java-25-runtime-baseline.md)
+- [ADR 0007: Version JSON Kafka contracts with JSON Schema](./0007-json-event-contracts.md)
 
 ## Purpose
 

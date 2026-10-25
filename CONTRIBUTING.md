@@ -30,6 +30,9 @@ cancels the run it supersedes.
 The workflow runs these checks:
 
 - Repository file and directory sanity checks.
+- Event schema compatibility against the PR base or previous push SHA, with
+  regression tests for the compatibility policy. Service Maven tests validate
+  schema meta-schemas, shared fixtures and actual Kafka publisher JSON values.
 - Artifact upload/download compatibility, including exact provenance JSON content
   and extraction path, within the repository sanity check job.
 - A Java 25 Maven `verify` matrix for `ingestion-service`,
@@ -85,6 +88,15 @@ themselves with a `# @requires-kube-api` comment near the top of the file.
 
 CI never uses the skip path: `Offline` and `Cluster` are separate required
 jobs, so every test file runs in one of them.
+
+### Event contract checks
+
+For Kafka contract changes, follow [the contract evolution policy](contracts/README.md).
+Run `python3 -m unittest discover -s scripts/ci -p test_event_contracts.py` and
+`python3 scripts/ci/check-event-contracts.py --base-ref <base-commit>` from the
+repository root, then Maven `verify` in both event-producing services. New major
+schemas retain old schemas and fixtures. Repository sanity remains the required
+CI context; no new branch-protection check name is introduced.
 
 ### Coverage baseline
 

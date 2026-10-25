@@ -4,6 +4,11 @@
 
 This document defines the Kafka topics used in the platform.
 
+Each topic's JSON value has an authoritative versioned schema under
+[contracts/schemas](../../contracts/schemas). See [event schemas](event-schema.md)
+for the topic-to-schema mapping and [contract policy](../../contracts/README.md)
+for version compatibility and shared fixtures.
+
 ## Naming Convention
 
 Topics follow: `<domain>.<entity>.<stage>`
@@ -25,6 +30,7 @@ Raw telemetry data ingested from devices.
 
 **Producers**
 - ingestion-service
+- telemetry-processor (DLQ replay)
 - device-simulator (planned)
 
 **Consumers**
@@ -81,6 +87,7 @@ Detected anomalies from telemetry data.
 Dead-letter queue for failed events.
 
 **Producers**
+- ingestion-service
 - telemetry-processor
 
 **Consumers**

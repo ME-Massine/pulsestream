@@ -70,6 +70,10 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
 ### Core Event Pipeline (Phase 3)
 *   `ingestion-service` with `POST /api/v1/events` and request validation.
 *   Kafka producer configuration for publishing raw telemetry to `telemetry.events.raw`.
+*   Versioned JSON Schema contracts for all four Kafka topics (#268), shared
+    producer/consumer fixtures and a conservative Git-baseline compatibility gate
+    in CI. Both DLQ producers emit the same JSON wrapper, including serialization
+    fallback. See [event contracts](contracts/README.md). Live rollout remains pending.
 *   `telemetry-processor` Kafka consumer for `telemetry.events.raw`.
 *   Telemetry normalization and anomaly detection (threshold breach and sudden-deviation rules).
 *   Processed event publishing to `telemetry.events.processed`.
@@ -159,7 +163,6 @@ The Phase 6 live-deployment evidence required to begin Phase 7 is not yet record
     reconciliation (#271) remain pending.
 *   Authenticated and encrypted external ingestion — issue #273.
 *   Secured Kafka client communication and production secret management — issue #275.
-*   Versioned event contracts with compatibility validation — issue #268.
 *   Device simulator tooling.
 *   Missing-heartbeat anomaly detection.
 *   End-to-end validation of the committed Kubernetes manifests against a live target cluster.

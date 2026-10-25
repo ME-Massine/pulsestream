@@ -53,7 +53,7 @@ public class AnomalyProcessingService {
                 ANOMALY_EVENT_TYPE,
                 rawEvent.timestamp() != null ? rawEvent.timestamp() : Instant.now(clock),
                 ANOMALY_SOURCE,
-                TelemetryEventNormalizer.defaultIfBlank(rawEvent.version(), DEFAULT_VERSION),
+                DEFAULT_VERSION,
                 TelemetryEventNormalizer.normalizePayload(rawEvent.payload()),
                 anomalyResult.severity(),
                 anomalyResult.reasons(),

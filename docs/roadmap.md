@@ -140,6 +140,9 @@ Issue #30 was closed on 2026-08-13 without a completion comment. Its manifest-de
 *   Load, failure-recovery, and data-durability validation
 *   Automated versioned releases and container-image promotion
 
+Versioned event contracts and compatibility validation are implemented in #268.
+See the [schemas and evolution policy](../contracts/README.md); live rollout remains pending.
+
 **Status:** Planned — begins after the Phase 6 exit criteria are demonstrated
 
 **Outcome:** A clean environment can deploy a documented, versioned PulseStream release using one supported workflow; a client can submit telemetry over an authenticated channel and query the resulting normal or anomalous projection; and recovery, load, and durability tests pass with documented evidence. Tracked under the Phase 7 milestone and parent issue #254.

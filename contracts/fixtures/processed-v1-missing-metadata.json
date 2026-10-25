@@ -1,0 +1,16 @@
+{
+  "eventId": "evt-contract-002",
+  "tenantId": "factory-01",
+  "eventType": "telemetry.processed",
+  "timestamp": "2026-10-24T12:00:00Z",
+  "source": "telemetry-processor",
+  "version": "1.0",
+  "payload": {
+    "deviceId": "sensor-1042",
+    "metric": "temperature",
+    "value": 28.4,
+    "deviceType": null,
+    "unit": null,
+    "location": null
+  }
+}

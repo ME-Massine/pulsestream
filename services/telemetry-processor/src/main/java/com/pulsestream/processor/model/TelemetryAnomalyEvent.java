@@ -1,5 +1,7 @@
 package com.pulsestream.processor.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import com.fasterxml.jackson.annotation.JsonFormat;
 import java.time.Instant;
 import java.util.List;
@@ -10,6 +12,7 @@ import java.util.List;
  * the event was considered anomalous, so downstream consumers can act on it without re-running
  * detection.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record TelemetryAnomalyEvent(
         String eventId,
         String tenantId,

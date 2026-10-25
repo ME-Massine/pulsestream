@@ -30,7 +30,4 @@ final class TelemetryEventNormalizer {
         return StringUtils.hasText(value) ? value.trim() : value;
     }
 
-    static String defaultIfBlank(String value, String fallback) {
-        return StringUtils.hasText(value) ? value.trim() : fallback;
-    }
 }
