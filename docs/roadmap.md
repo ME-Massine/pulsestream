@@ -132,14 +132,16 @@ Issue #30 was closed on 2026-08-13 without a completion comment. Its manifest-de
 *   Processed-telemetry query API (implemented in #266; authenticated principal
     integration and live validation pending; [contract](api/processed-telemetry.md))
     and persisted, queryable anomaly projections (implemented in #267; authenticated tenant integration pending)
-*   Versioned event contracts with compatibility validation (implemented in #268;
-    [schemas and evolution policy](../contracts/README.md); live rollout pending)
+*   Versioned event contracts with compatibility validation
 *   Deterministic anomaly detection under horizontal scaling
 *   Reliable PostgreSQL and Kafka delivery consistency, and correct replay reclassification
 *   Authenticated, encrypted external ingestion and secured Kafka client communication
 *   Custom processing and consumer-lag metrics; SLOs, alerts, dashboards, and operational runbooks
 *   Load, failure-recovery, and data-durability validation
 *   Automated versioned releases and container-image promotion
+
+Versioned event contracts and compatibility validation are implemented in #268.
+See the [schemas and evolution policy](../contracts/README.md); live rollout remains pending.
 
 **Status:** Planned — begins after the Phase 6 exit criteria are demonstrated
 
