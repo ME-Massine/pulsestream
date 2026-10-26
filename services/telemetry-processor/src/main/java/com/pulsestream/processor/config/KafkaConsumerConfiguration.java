@@ -18,6 +18,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.CommonContainerStoppingErrorHandler;
 import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
 
 @Configuration
@@ -38,6 +39,8 @@ public class KafkaConsumerConfiguration {
         consumerProperties.put(JacksonJsonDeserializer.TRUSTED_PACKAGES, TelemetryEvent.class.getPackageName());
 
         consumerProperties.putAll(kafkaProperties.getConsumer().getProperties());
+        // State advances before the listener returns; only the container may commit offsets.
+        consumerProperties.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
 
         return new DefaultKafkaConsumerFactory<>(consumerProperties);
     }
@@ -52,6 +55,10 @@ public class KafkaConsumerConfiguration {
 
         factory.setConsumerFactory(telemetryConsumerFactory);
         factory.setConcurrency(kafkaProperties.getConsumer().getConcurrency());
+
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
+        factory.getContainerProperties().setSyncCommits(true);
+        factory.setCommonErrorHandler(new CommonContainerStoppingErrorHandler());
 
         return factory;
     }

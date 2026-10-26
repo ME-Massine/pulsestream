@@ -51,7 +51,7 @@ class ReplayEventPublisherTest {
     }
 
     @Test
-    @DisplayName("should republish the replayed event to the configured raw topic keyed by eventId")
+    @DisplayName("should republish the replayed event to the configured raw topic keyed by tenant and device")
     void shouldRepublishReplayedEventToRawTopic() {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         CompletableFuture<SendResult<String, TelemetryEnvelope>> future = CompletableFuture.completedFuture(null);
@@ -64,7 +64,7 @@ class ReplayEventPublisherTest {
 
         verify(kafkaTemplate).send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>argThat(record ->
                 record.topic().equals(kafkaProperties.getTopics().getRaw())
-                        && record.key().equals("evt-001")
+                        && record.key().equals(TelemetryOrderingKey.of("factory-01", "sensor-1042"))
                         && record.value().equals(telemetryEvent)
                         && new String(record.headers().lastHeader(ReplayHeaders.REPLAY).value(), StandardCharsets.UTF_8)
                                 .equals("true")
@@ -76,8 +76,8 @@ class ReplayEventPublisherTest {
     }
 
     @Test
-    @DisplayName("should use tenant identifier as message key when event id is blank")
-    void shouldUseTenantIdentifierAsMessageKeyWhenEventIdIsBlank() {
+    @DisplayName("should preserve tenant/device ordering when event id is blank")
+    void shouldPreserveOrderingWhenEventIdIsBlank() {
         TelemetryEvent telemetryEvent = telemetryEvent(" ", "factory-01");
         CompletableFuture<SendResult<String, TelemetryEnvelope>> future = CompletableFuture.completedFuture(null);
 
@@ -88,7 +88,7 @@ class ReplayEventPublisherTest {
                 .doesNotThrowAnyException();
 
         verify(kafkaTemplate).send(org.mockito.ArgumentMatchers.<ProducerRecord<String, TelemetryEnvelope>>argThat(record ->
-                record.key().equals("factory-01") && record.value().equals(telemetryEvent)
+                record.key().equals(TelemetryOrderingKey.of("factory-01", "sensor-1042")) && record.value().equals(telemetryEvent)
         ));
     }
 
@@ -152,7 +152,7 @@ class ReplayEventPublisherTest {
 
         assertThatThrownBy(() -> replayEventPublisher.publish(telemetryEvent, ReplayEventPublisher.DLQ_REPLAY_SOURCE))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("telemetryEvent must contain a non-blank tenantId when eventId is blank");
+                .hasMessage("tenantId is required for the ordering key");
     }
 
     @Test

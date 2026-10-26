@@ -41,6 +41,17 @@ Raw telemetry data ingested from devices.
 - replication-factor: 3
 - retention: 24h
 
+**Ordering contract (#269)**
+
+Ingestion and replay key raw records by
+`v1:base64url(UTF-8(trim(tenantId))):base64url(UTF-8(trim(deviceId)))`, without
+padding. Kafka partition offset defines reading order; event ID remains in the
+value. External writers must use the same standard keyed partitioner and no
+explicit partition override. The partition count stays three. At concurrency
+one, three processor replicas are the useful ceiling. See
+[anomaly detection](anomaly-detection.md) for durable state, retention, rebalance
+recovery and the required paused/drained migration from event-ID keys.
+
 ---
 
 ## telemetry.events.processed

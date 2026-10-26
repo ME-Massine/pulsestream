@@ -94,6 +94,14 @@ otel:
       protocol: http/protobuf
 
 pulsestream:
+  anomaly:
+    min-temperature: ${PULSESTREAM_ANOMALY_MIN_TEMPERATURE:-40}
+    max-temperature: ${PULSESTREAM_ANOMALY_MAX_TEMPERATURE:80}
+    temperature-unit: ${PULSESTREAM_ANOMALY_TEMPERATURE_UNIT:c}
+    spike-ratio: ${PULSESTREAM_ANOMALY_SPIKE_RATIO:0.5}
+    state-retention: ${PULSESTREAM_ANOMALY_STATE_RETENTION:24h}
+    max-keys-per-partition: ${PULSESTREAM_ANOMALY_MAX_KEYS_PER_PARTITION:10000}
+    decisions-per-partition: ${PULSESTREAM_ANOMALY_DECISIONS_PER_PARTITION:1000}
   kafka:
     bootstrap-servers: ${PULSESTREAM_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:

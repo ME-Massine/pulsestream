@@ -52,13 +52,13 @@ class EventContractTest {
             assertThatThrownBy(() -> producer.publishTelemetryEvent(event)).isInstanceOf(TelemetryPublishingException.class);
 
             var rawValue = ArgumentCaptor.forClass(TelemetryEvent.class);
-            verify(raw).send(eq("telemetry.events.raw"), eq(event.eventId()), rawValue.capture());
+            verify(raw).send(eq("telemetry.events.raw"), eq(com.pulsestream.ingestion.service.TelemetryOrderingKey.of(event.tenantId(), event.payload().deviceId())), rawValue.capture());
             try (var serializer = new JacksonJsonSerializer<TelemetryEvent>(mapper)) {
                 valid("schemas/raw/v1.schema.json", new String(serializer.serialize("telemetry.events.raw", rawValue.getValue()),
                         StandardCharsets.UTF_8));
             }
             var dlqValue = ArgumentCaptor.forClass(String.class);
-            verify(dlq).send(eq("telemetry.events.dlq"), eq(event.eventId()), dlqValue.capture());
+            verify(dlq).send(eq("telemetry.events.dlq"), eq(com.pulsestream.ingestion.service.TelemetryOrderingKey.of(event.tenantId(), event.payload().deviceId())), dlqValue.capture());
             valid("schemas/dead-letter/v1.schema.json", dlqValue.getValue());
             assertThat(mapper.readValue(dlqValue.getValue(), DeadLetterEvent.class).event()).isEqualTo(event);
         }

@@ -3,6 +3,7 @@ package com.pulsestream.processor.service;
 import com.pulsestream.processor.model.NormalizedTelemetryEvent;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
+import com.pulsestream.processor.model.TelemetryUnits;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 
@@ -28,7 +29,7 @@ public class TelemetryNormalizationService {
                 normalizeToken(payload.deviceType()),
                 normalizeToken(payload.metric()),
                 payload.value(),
-                normalizeToken(payload.unit()),
+                TelemetryUnits.canonical(payload.unit()),
                 trim(payload.location())
         );
     }

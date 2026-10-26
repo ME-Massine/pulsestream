@@ -147,8 +147,8 @@ anomalies topic supersede an earlier classification) — is **not solved by this
 #271**. Until #271 defines it, this is a documented limitation: replay converges persisted state only
 when the classification is unchanged.
 
-**Downstream idempotency is explicitly deferred, not solved here.** Reusing `eventId` as the Kafka
-message key preserves partition affinity but does **not** deduplicate messages: every replay execution
+**Downstream idempotency is explicitly deferred, not solved here.** Raw replay uses the tenant/device
+ordering key (#269); processed and anomaly output retains event-ID keys. Neither key deduplicates messages: every replay execution
 emits a fresh message to `telemetry.events.processed` and, for anomalies,
 `telemetry.events.anomalies`. Downstream consumers can see the same `eventId`
 more than once and need a deduplication/replacement contract. The processor
@@ -156,6 +156,12 @@ currently writes both PostgreSQL projections directly; query-service reads
 those tables and consumes no Kafka topic. Database commit and Kafka publication
 remain separate operations. Recoverable delivery consistency is tracked in
 #270; downstream reclassification/supersession is tracked in #271.
+
+Replay is a new reading at its appended raw offset, evaluated against the current
+tenant/device/metric/unit baseline. Raw offset redelivery recovers its retained
+original decision; replaying the same event ID at a new offset re-evaluates it.
+See [anomaly detection](anomaly-detection.md) for state recovery, expiration and
+the producer key rollout prerequisite.
 
 ---
 

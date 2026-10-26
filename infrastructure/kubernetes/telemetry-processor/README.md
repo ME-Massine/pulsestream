@@ -40,7 +40,10 @@ expecting this behavior in-cluster. Live cluster validation remains pending.
 
 `hpa.yaml` scales the `telemetry-processor` Deployment on CPU utilization against the pod's `250m` request, at a 70% target (~`175m`), within a **2 to 3** replica range. The reasoning behind the metric and the bounds lives in [`docs/architecture/autoscaling-strategy.md`](../../../docs/architecture/autoscaling-strategy.md); the two points that matter most when reading the manifest:
 
-- **3 is a hard ceiling, not a tuning choice.** `telemetry.events.raw` has 3 partitions and `PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY` defaults to `1`, so each replica consumes exactly one partition. A fourth replica joins the consumer group, receives no partition assignment, and does no work. Raising `maxReplicas` requires repartitioning the topic first.
+- **3 is the useful ceiling at concurrency one.** Replicas divide the three raw
+  partitions; with two replicas, one owns two partitions. At most three consumer
+  threads process raw records. Partition changes require a coordinated state and
+  capacity migration; raising `maxReplicas` alone adds no partition throughput.
 - **CPU is the supported signal, not the ideal one.** Consumer-group lag measures the actual backlog, but it is not exported as a Prometheus metric yet (#272) and an HPA cannot read an external metric without a custom metrics adapter or KEDA (#152). CPU comes from the standard `metrics-server` resource API, which is why it is what is wired up today.
 
 ### Prerequisite: metrics-server
@@ -51,11 +54,18 @@ The HPA reads from the `metrics.k8s.io` API. Without `metrics-server` installed 
 kubectl top pods -l app.kubernetes.io/name=telemetry-processor
 ```
 
-### Known caveat: anomaly history is per-replica (#269)
+### Durable anomaly history (#269)
 
-Sudden-deviation detection keeps the previous reading per `tenant:device:metric` in an in-memory map inside each replica (`TelemetryAnomalyDetectionService`), and raw events are keyed by event identifier rather than by device. A scale event triggers a consumer group rebalance, which reassigns partitions and discards the history held by the replica that lost them.
+Ingestion and replay use tenant/device keys; bounded PostgreSQL reading state and
+recent offset decisions survive scaling, restart and rebalance. Flyway V3 creates
+the state tables. All replicas must share the database and anomaly settings.
 
-The practical exposure: threshold rules (missing fields, temperature bounds) are unaffected and stay correct; spike detection can miss the comparison for the first reading of a device after a rebalance. The narrow 2-3 range and the 300-second scale-down stabilization window keep rebalances rare, but they do not eliminate this. It is fixed by making state ownership and partitioning device-stable (#269), not by autoscaler configuration.
+The [operating contract](../../../docs/architecture/anomaly-detection.md) defines
+stream-time expiration, hard capacity bounds, units, recovery and the required
+paused/drained cutover from old event-ID keys. State failures stop consumption
+without acknowledging the failed record; repair the cause and restart. HPA
+changes cannot repair a database outage or state-capacity exhaustion. Live target
+cluster validation remains pending.
 
 ## Observing replica behavior
 
