@@ -217,3 +217,66 @@ remain separate work under #270/#271. Live rollout/capacity validation is pendin
 - [ ] Joint review by producer, processor, database and operations owners.
 - [ ] Coordinated live rollout and production capacity validation.
 ```
+
+## PR #366 conflict resolution
+
+Owner: @ME-Massine. PR: [#366](https://github.com/ME-Massine/pulsestream/pull/366).
+Issue: #269; phase: #254. C-xx IDs: none assigned.
+
+Prepared a local merge of `main` at `f56d5ff` into PR head `bbb1342` on
+`feature/269-deterministic-anomaly-detection`. The merge remains uncommitted and
+has not been pushed. The unresolved index is empty; `MERGE_HEAD` retains the
+main commit so the developer's next commit completes the merge.
+
+Resolved three shared files by retaining the #269 additions alongside the event
+contracts now present on main:
+
+- `contracts/README.md`: preserve the tenant/device key contract and cutover link.
+- `docs/decisions/README.md`: preserve the ADR 0008 index entry after ADR 0007.
+- Ingestion `contract/EventContractTest.java`: preserve tenant/device key
+  assertions for raw publishing and its DLQ fallback, with schema/JSON checks.
+
+The resolved tracked tree matched `bbb1342` exactly before this handoff update.
+No application behavior, schema, fixture, dependency or operating procedure changes
+result from the resolution. This handoff is the only additional content change.
+Joint review by ingestion/event-contract, processor and platform owners remains
+pending before merge; the original rollout and capacity prerequisites still apply.
+
+Validation for this resolution:
+
+- Java 25 ingestion Maven `verify`: 29 tests passed, no failures/errors/skips;
+  existing JaCoCo coverage gates passed.
+- Nine event-contract policy regression tests passed; compatibility against
+  `origin/main` (`f56d5ff`) passed.
+- No unmerged index entries or conflict markers remain in the three files.
+- Working-tree and staged whitespace checks passed.
+- Processor/query, PowerShell and container checks were not repeated: their
+  content is unchanged from the tested PR head. Earlier full validation is recorded
+  above. Resolution logs are under `$env:TEMP/pulsestream-pr366-*.log`.
+
+Complete the prepared merge and update the existing PR with these developer
+commands. No force push is needed; untracked `AGENTS.md` and `Claude.md` stay excluded.
+
+```powershell
+git status
+git diff --cached --check
+git diff --cached --stat
+git commit -m "chore(merge): resolve main conflicts for PR #366"
+git push origin feature/269-deterministic-anomaly-detection
+```
+
+Copy-ready PR update:
+
+```markdown
+Resolved conflicts with main at f56d5ff while preserving #269's tenant/device
+key assertions, ordering-contract documentation and ADR 0008 index entry.
+Owner: @ME-Massine. IDs: PR #366, issue #269, phase #254; C-xx: none assigned.
+Shared files: contracts/README.md, docs/decisions/README.md, ingestion
+contract/EventContractTest.java and the issue-269 handoff. No runtime behavior
+or operating effects change from the existing PR head.
+
+Validation: ingestion Maven verify passed all 29 tests and coverage gates;
+nine contract-policy regressions and compatibility against main passed.
+No unresolved conflicts or whitespace errors remain. Joint review by ingestion,
+event-contract, processor and platform owners remains pending before merge.
+```
