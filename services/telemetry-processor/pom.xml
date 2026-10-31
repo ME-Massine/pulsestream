@@ -19,7 +19,7 @@
 
     <properties>
         <java.version>25</java.version>
-        <jacoco.version>0.8.15</jacoco.version>
+        <jacoco.version>0.8.16</jacoco.version>
         <!-- Non-regression floors set just under the baseline measured at
              #262: line 94.00%, branch 76.96%. -->
         <jacoco.coverage.line.minimum>0.90</jacoco.coverage.line.minimum>
