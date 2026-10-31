@@ -133,7 +133,7 @@ capture_producer() {
 '@
 $bashPath = "/bin/bash"
 if ($env:OS -eq "Windows_NT") {
-    $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+    $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $bashPath = Join-Path (Split-Path -Parent (Split-Path -Parent $gitPath)) "bin\bash.exe"
 }
 if (-not (Test-Path -LiteralPath $bashPath)) { throw "Bash is required for the Kafka load template regression: $bashPath" }

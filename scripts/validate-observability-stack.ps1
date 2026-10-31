@@ -76,6 +76,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamValidation.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamTracing.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "lib\PulseStreamKubernetes.psm1") -Force
 # The checks whose failure paths cannot be produced against a live cluster:
 # rollout completeness, per-pod coverage, the log sweep's own failure, the
@@ -164,26 +165,6 @@ function Invoke-JaegerTraceSearch {
         -ErrorContext "Could not reach Jaeger through the API server proxy at $jaegerProxy. Service '$JaegerService' must exist in namespace '$ObservabilityNamespace' (#158)"
 
     return @($result.data)
-}
-
-# Spans of one kind carrying a specific tag value. Jaeger's `tags` query filters
-# TRACES - a trace comes back when any one of its spans matches - so a trace
-# returned by a tag search is not on its own evidence that the span we care
-# about is the one that carried the tag. Both conditions are re-checked here on
-# the same span.
-function Get-SpansWithTag {
-    param(
-        [Parameter(Mandatory)] $Trace,
-        [Parameter(Mandatory)] [string] $Kind,
-        [Parameter(Mandatory)] [string] $TagKey,
-        [Parameter(Mandatory)] [string] $TagValue
-    )
-
-    return @($Trace.spans | Where-Object {
-        $span = $_
-        (@($span.tags | Where-Object { $_.key -eq "span.kind" -and $_.value -eq $Kind }).Count -gt 0) -and
-        (@($span.tags | Where-Object { $_.key -eq $TagKey -and "$($_.value)" -eq $TagValue }).Count -gt 0)
-    })
 }
 
 # Pods matching a label selector whose Ready condition is True.
@@ -599,15 +580,18 @@ if ([string]::IsNullOrWhiteSpace($IngestionBaseUrl)) {
 $searchStartMicros = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - 60000) * 1000
 
 $eventId = [Guid]::NewGuid().ToString()
+$tenantId = "observability-stack-validation"
+$deviceId = "stack-validation-device-$eventId"
+$messageKey = Get-TelemetryOrderingKey -TenantId $tenantId -DeviceId $deviceId
 $requestBody = @{
     eventId   = $eventId
-    tenantId  = "observability-stack-validation"
+    tenantId  = $tenantId
     eventType = "telemetry.reading"
     timestamp = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
     source    = "validate-observability-stack"
     version   = "1.0"
     payload   = @{
-        deviceId   = "stack-validation-device"
+        deviceId   = $deviceId
         deviceType = "temperature-sensor"
         metric     = "temperature"
         value      = 21.5
@@ -682,45 +666,32 @@ Confirm-Condition `
     -FailureMessage "ingestion trace for eventId $eventId has no spans"
 
 # The processor does not set `pulsestream.event.id` - that attribute belongs to
-# the ingestion controller. Ingestion publishes each event under a Kafka message
-# key equal to its event id (KafkaProducerService.resolveMessageKey) and the
-# spring-kafka instrumentation records that key on the consumer span, so that is
-# the handle across the Kafka hop. Accepting any recent consumer trace instead
-# would pass on traffic this run never generated.
-$processorTrace = Invoke-WithRetry `
+# the ingestion controller. The consumer carries the v1 tenant/device ordering
+# key. A fresh device containing the event id makes this run's single event
+# distinguishable from earlier or concurrent validation traffic. Kind, key and
+# raw topic must match on one span, regardless of Jaeger's result ordering.
+$correlation = Invoke-WithRetry `
     -TimeoutSeconds $TimeoutSeconds `
     -FailureMessage "No telemetry-processor consumer trace reached Jaeger for eventId $eventId within $TimeoutSeconds seconds. The processor consumes from Kafka, so this lags ingestion by the consumer poll and any partition backlog." `
     -Operation {
         $traces = Invoke-JaegerTraceSearch `
             -ServiceName $ProcessorService `
             -StartMicros $searchStartMicros `
-            -Tags @{ "messaging.kafka.message.key" = $eventId }
+            -Tags @{ "messaging.kafka.message.key" = $messageKey }
 
-        $correlated = @($traces | Where-Object {
-            (Get-SpansWithTag -Trace $_ -Kind "consumer" `
-                -TagKey "messaging.kafka.message.key" -TagValue $eventId).Count -gt 0
-        })
+        $match = Select-CorrelatedConsumerSpan `
+            -Traces $traces `
+            -MessageKey $messageKey `
+            -DestinationTopic $RawTopic
 
-        if ($correlated.Count -eq 0) {
-            throw "No telemetry-processor consumer span keyed to eventId $eventId yet"
+        if ($null -eq $match.Span) {
+            throw "No telemetry-processor consumer span for eventId $eventId on $RawTopic yet; observed destinations: $($match.ObservedDestinations -join ', ')"
         }
 
-        $correlated[0]
+        $match
     }
 
-$consumerSpan = (Get-SpansWithTag -Trace $processorTrace -Kind "consumer" `
-    -TagKey "messaging.kafka.message.key" -TagValue $eventId)[0]
-
-$destination = $consumerSpan.tags |
-    Where-Object { $_.key -eq "messaging.destination.name" } |
-    Select-Object -First 1 -ExpandProperty value
-
-# A DLQ or replay record carries the same message key, so the key alone does not
-# establish that the event travelled the normal ingest path.
-Confirm-Condition `
-    -Condition ($destination -eq $RawTopic) `
-    -SuccessMessage "telemetry-processor consumed eventId $eventId from $RawTopic (trace $($processorTrace.traceID))" `
-    -FailureMessage "the consumer span for eventId $eventId names destination '$destination', not '$RawTopic'"
+Write-Host "[ok] telemetry-processor consumed eventId $eventId from $RawTopic (trace $($correlation.Trace.traceID))"
 
 # ---------------------------------------------------------------------------
 Write-Host ""

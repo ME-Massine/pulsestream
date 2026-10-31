@@ -1,4 +1,4 @@
-# Trace-correlation helpers for validate-distributed-tracing.ps1 (#158).
+# Trace-correlation helpers for the distributed tracing and observability validators.
 #
 # Jaeger's `tags` query filters TRACES, not spans: a trace comes back when any
 # one of its spans matched, so a search result is never on its own evidence
@@ -10,6 +10,21 @@
 # raw-topic one - is not something a live run can be made to produce on
 # demand, but it can be handed to these functions directly by
 # scripts\tests\test-trace-correlation.ps1.
+
+function Get-TelemetryOrderingKey {
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $TenantId,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $DeviceId
+    )
+
+    # TelemetryOrderingKey.of: v1:base64url(UTF-8 tenant):base64url(UTF-8 device),
+    # trimmed and without padding. Validators use a fresh device per event so
+    # this ordering key also identifies their single generated record.
+    $parts = foreach ($value in @($TenantId, $DeviceId)) {
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value.Trim())).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    }
+    "v1:$($parts[0]):$($parts[1])"
+}
 
 # Jaeger renders a span's attributes as a flat list of {key, type, value}
 # objects, so every lookup is a scan. Returns $null when the span does not
@@ -43,9 +58,10 @@ function Test-TraceSpanKind {
 # path: one span that is a consumer, carries the run's Kafka message key, and
 # names the raw topic.
 #
-# All three have to hold on the SAME span. A DLQ or replay record carries the
-# same message key - it is the same event - so the key alone does not establish
-# the path, and the topic alone does not establish which event. Selecting
+# All three have to hold on the SAME span. Ordering keys normally cover many
+# events, so callers must generate a unique device for their one test event.
+# A replay can reuse that key, so the key alone does not establish the path,
+# and the topic alone does not establish which event. Selecting
 # whichever trace the key search returned first and checking its topic
 # afterwards fails a run in which Jaeger happened to list a same-key DLQ trace
 # ahead of the raw-topic trace, even though the correct trace was present in
@@ -97,4 +113,4 @@ function Select-CorrelatedConsumerSpan {
     }
 }
 
-Export-ModuleMember -Function Get-SpanTagValue, Test-TraceSpanKind, Select-CorrelatedConsumerSpan
+Export-ModuleMember -Function Get-TelemetryOrderingKey, Get-SpanTagValue, Test-TraceSpanKind, Select-CorrelatedConsumerSpan

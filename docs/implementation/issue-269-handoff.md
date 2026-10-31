@@ -280,3 +280,86 @@ nine contract-policy regressions and compatibility against main passed.
 No unresolved conflicts or whitespace errors remain. Joint review by ingestion,
 event-contract, processor and platform owners remains pending before merge.
 ```
+
+## PR #366 review corrections
+
+Owner: @ME-Massine. IDs: PR #366, issue #269, phase #254; C-xx: none assigned.
+
+- P1: select the first Git application before deriving the Git Bash path in
+  `scripts/tests/test-autoscaling-load-helpers.ps1`. This preserves the existing
+  local correction and handles multiple Git installations on PATH.
+- P2: both tracing validators generate one event for a fresh device containing
+  its event ID, then query the v1 tenant/device ordering key. The shared tracing
+  module encodes the key and matches consumer kind, key and raw destination on
+  one span. The stack validator now searches past wrong-topic traces inside
+  its retry, using the same selector as the distributed tracing validator.
+- Regression fixtures use ordering keys and exercise the actual request and
+  consumer correlation statements from both validators. Coverage includes
+  shared key vectors, UTF-8/base64url encoding, previous runs, legacy event-ID
+  keys, replay topics, split attributes and producer-only traces.
+
+Shared files: `scripts/validate-distributed-tracing.ps1` and
+`scripts/validate-observability-stack.ps1` correlation paths,
+`scripts/lib/PulseStreamTracing.psm1`, the trace-correlation and autoscaling-load
+regressions, `docs/architecture/observability-validation.md` and this handoff.
+Joint review by ingestion/event-contract, processor and platform owners remains
+pending before merge.
+
+Operating effects: validation traffic uses one unique device per run, isolating
+its Kafka ordering key to the generated event. Each run can add a reading-state
+key until stream-time expiration. Application key/value contracts, topic
+partitions, migrations and deployment settings are unchanged by these corrections.
+
+Validation on 2026-10-31:
+
+- Windows PowerShell 5.1.26100.9711 offline suite: 56 parsed sources,
+  18 regression files passed, no failures/skips.
+- PowerShell 7.4.6 offline suite: 56 parsed sources, 18 regression files passed,
+  no failures/skips.
+- Both complete suites ran with two Git application paths available, including
+  the real Bash execution in the autoscaling load regression.
+- `git diff --check` passed. Logs:
+  `$env:TEMP/pulsestream-review-fixes-powershell.log` and
+  `$env:TEMP/pulsestream-review-fixes-pwsh.log`.
+- Java/container/cluster checks were not repeated for these script/documentation
+  corrections. Synthetic Jaeger fixtures verify correlation offline; live
+  target-cluster validation remains pending.
+
+The PR issue-alignment bot reports one blocking problem: the description lacks
+`## Changes`. Insert the following copy-ready section before the existing
+`## Ownership and contracts` heading, preserving the existing issue requirements,
+testing and operating-effects sections. The remote PR description and checks
+remain unchanged until the developer applies and publishes the corrections.
+
+```markdown
+## Changes
+- Raw ingestion/replay use tenant/device ordering keys; bounded PostgreSQL
+  detection state and offset decisions preserve behavior through scaling,
+  restart and rebalance. Units, thresholds and state bounds are configurable.
+- Both tracing validators correlate their single generated event through a fresh
+  device and its encoded ordering key, matching consumer kind, key and raw topic
+  on one span. Shared fixtures reject earlier runs and wrong-topic traces.
+- Git Bash discovery selects one Git executable when multiple are on PATH.
+- Validation for the review corrections: PowerShell 7.4.6 and Windows PowerShell
+  5.1 each passed 56 parsed sources and 18 offline regression files, without
+  failures/skips, with two Git executable paths available. Whitespace checks pass.
+- Owner: @ME-Massine. IDs: PR #366, issue #269, phase #254; C-xx: none assigned.
+  Shared files include both tracing validators, PulseStreamTracing.psm1,
+  trace/load regressions, observability documentation and the issue-269 handoff.
+  Joint ingestion/event-contract, processor and platform review remains pending.
+- Operating effect: validation generates one new device-state key per run until
+  stream-time expiration. Coordinated producer-key cutover and live rollout/
+  capacity validation remain required for the overall #269 implementation.
+```
+
+Developer Git commands for these corrections (the earlier merge is already
+committed at `06cf77a`; untracked `AGENTS.md` and `Claude.md` stay excluded):
+
+```powershell
+git diff --check
+git add scripts/tests/test-autoscaling-load-helpers.ps1 scripts/tests/test-trace-correlation.ps1 scripts/lib/PulseStreamTracing.psm1 scripts/validate-distributed-tracing.ps1 scripts/validate-observability-stack.ps1 docs/architecture/observability-validation.md docs/implementation/issue-269-handoff.md
+git diff --cached --check
+git diff --cached --stat
+git commit -m "fix(validation): correlate tracing with tenant device keys"
+git push origin feature/269-deterministic-anomaly-detection
+```
