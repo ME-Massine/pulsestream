@@ -146,7 +146,7 @@ services:
       - pulsestream-net
 
   grafana:
-    image: grafana/grafana:13.2.4
+    image: grafana/grafana:13.3.0
     container_name: pulsestream-grafana
     depends_on:
       - prometheus
