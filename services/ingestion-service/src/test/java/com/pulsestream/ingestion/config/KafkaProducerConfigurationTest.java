@@ -22,6 +22,9 @@ class KafkaProducerConfigurationTest {
     @DisplayName("should serialize telemetry event timestamps as ISO-8601 using the configured JSON mapper")
     void shouldSerializeTelemetryEventTimestampsAsIso8601UsingConfiguredJsonMapper() {
         PulsestreamKafkaProperties properties = new PulsestreamKafkaProperties();
+        properties.getProducer().getProperties().put("max.in.flight.requests.per.connection", "5");
+        properties.getProducer().getProperties().put("partitioner.ignore.keys", "true");
+        properties.getProducer().getProperties().put("partitioner.class", "custom.Partitioner");
         JsonMapper jsonMapper = JsonMapper.builder()
                 .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
                 .build();
@@ -34,6 +37,11 @@ class KafkaProducerConfigurationTest {
         @SuppressWarnings("unchecked")
         DefaultKafkaProducerFactory<String, TelemetryEvent> defaultProducerFactory =
                 (DefaultKafkaProducerFactory<String, TelemetryEvent>) producerFactory;
+
+        assertThat(defaultProducerFactory.getConfigurationProperties())
+                .containsEntry(org.apache.kafka.clients.producer.ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1)
+                .containsEntry(org.apache.kafka.clients.producer.ProducerConfig.PARTITIONER_IGNORE_KEYS_CONFIG, false)
+                .doesNotContainKey(org.apache.kafka.clients.producer.ProducerConfig.PARTITIONER_CLASS_CONFIG);
 
         byte[] payload = defaultProducerFactory.getValueSerializer().serialize(
                 properties.getTopics().getRaw(),

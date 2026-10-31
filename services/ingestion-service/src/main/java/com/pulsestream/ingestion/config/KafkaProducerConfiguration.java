@@ -37,6 +37,11 @@ public class KafkaProducerConfiguration {
         );
         producerProperties.putAll(kafkaProperties.getProducer().getProperties());
 
+        // Preserve partition order even when a send is retried.
+        producerProperties.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1);
+        producerProperties.remove(ProducerConfig.PARTITIONER_CLASS_CONFIG);
+        producerProperties.put(ProducerConfig.PARTITIONER_IGNORE_KEYS_CONFIG, false);
+
         DefaultKafkaProducerFactory<String, TelemetryEvent> producerFactory =
                 new DefaultKafkaProducerFactory<>(producerProperties);
 

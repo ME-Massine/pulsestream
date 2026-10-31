@@ -82,15 +82,18 @@ Invoke-WithRetry `
 # 3. Generate a request. The event id is unique so we can locate the exact trace
 #    it produces; the controller records it on the span as `pulsestream.event.id`.
 $eventId = [Guid]::NewGuid().ToString()
+$tenantId = "trace-validation"
+$deviceId = "trace-validation-device-$eventId"
+$messageKey = Get-TelemetryOrderingKey -TenantId $tenantId -DeviceId $deviceId
 $requestBody = @{
     eventId   = $eventId
-    tenantId  = "trace-validation"
+    tenantId  = $tenantId
     eventType = "telemetry.reading"
     timestamp = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
     source    = "validate-distributed-tracing"
     version   = "1.0"
     payload   = @{
-        deviceId   = "trace-validation-device"
+        deviceId   = $deviceId
         deviceType = "temperature-sensor"
         metric     = "temperature"
         value      = 21.5
@@ -185,11 +188,10 @@ Invoke-WithRetry `
 
 #    The consumer trace is correlated to THIS run's event. The processor does
 #    not set `pulsestream.event.id` - that attribute is written by the ingestion
-#    controller - but ingestion publishes each event under a Kafka message key
-#    equal to its event id (KafkaProducerService.resolveMessageKey), and the
-#    spring-kafka instrumentation records that key on the consumer span as
-#    `messaging.kafka.message.key`. That is the handle: it identifies the exact
-#    record this run produced.
+#    controller. Ingestion publishes under the v1 tenant/device ordering key,
+#    which spring-kafka records as `messaging.kafka.message.key`. This request
+#    uses a fresh device containing the event id and publishes only one event
+#    for it, so the key identifies the exact record this run produced.
 #
 #    Accepting any recent consumer trace instead would pass on traffic this run
 #    never generated - a neighbouring producer, a replayed DLQ record, or a
@@ -210,11 +212,11 @@ $correlation = Invoke-WithRetry `
     -Operation {
         $processorTraces = Invoke-JaegerTraceSearch `
             -ServiceName $ProcessorServiceName `
-            -Tags @{ "messaging.kafka.message.key" = $eventId }
+            -Tags @{ "messaging.kafka.message.key" = $messageKey }
 
         $match = Select-CorrelatedConsumerSpan `
             -Traces $processorTraces `
-            -MessageKey $eventId `
+            -MessageKey $messageKey `
             -DestinationTopic $RawTopic
 
         if ($null -eq $match.Span) {

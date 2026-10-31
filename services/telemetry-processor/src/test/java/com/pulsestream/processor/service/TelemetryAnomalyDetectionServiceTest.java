@@ -133,10 +133,8 @@ class TelemetryAnomalyDetectionServiceTest {
     @Test
     @DisplayName("should detect value spike when reading changes by more than 50 percent from previous")
     void shouldDetectValueSpikeAboveThreshold() {
-        anomalyDetectionService.detect(normalizedEvent("temperature", new BigDecimal("20.0")));
-
         NormalizedTelemetryEvent spikeEvent = normalizedEvent("temperature", new BigDecimal("50.0"));
-        TelemetryAnomalyResult result = anomalyDetectionService.detect(spikeEvent);
+        TelemetryAnomalyResult result = anomalyDetectionService.detect(spikeEvent, new BigDecimal("20.0"));
 
         assertThat(result.anomalous()).isTrue();
         assertThat(result.severity()).isEqualTo(AnomalySeverity.WARNING);
@@ -146,10 +144,8 @@ class TelemetryAnomalyDetectionServiceTest {
     @Test
     @DisplayName("should not detect spike when reading changes by 50 percent or less from previous")
     void shouldNotDetectSpikeAtOrBelowThreshold() {
-        anomalyDetectionService.detect(normalizedEvent("temperature", new BigDecimal("20.0")));
-
         NormalizedTelemetryEvent event = normalizedEvent("temperature", new BigDecimal("30.0"));
-        TelemetryAnomalyResult result = anomalyDetectionService.detect(event);
+        TelemetryAnomalyResult result = anomalyDetectionService.detect(event, new BigDecimal("20.0"));
 
         assertThat(result.anomalous()).isFalse();
         assertThat(result.reasons()).noneMatch(r -> r.startsWith("value spike detected"));
@@ -161,6 +157,27 @@ class TelemetryAnomalyDetectionServiceTest {
         assertThatThrownBy(() -> anomalyDetectionService.detect(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("normalized telemetry event must not be null");
+    }
+
+    @Test
+    void zeroBaselineHasNoRelativeSpikeAndNegativeBaselinesUseAbsoluteMagnitude() {
+        assertThat(anomalyDetectionService.detect(normalizedEvent("pressure", new BigDecimal("20")), BigDecimal.ZERO).anomalous())
+                .isFalse();
+        assertThat(anomalyDetectionService.detect(normalizedEvent("pressure", new BigDecimal("-40")), new BigDecimal("-20")).reasons())
+                .containsExactly("value spike detected: changed by 100.0% from previous reading");
+        assertThat(anomalyDetectionService.detect(normalizedEvent("pressure", new BigDecimal("30.00000000001")), new BigDecimal("20")).anomalous())
+                .isTrue();
+    }
+
+    @Test
+    void thresholdsAndUnitAssumptionsComeFromConfiguration() {
+        var properties = new com.pulsestream.processor.config.AnomalyDetectionProperties(BigDecimal.ZERO,
+                new BigDecimal("30"), "c", new BigDecimal("0.1"), java.time.Duration.ofHours(1), 10, 10);
+        var configured = new TelemetryAnomalyDetectionService(properties);
+        assertThat(configured.detect(normalizedEvent("temperature", new BigDecimal("31")), new BigDecimal("20")).reasons())
+                .hasSize(2).contains("temperature is above maximum threshold");
+        assertThat(configured.detect(normalizedEvent("temperature", new BigDecimal("-1"))).reasons())
+                .containsExactly("temperature is below minimum threshold");
     }
 
     private NormalizedTelemetryEvent normalizedEvent(String metric, BigDecimal value) {

@@ -31,6 +31,11 @@ original ingestion time and reasons to an empty array. Missing-reading fields
 results without inventing values. The original V1 checksum is unchanged.
 See [the anomaly contract](../api/anomalies.md) for duplicate/replay semantics,
 metrics, grants, migration lock effects and rollback considerations.
+`V3__recoverable_anomaly_state.sql` adds bounded reading state, partition
+checkpoints and a recent-decision journal. It preserves both projection tables.
+The key change and state configuration require the coordinated cutover described
+in [anomaly detection](anomaly-detection.md); restarting an old producer alongside
+the new processor is not a compatible rolling migration.
 
 Flyway creates its own `pulsestream_migrations` schema and records successful
 versions and checksums in `pulsestream_migrations.flyway_schema_history`.
@@ -156,7 +161,7 @@ isolated from production migration SQL.
 
 Container image validation also provisions and removes a disposable PostgreSQL
 16 container and its anonymous data volume, and verifies that the exact processor
-image records successful V1 and V2. Query image validation prepares both migrations
+image records successful V1, V2 and V3. Query image validation prepares all three migrations
 before startup; query-service itself never owns migrations.
 It does not use a developer's persisted database.
 

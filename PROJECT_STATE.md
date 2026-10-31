@@ -76,6 +76,13 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
     fallback. See [event contracts](contracts/README.md). Live rollout remains pending.
 *   `telemetry-processor` Kafka consumer for `telemetry.events.raw`.
 *   Telemetry normalization and anomaly detection (threshold breach and sudden-deviation rules).
+*   Deterministic stateful anomaly detection under horizontal scaling (#269),
+    using tenant/device raw keys for ingestion and replay, bounded PostgreSQL
+    state and offset-decision recovery, stream-time expiration and explicit
+    configured units/thresholds. Local multi-partition integration tests cover
+    scale-out, scale-in, restart, rebalances and crash recovery. See
+    [the operating contract](docs/architecture/anomaly-detection.md). Coordinated
+    producer-key cutover, live rollout and capacity validation remain pending.
 *   Processed event publishing to `telemetry.events.processed`.
 *   Anomaly event publishing to `telemetry.events.anomalies`.
 *   Durable anomaly projections and tenant-scoped anomaly queries (#267), with
@@ -161,6 +168,9 @@ The Phase 6 live-deployment evidence required to begin Phase 7 is not yet record
     implemented and fail closed without an authenticated tenant principal.
 *   Consistent PostgreSQL/Kafka delivery (#270) and cross-classification replay
     reconciliation (#271) remain pending.
+*   Coordinated tenant/device producer-key cutover and live validation for durable
+    anomaly detection (#269) remain pending; implementation and local integration
+    validation do not complete the Phase 6 deployment gate.
 *   Authenticated and encrypted external ingestion — issue #273.
 *   Secured Kafka client communication and production secret management — issue #275.
 *   Device simulator tooling.

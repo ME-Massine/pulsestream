@@ -6,6 +6,12 @@ and use open objects so consumers can ignore unknown optional fields. No schema
 registry, generated Java model library or service-to-service model dependency is
 required. [ADR 0007](../docs/decisions/0007-json-event-contracts.md) records the choice.
 
+Raw Kafka keys have a separate tenant/device ordering contract (#269), documented
+in [anomaly detection](../docs/architecture/anomaly-detection.md). Both publishers
+test `ordering-keys.json` vectors. Value schema versions and historical fixtures
+are unchanged; changing partition keys requires a coordinated drain/cutover even
+when the JSON value is structurally compatible.
+
 | Kafka topic | Authoritative contract | Producers | Current consumers |
 | --- | --- | --- | --- |
 | `telemetry.events.raw` | [raw v1](schemas/raw/v1.schema.json) | ingestion, processor replay | processor |

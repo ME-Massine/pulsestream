@@ -27,6 +27,7 @@ class KafkaConsumerConfigurationTest {
                     "pulsestream.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.JacksonJsonDeserializer",
                     "pulsestream.kafka.consumer.auto-offset-reset=earliest",
                     "pulsestream.kafka.consumer.concurrency=2",
+                    "pulsestream.kafka.consumer.properties.enable.auto.commit=true",
                     "pulsestream.kafka.consumer.properties.spring.json.trusted.packages=com.pulsestream.processor.dto",
                     "pulsestream.kafka.consumer.properties.spring.json.use.type.headers=false",
                     "pulsestream.kafka.topics.raw=telemetry.events.raw",
@@ -54,7 +55,13 @@ class KafkaConsumerConfigurationTest {
                     .containsEntry(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
                     .containsEntry(ConsumerConfig.GROUP_ID_CONFIG, "telemetry-processor")
                     .containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+                    .containsEntry(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false)
                     .containsEntry(JacksonJsonDeserializer.VALUE_DEFAULT_TYPE, "com.pulsestream.processor.model.TelemetryEvent");
+            var factory = (org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory<?, ?>)
+                    context.getBean("telemetryKafkaListenerContainerFactory");
+            assertThat(factory.getContainerProperties().getAckMode())
+                    .isEqualTo(org.springframework.kafka.listener.ContainerProperties.AckMode.RECORD);
+            assertThat(factory.getContainerProperties().isSyncCommits()).isTrue();
         });
     }
 
