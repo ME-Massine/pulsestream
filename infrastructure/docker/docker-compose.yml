@@ -2,7 +2,7 @@ name: pulsestream-local
 
 services:
   kafka:
-    image: confluentinc/cp-kafka:8.3.2
+    image: confluentinc/cp-kafka:8.4.0
     container_name: pulsestream-kafka
     ports:
       - "${KAFKA_EXTERNAL_PORT:-9092}:9092"
@@ -60,7 +60,7 @@ services:
       - pulsestream-net
 
   kafka-init:
-    image: confluentinc/cp-kafka:8.3.2
+    image: confluentinc/cp-kafka:8.4.0
     container_name: pulsestream-kafka-init
     depends_on:
       kafka:
