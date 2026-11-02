@@ -36,6 +36,9 @@ jobs:
       - name: Test event contract compatibility policy
         run: python3 -m unittest discover -s scripts/ci -p test_event_contracts.py
 
+      - name: Test PR issue alignment policy
+        run: node --test scripts/ci/test-pr-issue-alignment.cjs
+
       - name: Check event contracts against the base revision
         env:
           CONTRACT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}

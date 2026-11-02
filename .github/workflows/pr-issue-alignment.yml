@@ -20,6 +20,38 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
+
+            // Dependabot supplies release notes instead of the human PR template.
+            // Keep this path read-only: Dependabot tokens may not write comments.
+            // Check the author, source repository and complete paginated file list
+            // so a label, actor or branch name alone cannot bypass human checks.
+            if (pr.user?.login === 'dependabot[bot]' && pr.user?.type === 'Bot') {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100
+              });
+              const dependencyFiles = [
+                /^services\/(ingestion-service|telemetry-processor|query-service)\/pom\.xml$/,
+                /^services\/(ingestion-service|telemetry-processor|query-service)\/Dockerfile$/,
+                /^services\/(ingestion-service|telemetry-processor|query-service)\/\.mvn\/wrapper\/maven-wrapper\.properties$/,
+                /^\.github\/workflows\/[^/]+\.ya?ml$/,
+                /^infrastructure\/docker\/docker-compose\.yml$/
+              ];
+              const repository = `${context.repo.owner}/${context.repo.repo}`;
+              const sameRepository = pr.head?.repo?.full_name === repository && pr.base?.repo?.full_name === repository;
+              const dependencyOnly = files.length > 0 && files.every(file =>
+                file.status === 'modified' && dependencyFiles.some(pattern => pattern.test(file.filename))
+              );
+              if (!sameRepository || !dependencyOnly) {
+                core.setFailed('Dependabot PR must modify only configured dependency files in this repository.');
+                return;
+              }
+              core.info('Dependabot dependency update: human template and linked issue are not required. CI and dependency review still apply.');
+              return;
+            }
+
             const prBody = pr.body || "";
             const prTitle = pr.title || "";
             const prText = `${prTitle}\n${prBody}`.toLowerCase();
