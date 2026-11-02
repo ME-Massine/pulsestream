@@ -2,7 +2,7 @@ name: pulsestream-local
 
 services:
   kafka:
-    image: confluentinc/cp-kafka:8.3.2
+    image: confluentinc/cp-kafka:8.4.0
     container_name: pulsestream-kafka
     ports:
       - "${KAFKA_EXTERNAL_PORT:-9092}:9092"
@@ -60,7 +60,7 @@ services:
       - pulsestream-net
 
   kafka-init:
-    image: confluentinc/cp-kafka:8.3.2
+    image: confluentinc/cp-kafka:8.4.0
     container_name: pulsestream-kafka-init
     depends_on:
       kafka:
@@ -98,7 +98,7 @@ services:
       - pulsestream-net
 
   redis:
-    image: redis:7
+    image: redis:8
     container_name: pulsestream-redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -146,7 +146,7 @@ services:
       - pulsestream-net
 
   grafana:
-    image: grafana/grafana:13.2.4
+    image: grafana/grafana:13.3.0
     container_name: pulsestream-grafana
     depends_on:
       - prometheus

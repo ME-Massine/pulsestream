@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.1</version>
+        <version>4.1.2</version>
         <relativePath/>
     </parent>
 
@@ -19,12 +19,12 @@
 
     <properties>
         <java.version>25</java.version>
-        <jacoco.version>0.8.15</jacoco.version>
+        <jacoco.version>0.8.16</jacoco.version>
         <!-- Non-regression floors set just under the baseline measured at
              #262: line 90.20%, branch 57.14%. -->
         <jacoco.coverage.line.minimum>0.85</jacoco.coverage.line.minimum>
         <jacoco.coverage.branch.minimum>0.50</jacoco.coverage.branch.minimum>
-        <opentelemetry.instrumentation.version>2.32.0</opentelemetry.instrumentation.version>
+        <opentelemetry.instrumentation.version>2.33.1</opentelemetry.instrumentation.version>
     </properties>
 
     <dependencyManagement>
@@ -43,7 +43,7 @@
         <dependency>
             <groupId>com.networknt</groupId>
             <artifactId>json-schema-validator</artifactId>
-            <version>3.0.7</version>
+            <version>3.0.8</version>
             <scope>test</scope>
         </dependency>
         <dependency>

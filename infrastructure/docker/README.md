@@ -179,6 +179,19 @@ docker volume rm pulsestream-local_kafka_data pulsestream-local_zookeeper_data p
 docker compose up -d
 ```
 
+#### Kafka 8.4 upgrade
+
+Both `kafka` and `kafka-init` use `confluentinc/cp-kafka:8.4.0`. This is an
+in-place upgrade from 8.3.2 for the existing KRaft configuration; it does not
+repeat the earlier ZooKeeper migration. Pause local producers and consumers,
+stop the broker and archive `pulsestream-local_kafka_kraft_data` before changing
+images. Keep the cluster ID and volume intact. Start the new broker, rerun
+`kafka-init`, verify all four topics and test a produce/consume cycle before
+resuming services. Do not advance metadata feature levels during the validation
+window. Rollback may require restoring the pre-upgrade volume with the old image;
+switching the tag alone is not a recovery plan. See the
+[Confluent upgrade guide](https://docs.confluent.io/platform/current/installation/upgrade.html).
+
 #### DLQ Topic Validation
 
 The `kafka-init` container creates `telemetry.events.dlq` at startup. Confirm it exists with the expected configuration by running the validation script from the repository root:
@@ -240,6 +253,24 @@ The script seeds `telemetry.events.dlq` directly with a record wrapping a *valid
 - the replay listener stops itself again once it drains the backlog, and `telemetry-processor` is still `UP` — i.e. the replay did not crash the system
 
 > Like `validate-dlq-pipeline.ps1`, this script reads `telemetry-processor`'s log file directly from disk (`-ProcessorLogFile`, defaulting to `services/telemetry-processor/logs/telemetry-processor.log`) and talks to the processor's actuator endpoints on the dedicated management port (`-ProcessorManagementBaseUrl`, defaulting to `http://localhost:9083` — see the `dlqreplay` endpoint in the processor's `application.yml`). Override `-KafkaContainer`, `-BootstrapServer`, or the topic names if you changed the local container name, ports, or topics.
+
+### Redis 8 upgrade
+
+The local cache uses `redis:8` with the existing `--appendonly yes` command and
+`redis_data:/data` mount. Redis supports upgrading a standalone 7.x instance to
+8; follow the [standalone upgrade guide](https://redis.io/docs/latest/operate/oss_and_stack/install/upgrade/standalone/).
+No application service currently consumes Redis; the cache integration remains
+planned in [the cache strategy](../../docs/architecture/cache-strategy.md).
+
+Before upgrading an existing environment, pause any external cache writers, run
+`docker compose exec redis redis-cli SAVE`, stop Redis, and archive the complete
+`pulsestream-local_redis_data` volume, including the AOF manifest, base file and
+incremental files in `appendonlydir`. Start Redis 8 with that volume, check
+`redis-cli PING`, `redis-cli INFO server`, `redis-cli INFO persistence` and known
+keys, then restart it and confirm the keys remain. To roll back, stop Redis and
+restore the entire pre-upgrade archive into a clean recovery volume using the
+previous Redis image. Keep the failed-upgrade volume for diagnosis; do not point
+Redis 7 at files rewritten by Redis 8.
 
 ### Prometheus Metrics Validation
 
@@ -309,8 +340,9 @@ Dashboard JSON is version-controlled under [`observability/grafana/dashboards`](
 
 #### Prometheus 3 and Grafana 13 upgrade
 
-The stack runs `prom/prometheus:v3.15.0` and `grafana/grafana:13.2.3` (the version the
-Kubernetes Grafana Deployment already uses). Both reuse their existing volumes:
+The stack runs `prom/prometheus:v3.15.1` and `grafana/grafana:13.3.0`. Kubernetes
+keeps its separately reviewed, digest-pinned images. Both local services reuse
+their existing volumes:
 
 - `Prometheus` 3 reads the TSDB written by 2.x, so metrics collected before the upgrade
   stay queryable. The committed scrape configuration and every dashboard query work
