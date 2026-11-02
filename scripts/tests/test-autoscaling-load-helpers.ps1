@@ -111,3 +111,56 @@ Assert-Equal `
     -Description "heartbeat state records the supplied observation time"
 
 Write-Host "[ok] autoscaling load helpers behave consistently on $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
+
+# Execute the real Kafka template with a bounded loop and a local producer stub.
+# This catches invalid shell quoting, wrong key/payload identities, and a workload
+# that alternates globally while sending a constant value to each device.
+$validationSource = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "..\validate-autoscaling-behavior.ps1"))
+$templateMatch = [regex]::Match($validationSource, '(?s)\$kafkaLoadTemplate = @''\r?\n(.*?)\r?\n''@')
+if (-not $templateMatch.Success) { throw "Kafka load template was not found." }
+$loadCommand = New-AutoscalingShellCommand -Template $templateMatch.Groups[1].Value -Values @{
+    RUN = "key-test"; POD = 2; DEVICES = 4; BIN = "stub"; BOOTSTRAP = "unused"; TOPIC = "unused"
+    BURST_RATE = 100; BURST_EVENTS = 100; RATE = 100
+}
+$loadCommand = $loadCommand.Replace('while true; do', 'while [ "$i" -lt 12 ]; do')
+$loadCommand = $loadCommand.Replace('stub/kafka-console-producer.sh', 'capture_producer')
+$stub = @'
+capture_producer() {
+  case " $* " in *" --property parse.key=true "*) ;; *) exit 31;; esac
+  case " $* " in *" --producer-property max.in.flight.requests.per.connection=1 "*) ;; *) exit 32;; esac
+  cat
+}
+'@
+$bashPath = "/bin/bash"
+if ($env:OS -eq "Windows_NT") {
+    $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $bashPath = Join-Path (Split-Path -Parent (Split-Path -Parent $gitPath)) "bin\bash.exe"
+}
+if (-not (Test-Path -LiteralPath $bashPath)) { throw "Bash is required for the Kafka load template regression: $bashPath" }
+$tempCommand = Join-Path ([IO.Path]::GetTempPath()) ("pulsestream-load-test-" + [guid]::NewGuid().ToString("N") + ".sh")
+try {
+    [IO.File]::WriteAllText($tempCommand, ($stub + "`n" + $loadCommand), [Text.UTF8Encoding]::new($false))
+    $lines = @(& $bashPath $tempCommand)
+    if ($LASTEXITCODE -ne 0) { throw "Kafka load template exited with $LASTEXITCODE." }
+    Assert-Equal -Expected 13 -Actual $lines.Count -Description "probe and twelve bounded load readings are emitted"
+    $readings = @{}
+    foreach ($line in $lines) {
+        $parts = $line -split "`t", 2
+        if ($parts.Count -ne 2) { throw "Kafka load omitted its tab-separated key: $line" }
+        $reading = $parts[1] | ConvertFrom-Json
+        $tenantPart = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($reading.tenantId)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+        $devicePart = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($reading.payload.deviceId)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+        Assert-Equal -Expected "v1:${tenantPart}:${devicePart}" -Actual $parts[0] -Description "Kafka load key matches its tenant and device"
+        Assert-Equal -Expected "c" -Actual $reading.payload.unit -Description "Kafka load uses the configured Celsius unit"
+        if ($reading.eventId -like "probe-*") { continue }
+        $readings[$parts[0]] = @($readings[$parts[0]]) + @($reading.payload.value)
+    }
+    Assert-Equal -Expected 4 -Actual $readings.Count -Description "load spreads over four stable device keys"
+    foreach ($values in $readings.Values) {
+        $values = @($values | Where-Object { $null -ne $_ })
+        Assert-Equal -Expected 3 -Actual $values.Count -Description "each device receives three consecutive readings"
+        if ($values[0] -eq $values[1] -or $values[1] -eq $values[2]) { throw "A device did not alternate readings across rounds." }
+    }
+} finally {
+    Remove-Item -LiteralPath $tempCommand -ErrorAction SilentlyContinue
+}

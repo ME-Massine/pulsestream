@@ -3,6 +3,8 @@ package com.pulsestream.processor.service;
 import com.pulsestream.processor.model.AnomalySeverity;
 import com.pulsestream.processor.model.NormalizedTelemetryEvent;
 import com.pulsestream.processor.model.TelemetryAnomalyResult;
+import com.pulsestream.processor.config.AnomalyDetectionProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
@@ -11,18 +13,26 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class TelemetryAnomalyDetectionService {
 
-    private static final BigDecimal MAX_TEMPERATURE = new BigDecimal("80");
-    private static final BigDecimal MIN_TEMPERATURE = new BigDecimal("-40");
-    private static final BigDecimal SPIKE_RATIO_THRESHOLD = new BigDecimal("0.5");
+    private final AnomalyDetectionProperties properties;
 
-    private final ConcurrentHashMap<String, BigDecimal> lastSeenValues = new ConcurrentHashMap<>();
+    public TelemetryAnomalyDetectionService() {
+        this(AnomalyDetectionProperties.defaults());
+    }
+
+    @Autowired
+    public TelemetryAnomalyDetectionService(AnomalyDetectionProperties properties) {
+        this.properties = properties;
+    }
 
     public TelemetryAnomalyResult detect(NormalizedTelemetryEvent event) {
+        return detect(event, null);
+    }
+
+    public TelemetryAnomalyResult detect(NormalizedTelemetryEvent event, BigDecimal previous) {
         Assert.notNull(event, "normalized telemetry event must not be null");
 
         List<String> reasons = new ArrayList<>();
@@ -48,24 +58,29 @@ public class TelemetryAnomalyDetectionService {
             hasMissingCriticalField = true;
         }
 
+        if (!StringUtils.hasText(event.unit())) {
+            reasons.add("unit is required");
+            hasMissingCriticalField = true;
+        } else if ("temperature".equals(event.metric()) && !properties.temperatureUnit().equals(event.unit())) {
+            reasons.add("temperature unit must be " + properties.temperatureUnit());
+            hasMissingCriticalField = true;
+        }
+
         if (!hasMissingCriticalField) {
             if ("temperature".equals(event.metric())) {
-                if (event.value().compareTo(MAX_TEMPERATURE) > 0) {
+                if (event.value().compareTo(properties.maxTemperature()) > 0) {
                     reasons.add("temperature is above maximum threshold");
                 }
 
-                if (event.value().compareTo(MIN_TEMPERATURE) < 0) {
+                if (event.value().compareTo(properties.minTemperature()) < 0) {
                     reasons.add("temperature is below minimum threshold");
                 }
             }
 
-            String valueKey = event.tenantId() + ":" + event.deviceId() + ":" + event.metric();
-            BigDecimal previous = lastSeenValues.put(valueKey, event.value());
-
             if (previous != null && previous.compareTo(BigDecimal.ZERO) != 0) {
-                BigDecimal changeRatio = event.value().subtract(previous).abs()
-                        .divide(previous.abs(), 10, RoundingMode.HALF_UP);
-                if (changeRatio.compareTo(SPIKE_RATIO_THRESHOLD) > 0) {
+                BigDecimal difference = event.value().subtract(previous).abs();
+                if (difference.compareTo(previous.abs().multiply(properties.spikeRatio())) > 0) {
+                    BigDecimal changeRatio = difference.divide(previous.abs(), 10, RoundingMode.HALF_UP);
                     BigDecimal pct = changeRatio.multiply(BigDecimal.valueOf(100))
                             .setScale(1, RoundingMode.HALF_UP);
                     reasons.add("value spike detected: changed by " + pct + "% from previous reading");

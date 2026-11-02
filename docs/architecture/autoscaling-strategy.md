@@ -38,11 +38,23 @@ Load is driven by inbound HTTP request rate, and the work per request (deseriali
 
 The processor is a Kafka consumer group member. Two independent constraints apply.
 
-**Partition ceiling.** Replicas of a consumer group divide the partitions of the subscribed topic; a replica that is assigned no partition does no work. `telemetry.events.raw` has 3 partitions (see [topics.md](topics.md)), and `PULSESTREAM_KAFKA_CONSUMER_CONCURRENCY` defaults to `1`, so each replica consumes one partition. **The maximum useful replica count is 3.** More generally, useful replicas equal `partitions ÷ concurrency`; raising concurrency lowers the useful replica count proportionally. Scaling past that ceiling burns cluster resources and adds nothing. Throughput beyond 3 replicas requires repartitioning the topic, not a larger HPA maximum.
+**Partition ceiling.** Replicas divide the three raw topic partitions. At default
+consumer concurrency one, at most three replicas do work; two replicas divide all
+three partitions. With concurrency `C`, `ceil(3 / C)` replicas supply enough slots,
+and additional slots may be idle depending on assignment. Increasing threads or
+replicas beyond partition capacity adds no stream throughput. Partition changes
+require a separate coordinated capacity and state migration.
 
-**Anomaly history is per-replica.** Sudden-deviation detection keeps previous readings in an in-memory `ConcurrentHashMap` inside each replica (`TelemetryAnomalyDetectionService`), and raw events are partitioned by event identifier rather than by stable device identity. Readings for the same device can therefore land on different replicas, and every scale event triggers a consumer group rebalance that reassigns partitions and abandons the in-memory history on the losing replica.
+**Anomaly history is durable (#269).** Ingestion and replay key readings by
+tenant/device; bounded PostgreSQL state isolates tenant/device/metric/unit keys.
+New owners recover state and retained offset decisions after a rebalance or
+restart. State errors stop the listener without committing the failed record.
 
-The processor autoscales within `[2, 3]` on CPU utilization (issue #151), with that second constraint accepted as a documented limitation rather than solved. What it costs in practice: threshold rules (missing fields, temperature bounds) are stateless and stay correct, while spike detection can miss the comparison for the first reading of a device after a rebalance. What bounds the cost: the range spans a single replica, so at most one rebalance per scale decision, and the 300-second scale-down window keeps those decisions infrequent. Making the output independent of replica count and rebalance timing requires device-stable partitioning and state ownership (issue #269); no autoscaler setting substitutes for it.
+The CPU HPA remains within `[2, 3]` (#151). Rebalances preserve spike comparisons
+under the [ordering, retention and recovery contract](anomaly-detection.md).
+Complete the paused/drained producer-key cutover before using the new processor.
+Database throughput and bounded state capacity still constrain useful scaling;
+the 300-second scale-down window reduces churn, not state correctness risk.
 
 ### query-service — deferred
 
@@ -135,7 +147,10 @@ CPU-based autoscaling is not free of dependencies. Before any HPA is applied:
 
 - **No measured load profile yet.** The autoscalers are exercised under real load and their behavior is asserted end-to-end — see [Autoscaling Validation](autoscaling-validation.md) — but that proves the configured values behave as configured, not that they are the right values. The 70% CPU target and ingestion request-rate target remain conventions until a sustained CPU/RPS profile calibrates them. That profiling is #277's, whose scope defines the representative workloads and success thresholds; #153 generates load only long enough to observe a reaction, and its own Out of Scope section excludes long-duration stress testing.
 - **CPU is a proxy, not the real signal.** For an HTTP gateway it is a reasonable one. For a Kafka consumer it is weak: lag can grow while CPU stays flat, so the processor's autoscaler is expected to under-react until the lag metric replaces it (#152, #272).
-- **The processor's anomaly history does not survive a scale event.** Its spike-detection state is per-replica and its partitioning key is not device-stable, so a rebalance drops the previous reading for the devices that moved. Threshold rules are unaffected. The 2-3 range bounds how often this happens; only #269 removes it.
+- **Durable state has operating bounds.** #269 preserves history across scaling,
+  but key capacity, stream-time retention, retained decision windows and shared
+  PostgreSQL availability remain explicit constraints. Capacity exhaustion stops
+  consumption; adding replicas does not increase a partition's state limit.
 - **Autoscaling does not address Kafka or PostgreSQL capacity.** Scaling ingestion moves the bottleneck downstream to partition count and to a single-instance database. Autoscaling raises the ceiling on one tier only.
 - **Rebalance cost is not quantified.** The pause imposed on a consumer group by a scale event has not been measured, so the 300-second scale-down window is a safety margin rather than a derived value.
 
@@ -149,7 +164,7 @@ CPU-based autoscaling is not free of dependencies. Before any HPA is applied:
 | #151 | Autoscaling for consumer services | Implements the processor row on the CPU signal, within the 2-3 partition ceiling |
 | #152 | Custom metrics for advanced autoscaling | Delivers the adapter path both rejected metrics depend on. See [Custom Metrics for Autoscaling](custom-metrics-autoscaling.md) |
 | #153 | Validate autoscaling behavior end-to-end | Proves the shipped rows behave as configured under load. It does not calibrate the target values themselves. See [Autoscaling Validation](autoscaling-validation.md) |
-| #269 | Deterministic anomaly detection under scaling | Removes the per-replica anomaly-history limitation the processor row accepts |
+| #269 | Deterministic anomaly detection under scaling | Implemented with device keys and bounded durable state; coordinated rollout and live validation remain pending |
 | #272 | Processing and consumer-lag metrics | Prerequisite for #152 |
 | #277 | Validate load, failure recovery, and data durability | Owns the sustained load profile that turns the 70% CPU target and the per-replica request-rate capacity from conventions into measured values |
 

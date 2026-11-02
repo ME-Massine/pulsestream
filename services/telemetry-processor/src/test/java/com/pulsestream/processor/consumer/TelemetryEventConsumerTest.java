@@ -7,7 +7,8 @@ import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
 import com.pulsestream.processor.service.AnomalyProcessingService;
 import com.pulsestream.processor.service.DeadLetterPublisher;
-import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
+import com.pulsestream.processor.service.AnomalyStateService;
+import com.pulsestream.processor.exception.AnomalyStateException;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import com.pulsestream.processor.service.TelemetryProcessingService;
 import org.junit.jupiter.api.DisplayName;
@@ -34,8 +35,8 @@ class TelemetryEventConsumerTest {
 
     private final TelemetryNormalizationService normalizationService =
             mock(TelemetryNormalizationService.class);
-    private final TelemetryAnomalyDetectionService anomalyDetectionService =
-            mock(TelemetryAnomalyDetectionService.class);
+    private final AnomalyStateService anomalyDetectionService =
+            mock(AnomalyStateService.class);
     private final AnomalyProcessingService anomalyProcessingService =
             mock(AnomalyProcessingService.class);
     private final TelemetryProcessingService processingService =
@@ -55,12 +56,12 @@ class TelemetryEventConsumerTest {
         TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.normal(normalizedEvent);
 
         when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
-        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
+        when(anomalyDetectionService.detect(org.mockito.ArgumentMatchers.eq(normalizedEvent), any())).thenReturn(anomalyResult);
 
-        consumer.consumeTelemetryEvent(event);
+        consumer.consumeTelemetryRecord(record(event));
 
         verify(normalizationService).normalize(event);
-        verify(anomalyDetectionService).detect(normalizedEvent);
+        verify(anomalyDetectionService).detect(org.mockito.ArgumentMatchers.eq(normalizedEvent), any());
         verify(processingService).process(event);
     }
 
@@ -74,9 +75,9 @@ class TelemetryEventConsumerTest {
         );
 
         when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
-        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
+        when(anomalyDetectionService.detect(org.mockito.ArgumentMatchers.eq(normalizedEvent), any())).thenReturn(anomalyResult);
 
-        consumer.consumeTelemetryEvent(event);
+        consumer.consumeTelemetryRecord(record(event));
 
         verify(anomalyProcessingService).process(event, anomalyResult);
         verify(processingService, never()).process(any());
@@ -90,9 +91,9 @@ class TelemetryEventConsumerTest {
         TelemetryAnomalyResult anomalyResult = TelemetryAnomalyResult.normal(normalizedEvent);
 
         when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
-        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
+        when(anomalyDetectionService.detect(org.mockito.ArgumentMatchers.eq(normalizedEvent), any())).thenReturn(anomalyResult);
 
-        consumer.consumeTelemetryEvent(event);
+        consumer.consumeTelemetryRecord(record(event));
 
         verify(processingService).process(event);
         verify(anomalyProcessingService, never()).process(any(), any());
@@ -106,7 +107,7 @@ class TelemetryEventConsumerTest {
 
         when(normalizationService.normalize(event)).thenThrow(failure);
 
-        assertThatCode(() -> consumer.consumeTelemetryEvent(event)).doesNotThrowAnyException();
+        assertThatCode(() -> consumer.consumeTelemetryRecord(record(event))).doesNotThrowAnyException();
 
         verify(deadLetterPublisher).publish(event, failure);
         verify(processingService, never()).process(any());
@@ -122,10 +123,10 @@ class TelemetryEventConsumerTest {
         RuntimeException failure = new IllegalStateException("processing exploded");
 
         when(normalizationService.normalize(event)).thenReturn(normalizedEvent);
-        when(anomalyDetectionService.detect(normalizedEvent)).thenReturn(anomalyResult);
+        when(anomalyDetectionService.detect(org.mockito.ArgumentMatchers.eq(normalizedEvent), any())).thenReturn(anomalyResult);
         when(processingService.process(event)).thenThrow(failure);
 
-        assertThatCode(() -> consumer.consumeTelemetryEvent(event)).doesNotThrowAnyException();
+        assertThatCode(() -> consumer.consumeTelemetryRecord(record(event))).doesNotThrowAnyException();
 
         verify(deadLetterPublisher).publish(event, failure);
     }
@@ -133,7 +134,7 @@ class TelemetryEventConsumerTest {
     @Test
     @DisplayName("should reject null telemetry event")
     void shouldRejectNullTelemetryEvent() {
-        assertThatThrownBy(() -> consumer.consumeTelemetryEvent(null))
+        assertThatThrownBy(() -> consumer.consumeTelemetryRecord(record(null)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("telemetryEvent must not be null");
 
@@ -182,9 +183,9 @@ class TelemetryEventConsumerTest {
         var result = TelemetryAnomalyResult.anomalous(normalized, AnomalySeverity.WARNING, List.of("threshold"));
         var failure = new org.springframework.dao.DataAccessResourceFailureException("database unavailable");
         when(normalizationService.normalize(event)).thenReturn(normalized);
-        when(anomalyDetectionService.detect(normalized)).thenReturn(result);
+        when(anomalyDetectionService.detect(org.mockito.ArgumentMatchers.eq(normalized), any())).thenReturn(result);
         when(anomalyProcessingService.process(event, result)).thenThrow(failure);
-        consumer.consumeTelemetryEvent(event);
+        consumer.consumeTelemetryRecord(record(event));
         verify(deadLetterPublisher).publish(event, failure);
         org.mockito.Mockito.reset(deadLetterPublisher);
         when(anomalyProcessingService.process(event, result, true)).thenThrow(failure);
@@ -193,6 +194,25 @@ class TelemetryEventConsumerTest {
         consumer.consumeTelemetryRecord(record);
         verify(anomalyProcessingService).process(event, result, true);
         verifyNoInteractions(deadLetterPublisher, processingService);
+    }
+
+    private ConsumerRecord<String, TelemetryEvent> record(TelemetryEvent event) {
+        return new ConsumerRecord<>("raw", 0, 0, "key", event);
+    }
+
+    @Test
+    void stateFailurePropagatesForOrdinaryAndReplayRecordsWithoutDeadLettering() {
+        var event = telemetryEvent();
+        var normalized = normalizedTelemetryEvent();
+        when(normalizationService.normalize(event)).thenReturn(normalized);
+        when(anomalyDetectionService.detect(org.mockito.ArgumentMatchers.eq(normalized), any()))
+                .thenThrow(new AnomalyStateException("capacity reached"));
+        var record = record(event);
+        for (boolean replay : new boolean[] {false, true}) {
+            if (replay) record.headers().add("pulsestream.replay", "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            assertThatThrownBy(() -> consumer.consumeTelemetryRecord(record)).isInstanceOf(AnomalyStateException.class);
+        }
+        verifyNoInteractions(deadLetterPublisher, processingService, anomalyProcessingService);
     }
 
     private TelemetryEvent telemetryEvent() {

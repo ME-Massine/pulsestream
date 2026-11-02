@@ -21,7 +21,10 @@ class KafkaProducerConfigurationTest {
                     "pulsestream.kafka.producer.client-id=telemetry-processor-producer",
                     "pulsestream.kafka.producer.acks=all",
                     "pulsestream.kafka.producer.retries=5",
-                    "pulsestream.kafka.producer.delivery-timeout=45s"
+                    "pulsestream.kafka.producer.delivery-timeout=45s",
+                    "pulsestream.kafka.producer.properties.max.in.flight.requests.per.connection=5",
+                    "pulsestream.kafka.producer.properties.partitioner.ignore.keys=true",
+                    "pulsestream.kafka.producer.properties.partitioner.class=custom.Partitioner"
             );
 
     @Test
@@ -37,6 +40,9 @@ class KafkaProducerConfigurationTest {
                     .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "telemetry-processor-producer")
                     .containsEntry(ProducerConfig.ACKS_CONFIG, "all")
                     .containsEntry(ProducerConfig.RETRIES_CONFIG, 5)
+                    .containsEntry(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1)
+                    .containsEntry(ProducerConfig.PARTITIONER_IGNORE_KEYS_CONFIG, false)
+                    .doesNotContainKey(ProducerConfig.PARTITIONER_CLASS_CONFIG)
                     .containsEntry(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 45000);
         });
     }

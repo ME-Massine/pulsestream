@@ -53,7 +53,12 @@ Lag is the right signal for the processor and this document specifies its adapte
 1. **The metric does not exist yet.** No component in the cluster exports `kafka_consumergroup_lag`. The Kafka CR (`infrastructure/kubernetes/kafka/kafka-cluster.yaml`) enables only the Topic Operator; Strimzi's Kafka Exporter is not configured, and the services do not export lag themselves (issue #272). Nothing downstream can be built on a series that is not produced.
 2. **The gain is one replica step.** `telemetry-processor` already autoscales on CPU within `[2, 3]` (issue #151), and 3 is the partition count, not a tuning choice. A backlog signal earns its complexity across a wide range; across a single step, the choice of signal changes *when* the one scale event happens, not how far it goes.
 
-There is a third consideration that lag does not resolve either way: the processor's anomaly history is per-replica and its partitioning key is not device-stable, so every scale event abandons in-memory history on the losing replica (issue #269). That limitation is documented and accepted in the strategy document for the CPU-driven HPA, and switching the trigger to lag neither fixes nor worsens it.
+Anomaly history now uses tenant/device partitioning and bounded shared PostgreSQL
+state (#269), so scale events recover history rather than discarding local maps.
+Complete the [coordinated key cutover](anomaly-detection.md) before rollout. Key
+capacity and database pressure can stop consumption; a lag-based HPA cannot
+repair those failures by adding replicas. The existing three-partition ceiling
+and CPU HPA bounds remain unchanged.
 
 So the lag rule ships in the adapter configuration, where it matches no series and is inert, and the HPA does not. When #272 lands, the remaining work is one manifest and a measured threshold, not a redesign.
 
@@ -190,7 +195,7 @@ The structural test reads the committed manifest and asserts the same things the
 | Issue | Work | Relationship to this document |
 | :--- | :--- | :--- |
 | #153 | Validate autoscaling behavior end-to-end | Replaces the derived 50 rps target with a measured one |
-| #269 | Deterministic anomaly detection under scaling | Independent of the metric, but it bounds how freely the processor may scale at all |
+| #269 | Deterministic anomaly detection under scaling | Durable state implemented; key migration, state bounds and PostgreSQL capacity apply independently of the metric |
 | #272 | Processing and consumer-lag metrics | Produces the series the lag rule here is waiting for |
 | #154+ | Kafka and platform metrics integration | Provides the in-cluster Prometheus this path depends on |
 

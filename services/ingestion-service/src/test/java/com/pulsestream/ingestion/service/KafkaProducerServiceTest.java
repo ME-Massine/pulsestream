@@ -60,29 +60,29 @@ class KafkaProducerServiceTest {
         CompletableFuture<SendResult<String, TelemetryEvent>> sendFuture = new CompletableFuture<>();
         sendFuture.complete(sendResult());
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent))
                 .thenReturn(sendFuture);
 
         assertThatCode(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
                 .doesNotThrowAnyException();
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent);
     }
 
     @Test
-    @DisplayName("should fall back to tenant id when event id is blank")
-    void shouldFallBackToTenantIdWhenEventIdIsBlank() {
+    @DisplayName("should preserve tenant/device ordering when event id is blank")
+    void shouldPreserveOrderingWhenEventIdIsBlank() {
         TelemetryEvent telemetryEvent = telemetryEvent(" ", "factory-01");
         CompletableFuture<SendResult<String, TelemetryEvent>> sendFuture = new CompletableFuture<>();
         sendFuture.complete(sendResult());
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "factory-01", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent))
                 .thenReturn(sendFuture);
 
         assertThatCode(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
                 .doesNotThrowAnyException();
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "factory-01", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent);
     }
 
     @Test
@@ -93,7 +93,7 @@ class KafkaProducerServiceTest {
         KafkaException kafkaException = new KafkaException("broker unavailable");
         sendFuture.completeExceptionally(kafkaException);
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent))
                 .thenReturn(sendFuture);
 
         assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
@@ -101,7 +101,7 @@ class KafkaProducerServiceTest {
                 .hasMessage("Failed to publish telemetry event to Kafka")
                 .hasCause(kafkaException);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent);
     }
 
     @Test
@@ -110,7 +110,7 @@ class KafkaProducerServiceTest {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         KafkaException kafkaException = new KafkaException("producer unavailable");
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent))
                 .thenThrow(kafkaException);
 
         assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
@@ -118,7 +118,7 @@ class KafkaProducerServiceTest {
                 .hasMessage("Failed to publish telemetry event to Kafka")
                 .hasCause(kafkaException);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent);
     }
 
     @Test
@@ -128,7 +128,7 @@ class KafkaProducerServiceTest {
         TelemetryEvent telemetryEvent = telemetryEvent("evt-001", "factory-01");
         CompletableFuture<SendResult<String, TelemetryEvent>> sendFuture = new CompletableFuture<>();
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent))
                 .thenReturn(sendFuture);
 
         assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
@@ -136,7 +136,7 @@ class KafkaProducerServiceTest {
                 .hasMessage("Failed to publish telemetry event to Kafka")
                 .hasCauseInstanceOf(TimeoutException.class);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent);
     }
 
     @Test
@@ -150,9 +150,9 @@ class KafkaProducerServiceTest {
         CompletableFuture<SendResult<String, String>> dlqFuture = new CompletableFuture<>();
         dlqFuture.complete(dlqSendResult());
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent))
                 .thenReturn(rawFuture);
-        when(dlqKafkaTemplate.send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), anyString()))
+        when(dlqKafkaTemplate.send(eq(kafkaProperties.getTopics().getDlq()), eq(TelemetryOrderingKey.of("factory-01", "sensor-1042")), anyString()))
                 .thenReturn(dlqFuture);
 
         assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
@@ -160,11 +160,11 @@ class KafkaProducerServiceTest {
                 .hasMessage("Failed to publish telemetry event to Kafka")
                 .hasCause(kafkaException);
 
-        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent);
+        verify(kafkaTemplate).send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent);
 
         ArgumentCaptor<String> dlqValueCaptor = ArgumentCaptor.forClass(String.class);
         verify(dlqKafkaTemplate)
-                .send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), dlqValueCaptor.capture());
+                .send(eq(kafkaProperties.getTopics().getDlq()), eq(TelemetryOrderingKey.of("factory-01", "sensor-1042")), dlqValueCaptor.capture());
 
         String dlqValue = dlqValueCaptor.getValue();
         // Parse the generated JSON and assert the shared DLQ envelope contract rather than
@@ -198,9 +198,9 @@ class KafkaProducerServiceTest {
         CompletableFuture<SendResult<String, String>> dlqFuture = new CompletableFuture<>();
         dlqFuture.complete(dlqSendResult());
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent))
                 .thenReturn(rawFuture);
-        when(dlqKafkaTemplate.send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), anyString()))
+        when(dlqKafkaTemplate.send(eq(kafkaProperties.getTopics().getDlq()), eq(TelemetryOrderingKey.of("factory-01", "sensor-1042")), anyString()))
                 .thenReturn(dlqFuture);
 
         assertThatThrownBy(() -> serviceWithFailingObjectMapper.publishTelemetryEvent(telemetryEvent))
@@ -212,7 +212,7 @@ class KafkaProducerServiceTest {
         // that still carries the original event id, payload, and failure metadata.
         ArgumentCaptor<String> dlqValueCaptor = ArgumentCaptor.forClass(String.class);
         verify(dlqKafkaTemplate)
-                .send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), dlqValueCaptor.capture());
+                .send(eq(kafkaProperties.getTopics().getDlq()), eq(TelemetryOrderingKey.of("factory-01", "sensor-1042")), dlqValueCaptor.capture());
         String dlqValue = dlqValueCaptor.getValue();
         assertThat(dlqValue).contains("evt-001").contains("sensor-1042");
         assertThat(dlqValue).contains("ingestion-service");
@@ -230,9 +230,9 @@ class KafkaProducerServiceTest {
         CompletableFuture<SendResult<String, String>> dlqFuture = new CompletableFuture<>();
         dlqFuture.completeExceptionally(dlqException);
 
-        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), "evt-001", telemetryEvent))
+        when(kafkaTemplate.send(kafkaProperties.getTopics().getRaw(), TelemetryOrderingKey.of("factory-01", "sensor-1042"), telemetryEvent))
                 .thenReturn(rawFuture);
-        when(dlqKafkaTemplate.send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), anyString()))
+        when(dlqKafkaTemplate.send(eq(kafkaProperties.getTopics().getDlq()), eq(TelemetryOrderingKey.of("factory-01", "sensor-1042")), anyString()))
                 .thenReturn(dlqFuture);
 
         assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
@@ -241,7 +241,7 @@ class KafkaProducerServiceTest {
                 .hasCause(rawException);
 
         verify(dlqKafkaTemplate)
-                .send(eq(kafkaProperties.getTopics().getDlq()), eq("evt-001"), anyString());
+                .send(eq(kafkaProperties.getTopics().getDlq()), eq(TelemetryOrderingKey.of("factory-01", "sensor-1042")), anyString());
     }
 
     @Test
@@ -251,7 +251,7 @@ class KafkaProducerServiceTest {
 
         assertThatThrownBy(() -> kafkaProducerService.publishTelemetryEvent(telemetryEvent))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("telemetryEvent must contain a non-blank tenantId when eventId is blank");
+                .hasMessage("tenantId is required for the ordering key");
     }
 
     @Test

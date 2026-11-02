@@ -47,7 +47,7 @@ pipeline works.
 | 2 | The services expose metrics and traces | `/actuator/prometheus` is read from **every ready pod** through the API server's pod proxy, not through Prometheus, so a broken endpoint is not confused with a broken scrape config. Tracing services must have registered with Jaeger. |
 | 3 | Prometheus is scraping them | Any target is not `up`, or the job's targets, its `up` series and an application metric (`process_uptime_seconds`) do not match the Ready pods of that workload **one-to-one by pod name**. Counting is not enough: two targets for one pod and none for its replica is the same count as one each, and that is the shape a stale discovery entry takes after a rollout — the dashboard keeps drawing a line and the unscraped replica is invisible. A series carrying no `pod` label is reported as unattributable rather than silently dropped. |
 | 4 | The metrics pipeline observes a request this run generated | One event is posted, and `sum(http_server_requests_seconds_count{…,status="202"})` must **increase** from a baseline read before the request. |
-| 5 | The trace pipeline observes the same request | The ingestion trace is found by `pulsestream.event.id`, and the processor's consumer trace by `messaging.kafka.message.key`, which ingestion sets to the event id. The consumer span's destination topic is checked too, since a DLQ or replay record carries the same key. |
+| 5 | The trace pipeline observes the same request | The ingestion trace is found by `pulsestream.event.id`, and the processor's consumer trace by `messaging.kafka.message.key`, using the v1 tenant/device ordering key. A fresh device containing the event ID is used for this run's single event, preserving event-specific correlation. Consumer kind, key and raw destination topic must match on the same span, even if a replay trace appears first. |
 | 6 | Grafana serves that data | The datasource health check, the dashboards being loaded, and the same query run **through Grafana's datasource proxy** — the path a browser uses. The answer must be **at least the value Prometheus reported after the stimulus**: the counter is non-zero for as long as the pod lives, so a Grafana wired to a different Prometheus, or answering from before the request, returns data and would satisfy any "returned something" check. |
 | 7 | No major telemetry pipeline errors remain | Any error-level line in the collector, Jaeger, Prometheus or Grafana logs from the last 10 minutes, or any Prometheus target carrying a `lastError`. Each sweep reuses the selector step 1 read off the Deployment rather than a hand-written `app.kubernetes.io/...` label (which, for a Helm sub-chart, would pull in node-exporter, kube-state-metrics, alertmanager and pushgateway alongside the Prometheus server), and that selector is re-resolved and required to still match exactly the Ready pods step 1 recorded, and a `kubectl logs` that **fails** (RBAC, wrong namespace, a rotated container log) fails the step — `kubectl logs -l` exits 0 on a selector matching nothing, so the quietest result here would otherwise be the least trustworthy one. |
 
@@ -94,7 +94,17 @@ failure cases with no cluster and no Grafana:
 
 ```powershell
 pwsh ./scripts/tests/test-observability-stack-checks.ps1
+pwsh ./scripts/tests/test-trace-correlation.ps1
 ```
+
+Both tracing validators share `scripts/lib/PulseStreamTracing.psm1`. The trace
+regressions exercise their actual request construction and consumer correlation
+against synthetic Jaeger responses, including earlier runs, legacy event-ID keys,
+wrong topics and attributes split across spans. The key encoder is checked
+against `contracts/ordering-keys.json`. Raw keys use
+`v1:base64url(UTF-8 tenant):base64url(UTF-8 device)`, trimmed and without padding;
+normal production keys can cover many events and are not event IDs. The unique
+validation device is what restricts each generated key to one event.
 
 ---
 

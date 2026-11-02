@@ -169,24 +169,35 @@ wait
 # exactly the hang the sampler watches for.
 $kafkaLoadTemplate = @'
 set -euo pipefail
+# Match the ingestion/replay v1 tenant/device key. Cache keys outside the load loop.
+encode_key_part() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+tenant_key=$(encode_key_part autoscaling_validation)
+probe_key="v1:${tenant_key}:$(encode_key_part probe-{{RUN}}-{{POD}})"
+declare -a device_keys
+for ((device=0; device<{{DEVICES}}; device++)); do
+  device_keys[$device]="v1:${tenant_key}:$(encode_key_part load-{{RUN}}-{{POD}}-${device})"
+done
 # A successful one-message producer run proves the image, shell, base64-decoded
 # command, bootstrap route, and producer before the continuous load begins.
-printf '{"eventId":"probe-{{RUN}}-{{POD}}","tenantId":"autoscaling_validation","eventType":"telemetry.reading","timestamp":"2026-01-01T00:00:00Z","source":"validate-autoscaling-behavior","version":"1.0","payload":{"deviceId":"probe-{{RUN}}-{{POD}}","deviceType":"temperature-sensor","metric":"temperature","value":20.5,"unit":"celsius","location":"validation-lab"}}\n' | {{BIN}}/kafka-console-producer.sh \
+printf '%s\t{"eventId":"probe-{{RUN}}-{{POD}}","tenantId":"autoscaling_validation","eventType":"telemetry.reading","timestamp":"2026-01-01T00:00:00Z","source":"validate-autoscaling-behavior","version":"1.0","payload":{"deviceId":"probe-{{RUN}}-{{POD}}","deviceType":"temperature-sensor","metric":"temperature","value":20.5,"unit":"c","location":"validation-lab"}}\n' "$probe_key" | {{BIN}}/kafka-console-producer.sh \
   --bootstrap-server {{BOOTSTRAP}} --topic {{TOPIC}} \
+  --property parse.key=true --producer-property max.in.flight.requests.per.connection=1 \
   --producer-property acks=all --producer-property linger.ms=5
 echo "pulsestream-autoscaling-load ready kafka" >&2
 i=0
 while true; do
   i=$((i+1))
-  if [ $((i % 2)) -eq 0 ]; then v=20.5; else v=95.5; fi
-  printf '{"eventId":"evt_{{RUN}}_{{POD}}_%s","tenantId":"autoscaling_validation","eventType":"telemetry.reading","timestamp":"2026-01-01T00:00:00Z","source":"validate-autoscaling-behavior","version":"1.0","payload":{"deviceId":"load-{{RUN}}-{{POD}}-%s","deviceType":"temperature-sensor","metric":"temperature","value":%s,"unit":"celsius","location":"validation-lab"}}\n' \
-    "$i" "$((i % {{DEVICES}}))" "$v"
+  device=$((i % {{DEVICES}}))
+  if [ $(((i / {{DEVICES}}) % 2)) -eq 0 ]; then v=20.5; else v=95.5; fi
+  printf '%s\t{"eventId":"evt_{{RUN}}_{{POD}}_%s","tenantId":"autoscaling_validation","eventType":"telemetry.reading","timestamp":"2026-01-01T00:00:00Z","source":"validate-autoscaling-behavior","version":"1.0","payload":{"deviceId":"load-{{RUN}}-{{POD}}-%s","deviceType":"temperature-sensor","metric":"temperature","value":%s,"unit":"c","location":"validation-lab"}}\n' \
+    "${device_keys[$device]}" "$i" "$device" "$v"
   if [ $((i % 100)) -eq 0 ]; then echo "pulsestream-autoscaling-load heartbeat kafka $i" >&2; fi
   rate={{BURST_RATE}}
   if [ "$i" -gt {{BURST_EVENTS}} ]; then rate={{RATE}}; fi
   if [ $((i % rate)) -eq 0 ]; then sleep 1; fi
 done | {{BIN}}/kafka-console-producer.sh \
   --bootstrap-server {{BOOTSTRAP}} --topic {{TOPIC}} \
+  --property parse.key=true --producer-property max.in.flight.requests.per.connection=1 \
   --producer-property acks=all --producer-property linger.ms=5
 '@
 

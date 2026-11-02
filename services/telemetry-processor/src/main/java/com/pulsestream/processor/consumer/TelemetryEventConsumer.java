@@ -6,7 +6,8 @@ import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.service.AnomalyProcessingService;
 import com.pulsestream.processor.service.DeadLetterPublisher;
 import com.pulsestream.processor.service.ReplayHeaders;
-import com.pulsestream.processor.service.TelemetryAnomalyDetectionService;
+import com.pulsestream.processor.service.AnomalyStateService;
+import com.pulsestream.processor.exception.AnomalyStateException;
 import com.pulsestream.processor.service.TelemetryNormalizationService;
 import com.pulsestream.processor.service.TelemetryProcessingService;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -22,14 +23,14 @@ public class TelemetryEventConsumer {
     private static final Logger log = LoggerFactory.getLogger(TelemetryEventConsumer.class);
 
     private final TelemetryNormalizationService normalizationService;
-    private final TelemetryAnomalyDetectionService anomalyDetectionService;
+    private final AnomalyStateService anomalyDetectionService;
     private final AnomalyProcessingService anomalyProcessingService;
     private final TelemetryProcessingService processingService;
     private final DeadLetterPublisher deadLetterPublisher;
 
     public TelemetryEventConsumer(
             TelemetryNormalizationService normalizationService,
-            TelemetryAnomalyDetectionService anomalyDetectionService,
+            AnomalyStateService anomalyDetectionService,
             AnomalyProcessingService anomalyProcessingService,
             TelemetryProcessingService processingService,
             DeadLetterPublisher deadLetterPublisher
@@ -48,18 +49,18 @@ public class TelemetryEventConsumer {
     )
     public void consumeTelemetryRecord(ConsumerRecord<String, TelemetryEvent> record) {
         Assert.notNull(record, "record must not be null");
-        consumeTelemetryEvent(record.value(), ReplayHeaders.isReplay(record.headers()));
+        consumeTelemetryEvent(record, ReplayHeaders.isReplay(record.headers()));
     }
 
-    void consumeTelemetryEvent(TelemetryEvent telemetryEvent) {
-        consumeTelemetryEvent(telemetryEvent, false);
-    }
-
-    private void consumeTelemetryEvent(TelemetryEvent telemetryEvent, boolean replayed) {
+    private void consumeTelemetryEvent(ConsumerRecord<String, TelemetryEvent> record, boolean replayed) {
+        TelemetryEvent telemetryEvent = record.value();
         Assert.notNull(telemetryEvent, "telemetryEvent must not be null");
 
         try {
-            processTelemetryEvent(telemetryEvent, replayed);
+            processTelemetryEvent(record, replayed);
+        } catch (AnomalyStateException ex) {
+            // Skipping this reading would change every later stateful decision for the key.
+            throw ex;
         } catch (RuntimeException ex) {
             if (replayed) {
                 log.error(
@@ -81,12 +82,13 @@ public class TelemetryEventConsumer {
         }
     }
 
-    private void processTelemetryEvent(TelemetryEvent telemetryEvent, boolean replayed) {
+    private void processTelemetryEvent(ConsumerRecord<String, TelemetryEvent> record, boolean replayed) {
+        TelemetryEvent telemetryEvent = record.value();
         NormalizedTelemetryEvent normalizedEvent =
                 normalizationService.normalize(telemetryEvent);
 
         TelemetryAnomalyResult anomalyResult =
-                anomalyDetectionService.detect(normalizedEvent);
+                anomalyDetectionService.detect(normalizedEvent, record);
 
         if (anomalyResult.anomalous()) {
             log.warn(

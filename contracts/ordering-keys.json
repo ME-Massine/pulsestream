@@ -1,0 +1,7 @@
+[
+  {"tenantId":"tenant","deviceId":"device","key":"v1:dGVuYW50:ZGV2aWNl"},
+  {"tenantId":" tenant ","deviceId":" device ","key":"v1:dGVuYW50:ZGV2aWNl"},
+  {"tenantId":"a:b","deviceId":"c","key":"v1:YTpi:Yw"},
+  {"tenantId":"a","deviceId":"b:c","key":"v1:YQ:Yjpj"},
+  {"tenantId":"Tenant","deviceId":"device","key":"v1:VGVuYW50:ZGV2aWNl"}
+]

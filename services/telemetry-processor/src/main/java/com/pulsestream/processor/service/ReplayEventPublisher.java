@@ -19,7 +19,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
-import org.springframework.util.StringUtils;
 
 /**
  * Republishes a replayed {@link TelemetryEvent} to {@code telemetry.events.raw}, preserving its
@@ -119,14 +118,8 @@ public class ReplayEventPublisher {
     }
 
     private String resolveMessageKey(TelemetryEvent telemetryEvent) {
-        if (StringUtils.hasText(telemetryEvent.eventId())) {
-            return telemetryEvent.eventId().trim();
-        }
-
-        Assert.hasText(telemetryEvent.tenantId(),
-                "telemetryEvent must contain a non-blank tenantId when eventId is blank");
-
-        return telemetryEvent.tenantId().trim();
+        Assert.notNull(telemetryEvent.payload(), "telemetryEvent payload must not be null");
+        return TelemetryOrderingKey.of(telemetryEvent.tenantId(), telemetryEvent.payload().deviceId());
     }
 
     private long publishTimeoutMillis() {
