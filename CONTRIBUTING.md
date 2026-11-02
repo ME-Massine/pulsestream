@@ -18,6 +18,16 @@ Every pull request must:
 - include testing notes
 - update documentation when needed
 
+Dependabot dependency updates use their generated release notes instead of the
+human PR template and do not require a linked issue. PR issue alignment verifies
+the Dependabot bot author, the source repository and every changed file against
+the configured dependency manifest paths. It rejects empty diffs, file removals,
+renames and changes outside those paths, and does not write a PR comment for bot
+updates. Human and other bot PRs retain the template and issue requirements.
+CI, dependency review, required approvals and resolved conversations still apply.
+Run `node --test scripts/ci/test-pr-issue-alignment.cjs` to check this policy;
+the repository sanity job also runs it.
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` is the quality gate for pull requests into `main`
