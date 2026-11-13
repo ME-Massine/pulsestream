@@ -7,6 +7,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Propagation;
@@ -43,8 +44,13 @@ public class DeliveryOutbox {
     }
 
     public void enqueue(long receipt, String destination, String key, String payload) {
-        jdbc.update("INSERT INTO platform.delivery_outbox (receipt_id, destination, message_key, payload) VALUES (?, ?, ?, ?)",
-                receipt, destination, key, payload);
+        int inserted = jdbc.update("""
+                INSERT INTO platform.delivery_outbox
+                    (receipt_id, destination, message_key, payload, source_topic, source_partition, source_offset)
+                SELECT id, ?, ?, ?, source_topic, source_partition, source_offset
+                FROM platform.processing_receipts WHERE id = ?
+                """, destination, key, payload, receipt);
+        if (inserted != 1) throw new DataIntegrityViolationException("Missing source receipt for outbox enqueue");
     }
 
     private String fingerprint(ConsumerRecord<String, TelemetryEvent> record) {

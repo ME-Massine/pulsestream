@@ -17,6 +17,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 @ConditionalOnProperty(name = "pulsestream.outbox.enabled", havingValue = "true", matchIfMissing = true)
 public class OutboxDispatcher {
     private static final Logger log = LoggerFactory.getLogger(OutboxDispatcher.class);
+    static final String PENDING_HEAD_SQL = """
+            SELECT id, destination, message_key, payload, attempts, next_attempt_at <= now()
+            FROM platform.delivery_outbox
+            WHERE source_topic = ? AND source_partition = ? AND delivered_at IS NULL
+            ORDER BY source_offset LIMIT 1 FOR UPDATE
+            """;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
     private final KafkaTemplate<String, String> outboxKafkaTemplate;
@@ -51,11 +57,10 @@ public class OutboxDispatcher {
         // Bound each poll while allowing independent source partitions to make progress.
         var partitions = jdbc.query("""
                 SELECT source_topic, source_partition FROM (
-                    SELECT DISTINCT ON (r.source_topic, r.source_partition)
-                        r.source_topic, r.source_partition, o.next_attempt_at, o.id
-                    FROM platform.processing_receipts r
-                    JOIN platform.delivery_outbox o ON o.receipt_id = r.id WHERE o.delivered_at IS NULL
-                    ORDER BY r.source_topic, r.source_partition, r.source_offset
+                    SELECT DISTINCT ON (source_topic, source_partition)
+                        source_topic, source_partition, next_attempt_at, id
+                    FROM platform.delivery_outbox WHERE delivered_at IS NULL
+                    ORDER BY source_topic, source_partition, source_offset
                 ) heads WHERE next_attempt_at <= now() ORDER BY next_attempt_at, id LIMIT 100
                 """, (row, index) -> new Source(row.getString(1), row.getInt(2)));
         int remaining = 100;
@@ -72,12 +77,7 @@ public class OutboxDispatcher {
                 "SELECT pg_try_advisory_xact_lock(hashtext(?), ?)", Boolean.class,
                 "pulsestream-outbox:" + source.topic(), source.partition()));
         if (!locked) return false;
-        var rows = jdbc.query("""
-                SELECT o.id, o.destination, o.message_key, o.payload, o.attempts, o.next_attempt_at <= now()
-                FROM platform.delivery_outbox o JOIN platform.processing_receipts r ON r.id = o.receipt_id
-                WHERE r.source_topic = ? AND r.source_partition = ? AND o.delivered_at IS NULL
-                ORDER BY r.source_offset LIMIT 1 FOR UPDATE OF o
-                """, (row, index) -> new Message(row.getLong(1), row.getString(2), row.getString(3),
+        var rows = jdbc.query(PENDING_HEAD_SQL, (row, index) -> new Message(row.getLong(1), row.getString(2), row.getString(3),
                         row.getString(4), row.getInt(5), row.getBoolean(6)), source.topic(), source.partition());
         if (rows.isEmpty() || !rows.getFirst().due()) return false;
         var message = rows.getFirst();

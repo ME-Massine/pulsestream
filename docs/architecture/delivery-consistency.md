@@ -52,6 +52,12 @@ dispatch for each source partition across replicas. The oldest pending offset
 blocks later offsets from that partition during backoff; independent partitions
 can continue. Locks release automatically on connection/process loss.
 
+Flyway V5 copies immutable source coordinates onto outbox rows and adds a partial
+index on `(source_topic, source_partition, source_offset)` for undelivered rows.
+Partition discovery and each oldest-offset lookup read pending outbox entries
+directly; delivered receipt history is outside that lookup path. Each enqueue
+copies the coordinates from its receipt in the processing transaction.
+
 The dedicated string producer sends stored JSON with `acks=all`, idempotence and
 one in-flight request. Batching delay defaults to zero so the default 30-second
 delivery timeout satisfies Kafka's request/delivery timeout constraint. Conflicting durability overrides fail startup. Publish
@@ -96,6 +102,14 @@ verify migration success, metrics and delivery, then resume producers. Mixed old
 and new processor versions are unsupported for the cutover. Existing projection
 rows are preserved. Pre-upgrade missing publications need an audited replay;
 the outbox cannot infer whether historical Kafka sends succeeded.
+
+Upgrading an existing V4 outbox requires stopping all processors before V5 runs.
+V5 backfills source coordinates for every retained outbox row and builds the
+pending index in one transaction; budget maintenance time, database disk and WAL
+capacity for that update and its table locks. Existing payloads, retry state and
+delivery markers are preserved. Resume processors only after migration succeeds.
+Older outbox writers cannot populate the required coordinates, so mixed V4/V5
+binaries and rollback to a V4 writer are unsupported without a migration plan.
 
 Do not restore only one of receipts, outbox, projections and anomaly state.
 Coordinate database and Kafka offset/topic recovery. Topic recreation requires

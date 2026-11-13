@@ -108,6 +108,59 @@ class DeliveryIntegrationTest {
         return new OutboxDispatcher(jdbc, manager, sender, properties, metrics);
     }
 
+    @Test void pendingHeadUsesBoundedIndexLookupWithOneMillionRetainedReceipts() {
+        jdbc.update("""
+                INSERT INTO platform.processing_receipts
+                    (source_topic, source_partition, source_offset, input_hash)
+                SELECT ?, 0, n, 'history' FROM generate_series(1, 1000000) n
+                """, raw);
+        jdbc.execute("""
+                INSERT INTO platform.delivery_outbox
+                    (receipt_id, destination, message_key, payload, source_topic, source_partition, source_offset, delivered_at)
+                SELECT id, 'telemetry.events.processed', 'history', source_offset::text,
+                    source_topic, source_partition, source_offset,
+                    CASE WHEN source_offset <= 900000 THEN now() ELSE NULL END
+                FROM platform.processing_receipts
+                """);
+        jdbc.execute("ANALYZE platform.processing_receipts");
+        jdbc.execute("ANALYZE platform.delivery_outbox");
+
+        String explanation = jdbc.queryForObject("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+                + OutboxDispatcher.PENDING_HEAD_SQL, String.class, raw, 0);
+        var plan = mapper.readTree(explanation).get(0).get("Plan");
+        assertThat(explanation).contains("delivery_outbox_pending_source_idx").doesNotContain("processing_receipts");
+        assertThat(plan.get("Actual Rows").asInt()).isEqualTo(1);
+        assertThat(plan.get("Shared Hit Blocks").asInt() + plan.get("Shared Read Blocks").asInt()).isLessThan(100);
+
+        var successful = sender(CompletableFuture.completedFuture(null));
+        dispatcher(successful).dispatch();
+        var ordered = inOrder(successful);
+        for (int offset = 900001; offset <= 900100; offset++) {
+            ordered.verify(successful).send("telemetry.events.processed", "history", Integer.toString(offset));
+        }
+        ordered.verifyNoMoreInteractions();
+        assertThat(pending()).isEqualTo(99900);
+    }
+
+    @Test void pendingDeliveryUsesSourceOffsetOrderRatherThanReceiptInsertionOrder() {
+        new org.springframework.transaction.support.TransactionTemplate(manager).executeWithoutResult(status -> {
+            outbox.enqueue(outbox.begin(record(2, "later", "20")), "telemetry.events.processed", "order", "later");
+            outbox.enqueue(outbox.begin(record(1, "earlier", "20")), "telemetry.events.processed", "order", "earlier");
+        });
+        var successful = sender(CompletableFuture.completedFuture(null));
+        dispatcher(successful).dispatch();
+        var ordered = inOrder(successful);
+        ordered.verify(successful).send("telemetry.events.processed", "order", "earlier");
+        ordered.verify(successful).send("telemetry.events.processed", "order", "later");
+        assertThat(pending()).isZero();
+    }
+
+    @Test void enqueueWithoutAReceiptFailsRatherThanSilentlyDroppingThePublication() {
+        assertThatThrownBy(() -> outbox.enqueue(999, "telemetry.events.processed", "missing", "payload"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(count("delivery_outbox")).isZero();
+    }
+
     @Test void normalAndAnomalyCommitBeforeKafkaAndRestartDispatchesStoredPayloads() {
         delivery.consume(record(0, "normal", "20"));
         delivery.consume(record(1, "anomaly", "100"));

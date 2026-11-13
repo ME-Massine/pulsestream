@@ -42,6 +42,13 @@ intents without modifying existing projection data. The [delivery contract](deli
 defines coordinated rollout, retention and recovery. Historical publication gaps
 are not automatically backfilled.
 
+`V5__index_pending_delivery_coordinates.sql` copies receipt source coordinates to
+existing outbox rows and indexes only pending rows by topic, partition and offset.
+The dispatcher can then find pending heads without traversing delivered history.
+V1-V4 checksums are unchanged. The backfill updates all retained outbox rows and
+holds table locks during migration; stop processors and allow maintenance time,
+disk and WAL capacity as described in the [delivery contract](delivery-consistency.md).
+
 Flyway creates its own `pulsestream_migrations` schema and records successful
 versions and checksums in `pulsestream_migrations.flyway_schema_history`.
 Only the telemetry processor runs migrations. The database role configured by
