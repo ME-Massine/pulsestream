@@ -63,12 +63,12 @@ and a stopping error handler. Database failures, capacity exhaustion, wrong keys
 missing record timestamps, stale offsets and configuration mismatch propagate as
 state failures. They stop the container without dead-lettering or acknowledging
 the failed record. Restore the dependency/correct the cause and restart the
-processor to resume. Existing normalization/projection/publication failures
-continue to follow the documented ordinary DLQ and replay failure paths.
+processor to resume. Infrastructure, projection, serialization and unexpected
+failures stop consumption; missing-payload input uses durable DLQ routing.
 
-Detection commits before projection persistence and Kafka publication. A crash
-in between recovers the detection decision, but does not make those downstream
-effects atomic. Delivery consistency remains #270; cross-classification replay
+Since #270 the delivery coordinator commits detection state, the projection,
+source receipt and outbox intent together. Kafka publication retries from the
+[transactional outbox](delivery-consistency.md). Cross-classification replay
 reconciliation remains #271. Neither a second consumer group nor manual offset
 resets provide independent historical re-evaluation against these shared tables.
 Use an isolated database for independent processing experiments.

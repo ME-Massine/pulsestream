@@ -37,6 +37,11 @@ The key change and state configuration require the coordinated cutover described
 in [anomaly detection](anomaly-detection.md); restarting an old producer alongside
 the new processor is not a compatible rolling migration.
 
+`V4__transactional_delivery_outbox.sql` adds source receipts and durable publication
+intents without modifying existing projection data. The [delivery contract](delivery-consistency.md)
+defines coordinated rollout, retention and recovery. Historical publication gaps
+are not automatically backfilled.
+
 Flyway creates its own `pulsestream_migrations` schema and records successful
 versions and checksums in `pulsestream_migrations.flyway_schema_history`.
 Only the telemetry processor runs migrations. The database role configured by

@@ -110,3 +110,12 @@ pwsh ./scripts/tests/test-telemetry-processor-hpa-structure.ps1
 ```
 
 That test reads `hpa.yaml` with `scripts/lib/PulseStreamYaml.psm1`, a reader limited to the YAML subset these manifests use; anything outside it (flow collections, anchors, block scalars, multiple documents) throws rather than being misread. Its own coverage is `scripts/tests/test-yaml-parsing.ps1`.
+
+## Delivery recovery (#270)
+
+Flyway V4 adds source receipts and the PostgreSQL delivery outbox. Processing
+commits state, projections and publication intents before source acknowledgement;
+the dispatcher retries Kafka publication across restarts. Kafka outages can grow
+the database backlog. Monitor pending count, failed-pending count and oldest age.
+See [delivery consistency](../../../docs/architecture/delivery-consistency.md) for
+metrics, recovery and the required paused/drained cutover. Live validation is pending.

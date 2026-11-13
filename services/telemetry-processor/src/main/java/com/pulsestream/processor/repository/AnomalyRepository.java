@@ -19,7 +19,7 @@ public class AnomalyRepository {
         this.mapper = mapper;
     }
 
-    /** Commit before returning to the caller, so success metrics include commit failures. */
+    /** Join the delivery transaction when present; standalone callers commit before returning. */
     @Transactional
     public boolean persist(AnomalyEntity entity, boolean replayed) {
         var payload = entity.payload();

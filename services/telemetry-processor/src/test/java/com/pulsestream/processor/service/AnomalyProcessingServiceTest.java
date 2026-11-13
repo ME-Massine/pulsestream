@@ -30,17 +30,14 @@ class AnomalyProcessingServiceTest {
     private static final Instant DETECTED_AT = Instant.parse("2026-03-15T12:05:30Z");
 
     @Mock
-    private AnomalyTelemetryPublisher anomalyPublisher;
-
-    @Mock
     private AnomalyPersistenceService persistenceService;
 
     private final Clock clock = Clock.fixed(DETECTED_AT, ZoneOffset.UTC);
 
     @Test
-    @DisplayName("should build enriched anomaly event with detection metadata and publish it")
-    void shouldBuildEnrichedAnomalyEventAndPublish() {
-        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
+    @DisplayName("should build and persist enriched anomaly event with detection metadata")
+    void shouldBuildAndPersistEnrichedAnomalyEvent() {
+        AnomalyProcessingService service = new AnomalyProcessingService(persistenceService, clock);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 " evt-001 ",
                 " factory-01 ",
@@ -66,12 +63,11 @@ class AnomalyProcessingServiceTest {
         TelemetryAnomalyEvent anomalyEvent = service.process(rawEvent, anomalyResult);
 
         ArgumentCaptor<TelemetryAnomalyEvent> captor = ArgumentCaptor.forClass(TelemetryAnomalyEvent.class);
-        verify(anomalyPublisher).publish(captor.capture());
 
+        verify(persistenceService).persist(captor.capture(), org.mockito.ArgumentMatchers.eq(false));
         TelemetryAnomalyEvent publishedEvent = captor.getValue();
-        var order = org.mockito.Mockito.inOrder(persistenceService, anomalyPublisher);
+        var order = org.mockito.Mockito.inOrder(persistenceService);
         order.verify(persistenceService).persist(publishedEvent, false);
-        order.verify(anomalyPublisher).publish(publishedEvent);
         assertThat(anomalyEvent).isEqualTo(publishedEvent);
         assertThat(publishedEvent.eventId()).isEqualTo("evt-001");
         assertThat(publishedEvent.tenantId()).isEqualTo("factory-01");
@@ -92,7 +88,7 @@ class AnomalyProcessingServiceTest {
     @Test
     @DisplayName("should reject a result that is not anomalous")
     void shouldRejectNonAnomalousResult() {
-        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
+        AnomalyProcessingService service = new AnomalyProcessingService(persistenceService, clock);
         TelemetryEvent rawEvent = rawEvent();
         TelemetryAnomalyResult normalResult = TelemetryAnomalyResult.normal(normalizedEvent());
 
@@ -100,13 +96,13 @@ class AnomalyProcessingServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("anomalyResult must be anomalous");
 
-        verifyNoInteractions(anomalyPublisher);
+
     }
 
     @Test
     @DisplayName("should reject raw telemetry events without payload")
     void shouldRejectRawTelemetryEventsWithoutPayload() {
-        AnomalyProcessingService service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
+        AnomalyProcessingService service = new AnomalyProcessingService(persistenceService, clock);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 "evt-001",
                 "factory-01",
@@ -124,25 +120,24 @@ class AnomalyProcessingServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("rawEvent payload must not be null");
 
-        verifyNoInteractions(anomalyPublisher);
+
     }
 
     @Test
-    void replayReplacesProjectionAndPersistenceFailurePreventsPublish() {
-        var service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
+    void replayReplacesProjectionAndPropagatesPersistenceFailure() {
+        var service = new AnomalyProcessingService(persistenceService, clock);
         var result = TelemetryAnomalyResult.anomalous(normalizedEvent(), AnomalySeverity.WARNING, List.of("reason"));
         var event = service.process(rawEvent(), result, true);
         verify(persistenceService).persist(event, true);
-        org.mockito.Mockito.reset(anomalyPublisher);
         org.mockito.Mockito.doThrow(new IllegalStateException("database unavailable"))
                 .when(persistenceService).persist(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(false));
         assertThatThrownBy(() -> service.process(rawEvent(), result)).isInstanceOf(IllegalStateException.class);
-        verifyNoInteractions(anomalyPublisher);
+
     }
 
     @Test
     void missingTimestampUsesDetectionClock() {
-        var service = new AnomalyProcessingService(anomalyPublisher, persistenceService, clock);
+        var service = new AnomalyProcessingService(persistenceService, clock);
         var raw = rawEvent();
         var event = service.process(new TelemetryEvent(raw.eventId(), raw.tenantId(), raw.eventType(), null,
                 raw.source(), raw.version(), raw.payload()),

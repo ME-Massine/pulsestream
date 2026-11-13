@@ -35,7 +35,8 @@ nonblank `deviceId` and `metric` plus numeric `value`; metadata (`deviceType`,
 `unit`, `location`) may be absent or null to represent historical readings that
 predate HTTP validation. Anomaly payload fields may be absent or null because
 missing readings are themselves anomalous. Envelope identity remains required:
-failures to persist unidentified events follow the DLQ path.
+unidentified input persistence failures stop consumption without acknowledgement.
+Missing-payload input uses durable DLQ routing; see [delivery consistency](../docs/architecture/delivery-consistency.md).
 
 Processed/anomaly `eventType` is fixed to `telemetry.processed`/`telemetry.anomaly`
 and `source` to `telemetry-processor`. Anomalies additionally require `severity`

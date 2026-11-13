@@ -86,13 +86,12 @@ projection. Row ID and first ingestion time stay stable. A collision with anothe
 tenant fails and never transfers a projection to that tenant. Event IDs remain
 globally unique, matching the existing schema contract.
 
-Persistence failures prevent anomaly publication and propagate to the existing
-raw consumer recovery path. Ordinary failures route the original event to the
-DLQ; DLQ publication failure propagates to Kafka retry handling. Failed replays
-do not create a new DLQ entry: the original record remains the operator retry
-source. After a successful database commit, a Kafka publication failure can
-leave a durable row while publication is retried through the DLQ. Database and
-Kafka writes are separate; duplicate Kafka messages remain possible (#270).
+Persistence and outbox failures roll back the processing transaction and stop
+raw consumption without acknowledging the failed record, including explicit
+replays. Missing-payload input uses durable DLQ routing. The projection and
+publication intent commit together; Kafka sends retry from the
+[transactional outbox](../architecture/delivery-consistency.md). Duplicate Kafka
+messages remain possible after ambiguous sends (#270).
 
 Tenant and event identity are mandatory for durable persistence. A detector
 result with missing tenant/event identity follows the failure path; no anonymous

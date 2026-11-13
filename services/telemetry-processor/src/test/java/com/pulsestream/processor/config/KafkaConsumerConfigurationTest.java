@@ -76,6 +76,12 @@ class KafkaConsumerConfigurationTest {
 
             assertThat(properties.getTopics().getDlq()).isEqualTo("telemetry.events.dlq");
             assertThat(properties.getConsumer().getDlqGroupId()).isEqualTo("telemetry-processor-dlq-replay");
+            var factory = context.getBean("dlqKafkaListenerContainerFactory",
+                    org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory.class);
+            assertThat(factory.getContainerProperties().getAckMode())
+                    .isEqualTo(org.springframework.kafka.listener.ContainerProperties.AckMode.RECORD);
+            assertThat(factory.getContainerProperties().isSyncCommits()).isTrue();
+
 
             ConsumerFactory<?, ?> dlqConsumerFactory =
                     (ConsumerFactory<?, ?>) context.getBean("dlqConsumerFactory");
@@ -83,6 +89,7 @@ class KafkaConsumerConfigurationTest {
             assertThat(dlqConsumerFactory.getConfigurationProperties())
                     .containsEntry(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
                     .containsEntry(ConsumerConfig.GROUP_ID_CONFIG, "telemetry-processor-dlq-replay")
+                    .containsEntry(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false)
                     .containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
                     .containsEntry(JacksonJsonDeserializer.VALUE_DEFAULT_TYPE, "com.pulsestream.processor.model.DeadLetterEvent");
         });

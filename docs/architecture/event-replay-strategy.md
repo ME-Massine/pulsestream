@@ -84,9 +84,10 @@ Offset/time-range selection for raw-topic replay is not covered by this trigger.
 **How this metadata reaches the processor.** Replay uses Kafka record headers, leaving the JSON
 envelope and `TelemetryEvent` record unchanged. The publisher sets UTF-8 headers
 `pulsestream.replay=true`, `pulsestream.replayed-at`, and `pulsestream.replay-source`. The raw-topic
-consumer reads `pulsestream.replay` only to apply replay safeguards: a failed replay is not published
-to the DLQ again, so it cannot create a DLQ-to-raw feedback loop. The original DLQ record remains the
-operator-controlled retry source.
+consumer reads `pulsestream.replay` to select same-tenant replay upserts. Since #270,
+replay infrastructure failures stop consumption without committing the failed raw
+offset. Missing-payload inputs create a durable DLQ intent; operator-triggered
+bounded replay does not automatically repeat it. See [delivery consistency](delivery-consistency.md).
 
 `eventId` is **not** regenerated for a replay — see below.
 
@@ -102,18 +103,11 @@ result next to the first.
 **Rule: a replayed event always keeps the `eventId` of the event it replays.** No new `eventId` is
 minted, and no separate `originalEventId` field is needed, because `eventId` itself never changes.
 
-**A DLQ record may or may not already have a persisted row.** The earlier assumption that "DLQ events
-were never persisted" is not correct for this pipeline. `TelemetryProcessingService.process()`
-persists the `processed_telemetry` row **before** publishing the processed event
-(`persistenceService.persist(...)` then `processedTelemetryPublisher.publish(...)`), and
-`TelemetryEventConsumer` routes **any** subsequent `RuntimeException` to the DLQ. So there are two
-distinct DLQ failure classes:
-
-- **Pre-persistence failure** (e.g. normalization/validation threw, or persistence itself failed): no
-  row exists. Reprocessing under the original `eventId` is effectively a plain insert.
-- **Post-persistence failure** (e.g. the processed-topic publish failed *after* the row was written):
-  a `processed_telemetry` row for that `event_id` **already exists**, even though the event landed in
-  the DLQ.
+**A historical DLQ record may already have a persisted row.** Before #270,
+projection writes and Kafka sends committed separately; a failed send could leave
+a row even when the event was routed to the DLQ. Current processing commits the
+projection and outbox intent together, and send failures retry the outbox instead
+of routing the source to DLQ.
 
 Because the replay path cannot tell these two apart up front, replay must **not** assume a plain insert for
 DLQ-sourced events. Instead, **both DLQ-sourced and raw-topic replay use the same persistence
@@ -153,9 +147,9 @@ emits a fresh message to `telemetry.events.processed` and, for anomalies,
 `telemetry.events.anomalies`. Downstream consumers can see the same `eventId`
 more than once and need a deduplication/replacement contract. The processor
 currently writes both PostgreSQL projections directly; query-service reads
-those tables and consumes no Kafka topic. Database commit and Kafka publication
-remain separate operations. Recoverable delivery consistency is tracked in
-#270; downstream reclassification/supersession is tracked in #271.
+those tables and consumes no Kafka topic. Since #270, the projection and publication
+intent commit together; Kafka sends retry through the [outbox](delivery-consistency.md).
+Downstream reclassification/supersession remains #271.
 
 Replay is a new reading at its appended raw offset, evaluated against the current
 tenant/device/metric/unit baseline. Raw offset redelivery recovers its retained

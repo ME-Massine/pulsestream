@@ -91,6 +91,11 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
     See [the anomaly API and recovery contract](docs/api/anomalies.md). Authenticated
     tenant integration and live validation remain pending; cross-classification
     replay reconciliation remains #271.
+*   Recoverable PostgreSQL/Kafka delivery (#270): source receipts, detector state,
+    projections and publication intents commit together; a partition-serialized
+    dispatcher retries durable processed/anomaly/DLQ messages. Delivery remains
+    at least once. See [the operating contract](docs/architecture/delivery-consistency.md).
+    Coordinated rollout and live validation remain pending.
 *   PostgreSQL persistence for normal processed telemetry in `platform.processed_telemetry`.
 *   Tenant-scoped processed telemetry query API (#266), with device/time filters,
     bounded pagination, deterministic ordering, OpenAPI documentation and required
@@ -166,8 +171,8 @@ The Phase 6 live-deployment evidence required to begin Phase 7 is not yet record
 *   Authenticated tenant principal integration and live rollout for the processed
     telemetry (#266) and anomaly (#267) APIs remain pending. Both query paths are
     implemented and fail closed without an authenticated tenant principal.
-*   Consistent PostgreSQL/Kafka delivery (#270) and cross-classification replay
-    reconciliation (#271) remain pending.
+*   Cross-classification replay reconciliation (#271) remains pending.
+    PostgreSQL/Kafka outbox delivery (#270) is implemented; live rollout remains pending.
 *   Coordinated tenant/device producer-key cutover and live validation for durable
     anomaly detection (#269) remain pending; implementation and local integration
     validation do not complete the Phase 6 deployment gate.

@@ -41,7 +41,6 @@ public class KafkaConsumerConfiguration {
         consumerProperties.putAll(kafkaProperties.getConsumer().getProperties());
         // State advances before the listener returns; only the container may commit offsets.
         consumerProperties.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-
         return new DefaultKafkaConsumerFactory<>(consumerProperties);
     }
 
@@ -55,7 +54,6 @@ public class KafkaConsumerConfiguration {
 
         factory.setConsumerFactory(telemetryConsumerFactory);
         factory.setConcurrency(kafkaProperties.getConsumer().getConcurrency());
-
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
         factory.getContainerProperties().setSyncCommits(true);
         factory.setCommonErrorHandler(new CommonContainerStoppingErrorHandler());
@@ -81,6 +79,7 @@ public class KafkaConsumerConfiguration {
         consumerProperties.put(JacksonJsonDeserializer.VALUE_DEFAULT_TYPE, DeadLetterEvent.class.getName());
         consumerProperties.put(JacksonJsonDeserializer.TRUSTED_PACKAGES, DeadLetterEvent.class.getPackageName());
 
+        consumerProperties.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         return new DefaultKafkaConsumerFactory<>(consumerProperties);
     }
 
@@ -95,6 +94,8 @@ public class KafkaConsumerConfiguration {
 
         factory.setConsumerFactory(dlqConsumerFactory);
         factory.setConcurrency(kafkaProperties.getConsumer().getConcurrency());
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
+        factory.getContainerProperties().setSyncCommits(true);
 
         // Bounded replay (#125) primarily stops when the listener reaches the per-partition end
         // offsets captured at trigger time. Idle events are the fallback: DlqReplayService stops

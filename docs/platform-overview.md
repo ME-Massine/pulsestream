@@ -90,7 +90,7 @@ These services read from Kafka topics and produce new events downstream.
 
 ### Storage Layer
 
-Processed telemetry and anomaly projections are stored in PostgreSQL before Kafka publication. Processor-owned Flyway migrations define both tables. Anomalies preserve detection reasons and metadata, deduplicate by event ID and update same-tenant explicit replays atomically (#267).
+Processed telemetry and anomaly projections commit with durable Kafka publication intents in PostgreSQL. Processor-owned Flyway migrations define both tables. Anomalies preserve detection reasons and metadata, deduplicate by event ID and update same-tenant explicit replays atomically (#267).
 
 The database supports:
 
@@ -198,3 +198,7 @@ The development roadmap is documented in:
 ```bash
 docs/roadmap.md
 ```
+
+PostgreSQL/Kafka delivery (#270) now commits source receipts, anomaly state, projections
+and publication intents together. A durable outbox dispatcher retries Kafka sends;
+see [the delivery contract](../docs/architecture/delivery-consistency.md). Delivery remains at least once.
