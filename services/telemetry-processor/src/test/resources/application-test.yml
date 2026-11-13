@@ -16,3 +16,7 @@ management:
   health:
     db:
       enabled: false
+
+pulsestream:
+  outbox:
+    enabled: false

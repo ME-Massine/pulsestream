@@ -44,7 +44,7 @@ The platform analyzes telemetry streams and currently detects abnormal device be
 
 Missing-device-heartbeat detection is planned.
 
-Detected anomalies are persisted in PostgreSQL before publication as dedicated Kafka events. Atomic event-ID conflict handling preserves ordinary duplicates and replaces same-tenant explicit replays. The [anomaly API](../api/anomalies.md) provides tenant-scoped history with device, severity, metric and time filters (#267).
+Detected anomalies commit in PostgreSQL with durable intents for publication as dedicated Kafka events. Atomic event-ID conflict handling preserves ordinary duplicates and replaces same-tenant explicit replays. The [anomaly API](../api/anomalies.md) provides tenant-scoped history with device, severity, metric and time filters (#267).
 
 ### Data Persistence
 
@@ -191,3 +191,7 @@ Potential improvements include:
 PulseStream demonstrates how cloud-native systems can process high-volume IoT telemetry streams in real time while maintaining scalability, resilience, and observability.
 
 The platform serves as a practical implementation of distributed streaming architectures used in modern telemetry processing systems.
+
+PostgreSQL/Kafka delivery (#270) now commits source receipts, anomaly state, projections
+and publication intents together. A durable outbox dispatcher retries Kafka sends;
+see [the delivery contract](delivery-consistency.md). Delivery remains at least once.

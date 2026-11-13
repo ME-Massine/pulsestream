@@ -94,6 +94,9 @@ otel:
       protocol: http/protobuf
 
 pulsestream:
+  outbox:
+    enabled: ${PULSESTREAM_OUTBOX_ENABLED:true}
+    poll-interval: ${PULSESTREAM_OUTBOX_POLL_INTERVAL_MS:1000}
   anomaly:
     min-temperature: ${PULSESTREAM_ANOMALY_MIN_TEMPERATURE:-40}
     max-temperature: ${PULSESTREAM_ANOMALY_MAX_TEMPERATURE:80}

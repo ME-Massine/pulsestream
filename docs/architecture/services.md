@@ -183,7 +183,7 @@ Kafka acts as the backbone of the platform.
 
 ### PostgreSQL
 
-PostgreSQL stores processed telemetry and anomaly projections. Processor-owned Flyway migrations define both tables; application code persists each projection before publishing to its Kafka topic. Anomaly writes use atomic event-ID conflict handling, keeping ordinary duplicates and replacing explicit replays within the same tenant (#267).
+PostgreSQL stores processed telemetry and anomaly projections. Processor-owned Flyway migrations define both tables; application code commits each projection with its outbox intent before asynchronous Kafka delivery. Anomaly writes use atomic event-ID conflict handling, keeping ordinary duplicates and replacing explicit replays within the same tenant (#267).
 
 **Responsibilities:**
 
@@ -285,3 +285,7 @@ This design provides:
 *   Loose coupling
 *   Resilience
 *   Real-time processing capabilities
+
+PostgreSQL/Kafka delivery (#270) now commits source receipts, anomaly state, projections
+and publication intents together. A durable outbox dispatcher retries Kafka sends;
+see [the delivery contract](delivery-consistency.md). Delivery remains at least once.

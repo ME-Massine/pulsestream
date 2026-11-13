@@ -12,7 +12,7 @@ import org.springframework.util.Assert;
 
 /**
  * Builds the enriched anomaly envelope from a raw telemetry event and its detection result, then
- * persists it before publishing to the anomalies topic. Mirrors {@link TelemetryProcessingService} so the anomalous
+ * persists it within the delivery coordinator's transaction. Mirrors {@link TelemetryProcessingService} so the anomalous
  * flow is kept clearly separate from the normal processed flow.
  */
 @Service
@@ -22,17 +22,15 @@ public class AnomalyProcessingService {
     private static final String ANOMALY_SOURCE = "telemetry-processor";
     private static final String DEFAULT_VERSION = "1.0";
 
-    private final AnomalyTelemetryPublisher anomalyPublisher;
     private final AnomalyPersistenceService persistenceService;
     private final Clock clock;
 
     @Autowired
-    public AnomalyProcessingService(AnomalyTelemetryPublisher anomalyPublisher, AnomalyPersistenceService persistenceService) {
-        this(anomalyPublisher, persistenceService, Clock.systemUTC());
+    public AnomalyProcessingService(AnomalyPersistenceService persistenceService) {
+        this(persistenceService, Clock.systemUTC());
     }
 
-    AnomalyProcessingService(AnomalyTelemetryPublisher anomalyPublisher, AnomalyPersistenceService persistenceService, Clock clock) {
-        this.anomalyPublisher = anomalyPublisher;
+    AnomalyProcessingService(AnomalyPersistenceService persistenceService, Clock clock) {
         this.persistenceService = persistenceService;
         this.clock = clock;
     }
@@ -61,7 +59,6 @@ public class AnomalyProcessingService {
         );
 
         persistenceService.persist(anomalyEvent, replayed);
-        anomalyPublisher.publish(anomalyEvent);
         return anomalyEvent;
     }
 }

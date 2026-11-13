@@ -22,9 +22,9 @@ class KafkaProducerConfigurationTest {
                     "pulsestream.kafka.producer.acks=all",
                     "pulsestream.kafka.producer.retries=5",
                     "pulsestream.kafka.producer.delivery-timeout=45s",
-                    "pulsestream.kafka.producer.properties.max.in.flight.requests.per.connection=5",
+                    "pulsestream.kafka.producer.properties.max.in.flight.requests.per.connection=1",
                     "pulsestream.kafka.producer.properties.partitioner.ignore.keys=true",
-                    "pulsestream.kafka.producer.properties.partitioner.class=custom.Partitioner"
+                    "pulsestream.kafka.producer.publish-timeout=5s"
             );
 
     @Test
@@ -50,19 +50,44 @@ class KafkaProducerConfigurationTest {
     @Test
     void shouldCreateDlqProducerInfrastructureUsingStringSerializer() {
         contextRunner.run(context -> {
-            assertThat(context).hasBean("dlqProducerFactory");
+            assertThat(context).hasBean("outboxProducerFactory");
 
-            ProducerFactory<?, ?> dlqProducerFactory =
-                    context.getBean("dlqProducerFactory", ProducerFactory.class);
+            ProducerFactory<?, ?> outboxProducerFactory =
+                    context.getBean("outboxProducerFactory", ProducerFactory.class);
 
-            assertThat(dlqProducerFactory.getConfigurationProperties())
+            assertThat(outboxProducerFactory.getConfigurationProperties())
                     .containsEntry(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
-                    .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "telemetry-processor-producer-dlq")
+                    .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "telemetry-processor-producer-outbox")
                     .containsEntry(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName())
-                    .containsEntry(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+                    .containsEntry(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName())
+                    .containsEntry(ProducerConfig.ACKS_CONFIG, "all")
+                    .containsEntry(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true)
+                    .containsEntry(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1);
 
-            assertThat(context.getBean("dlqKafkaTemplate", KafkaTemplate.class)).isNotNull();
+            assertThat(context.getBean("outboxKafkaTemplate", KafkaTemplate.class)).isNotNull();
         });
+    }
+
+    @Test
+    void defaultOutboxConfigurationCreatesAProducer() {
+        contextRunner.withPropertyValues("pulsestream.kafka.producer.delivery-timeout=30s")
+                .run(context -> {
+                    for (String bean : new String[] {"outboxProducerFactory", "telemetryProducerFactory"}) {
+                        var factory = context.getBean(bean, ProducerFactory.class);
+                        var producer = factory.createProducer();
+                        producer.close(java.time.Duration.ZERO);
+                    }
+                });
+    }
+
+    @Test
+    void rejectsDurabilityOverrides() {
+        for (String property : new String[] {
+                "acknowledgements=1", "properties.acks=0", "properties.enable.idempotence=false",
+                "properties.max.in.flight.requests.per.connection=5", "retries=0", "publish-timeout=0s"}) {
+            contextRunner.withPropertyValues("pulsestream.kafka.producer." + property)
+                    .run(context -> assertThat(context).hasFailed());
+        }
     }
 
     @EnableConfigurationProperties(TelemetryProcessorKafkaProperties.class)

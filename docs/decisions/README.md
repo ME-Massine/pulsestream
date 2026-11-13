@@ -13,6 +13,8 @@ This directory contains the Architecture Decision Records (ADRs) for PulseStream
 - [ADR 0007: Version JSON Kafka contracts with JSON Schema](./0007-json-event-contracts.md)
 - [ADR 0008: Device ordering and durable bounded anomaly state](./0008-durable-anomaly-state.md)
 
+- [ADR 0009: Recover delivery through a PostgreSQL outbox](./0009-transactional-delivery-outbox.md)
+
 ## Purpose
 
 ADRs capture important architectural decisions, their context, and their consequences.

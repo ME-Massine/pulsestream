@@ -212,9 +212,12 @@ class AnomalyStateIntegrationTest {
                 .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("database unavailable"));
         var broken = new AnomalyStateService(brokenJdbc, new JdbcTransactionManager(jdbc.getDataSource()),
                 AnomalyDetectionProperties.defaults(), new TelemetryAnomalyDetectionService());
-        var deadLetter = mock(DeadLetterPublisher.class);
-        var listener = new TelemetryEventConsumer(normalizer, broken,
-                mock(AnomalyProcessingService.class), mock(TelemetryProcessingService.class), deadLetter);
+        var outbox = mock(DeliveryOutbox.class);
+        when(outbox.begin(any())).thenReturn(1L);
+        var listener = new TelemetryEventConsumer(new TelemetryDeliveryService(
+                new JdbcTransactionManager(jdbc.getDataSource()), outbox, normalizer, broken,
+                mock(TelemetryProcessingService.class), mock(AnomalyProcessingService.class),
+                kafkaProperties("failure"), tools.jackson.databind.json.JsonMapper.builder().build()));
         var attempted = new CountDownLatch(1);
         container.getContainerProperties().setMessageListener((MessageListener<String, TelemetryEvent>) record -> {
             try { listener.consumeTelemetryRecord(record); } finally { attempted.countDown(); }
@@ -224,7 +227,7 @@ class AnomalyStateIntegrationTest {
         publish(FAILURE, null, event("recovery", "tenant", "device", "temperature", "c", "20"), KAFKA_TIME);
         assertThat(attempted.await(30, TimeUnit.SECONDS)).isTrue();
         await(() -> !container.isRunning());
-        verifyNoInteractions(deadLetter);
+        verify(outbox, never()).enqueue(anyLong(), anyString(), any(), anyString());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomaly_partition_state", Integer.class)).isZero();
         var recovered = consumer(FAILURE, "failure-recovery", results);
         recovered.start();
@@ -322,9 +325,12 @@ class AnomalyStateIntegrationTest {
             results.put(event.eventId(), result.reasons());
             return null;
         });
-        var listener = new TelemetryEventConsumer(normalizer, state(AnomalyDetectionProperties.defaults()), anomalous, normal,
-                mock(DeadLetterPublisher.class));
-        container.getContainerProperties().setMessageListener((MessageListener<String, TelemetryEvent>) listener::consumeTelemetryRecord);
+        var detection = state(AnomalyDetectionProperties.defaults());
+        container.getContainerProperties().setMessageListener((MessageListener<String, TelemetryEvent>) record -> {
+            var result = detection.detect(normalizer.normalize(record.value()), record);
+            if (result.anomalous()) anomalous.process(record.value(), result);
+            else normal.process(record.value());
+        });
         containers.add(container);
         return container;
     }

@@ -51,6 +51,9 @@ The workflow runs these checks:
   Maven test lifecycle. Docker is required; unavailable Docker fails the tests.
 - PostgreSQL 16 anomaly projection tests for atomic inserts, duplicates, replay
   updates and concurrent delivery in the processor's normal Maven test lifecycle.
+- PostgreSQL/Kafka outbox recovery tests for atomic source receipts, detection
+  state, projections and publication intents; delivery retries, ambiguous broker
+  acknowledgements and source-offset recovery run in the processor test lifecycle.
 - PostgreSQL 16 processed telemetry/anomaly query repository/API integration
   tests in the query service's normal Maven test lifecycle, including filters,
   tenant isolation, read-only grants and database health policy.

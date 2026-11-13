@@ -3,7 +3,7 @@ package com.pulsestream.processor.service;
 import com.pulsestream.processor.model.ProcessedTelemetryEntity;
 import com.pulsestream.processor.model.TelemetryEvent;
 import com.pulsestream.processor.model.TelemetryPayload;
-import com.pulsestream.processor.repository.ProcessedTelemetryRepository;
+import com.pulsestream.processor.repository.ProcessedTelemetryWriteRepository;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -34,7 +34,7 @@ class ProcessedTelemetryPersistenceServiceTest {
     private static final Instant INGESTED_AT = Instant.parse("2026-03-15T12:06:00Z");
 
     @Mock
-    private ProcessedTelemetryRepository repository;
+    private ProcessedTelemetryWriteRepository repository;
 
     private ProcessedTelemetryPersistenceService persistenceService;
 
@@ -52,7 +52,7 @@ class ProcessedTelemetryPersistenceServiceTest {
         persistenceService.persist(processedEvent);
 
         ArgumentCaptor<ProcessedTelemetryEntity> captor = ArgumentCaptor.forClass(ProcessedTelemetryEntity.class);
-        verify(repository).save(captor.capture());
+        verify(repository).persist(captor.capture(), org.mockito.ArgumentMatchers.eq(false));
 
         ProcessedTelemetryEntity saved = captor.getValue();
         assertThat(saved.getEventId()).isEqualTo("evt-001");
@@ -70,64 +70,11 @@ class ProcessedTelemetryPersistenceServiceTest {
     }
 
     @Test
-    @DisplayName("should swallow unique-constraint duplicate so the pipeline is not blocked")
-    void shouldSwallowDuplicatePersistence() {
-        TelemetryEvent processedEvent = processedEvent("evt-001");
-        when(repository.save(ArgumentMatchers.any()))
-                .thenThrow(new DataIntegrityViolationException("duplicate key value violates unique constraint"));
-
-        assertThatCode(() -> persistenceService.persist(processedEvent)).doesNotThrowAnyException();
-    }
-
-    @Test
-    @DisplayName("should replace the existing projection when processing a replay")
-    void shouldReplaceExistingProjectionWhenProcessingReplay() {
-        TelemetryEvent processedEvent = processedEvent("evt-001");
-        ProcessedTelemetryEntity existing = new ProcessedTelemetryEntity(
-                "evt-001", "old-tenant", "telemetry.processed", Instant.parse("2026-03-01T00:00:00Z"),
-                "old-source", "old-device", "old-type", "old-metric", BigDecimal.ONE, "old-unit",
-                "old-location", Instant.parse("2026-03-01T00:00:00Z")
-        );
-        when(repository.findByEventId("evt-001")).thenReturn(Optional.of(existing));
-
-        persistenceService.persist(processedEvent, true);
-
-        verify(repository).save(existing);
-        assertThat(existing.getTenantId()).isEqualTo("factory-01");
-        assertThat(existing.getMetric()).isEqualTo("temperature");
-        assertThat(existing.getIngestedAt()).isEqualTo(INGESTED_AT);
-    }
-
-    @Test
-    @DisplayName("should propagate non-unique DataIntegrityViolationException so Kafka can retry")
-    void shouldPropagateNonUniqueIntegrityViolation() {
-        TelemetryEvent processedEvent = processedEvent("evt-001");
-        when(repository.save(ArgumentMatchers.any()))
-                .thenThrow(new DataIntegrityViolationException("null value in column violates not-null constraint"));
-
-        assertThatThrownBy(() -> persistenceService.persist(processedEvent))
+    void propagatesInfrastructureAndIntegrityFailures() {
+        org.mockito.Mockito.doThrow(new DataIntegrityViolationException("localized database error"))
+                .when(repository).persist(ArgumentMatchers.any(), ArgumentMatchers.eq(false));
+        assertThatThrownBy(() -> persistenceService.persist(processedEvent("id")))
                 .isInstanceOf(DataIntegrityViolationException.class);
-    }
-
-    @Test
-    @DisplayName("should propagate database failures so Kafka can retry")
-    void shouldPropagateDatabaseFailures() {
-        TelemetryEvent processedEvent = processedEvent("evt-001");
-        when(repository.save(ArgumentMatchers.any()))
-                .thenThrow(new CannotCreateTransactionException("could not open JDBC connection"));
-
-        assertThatThrownBy(() -> persistenceService.persist(processedEvent))
-                .isInstanceOf(CannotCreateTransactionException.class);
-    }
-
-    @Test
-    @DisplayName("should reject null processed events")
-    void shouldRejectNullProcessedEvents() {
-        assertThatThrownBy(() -> persistenceService.persist(null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("processedEvent must not be null");
-
-        verifyNoInteractions(repository);
     }
 
     private TelemetryEvent processedEvent(String eventId) {

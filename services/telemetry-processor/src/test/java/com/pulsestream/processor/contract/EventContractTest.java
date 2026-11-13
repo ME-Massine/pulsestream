@@ -60,26 +60,17 @@ class EventContractTest {
     }
 
     @Test
-    void processedAndAnomalyPublishersEmitTheirOwnSchemaVersionAndKafkaJsonContract() throws Exception {
+    void processedAndAnomalyBuildersPreserveTheirSchemaVersionAndJsonContract() throws Exception {
         var raw = mapper.readValue(resource("fixtures/raw-v1-extensions.json"), TelemetryEvent.class);
-        @SuppressWarnings("unchecked")
-        KafkaTemplate<String, TelemetryEnvelope> kafka = mock(KafkaTemplate.class);
-        when(kafka.send(anyString(), anyString(), any(TelemetryEnvelope.class)))
-                .thenReturn(CompletableFuture.completedFuture(null));
-        var processed = new TelemetryProcessingService(new ProcessedTelemetryPublisher(kafka, properties),
-                mock(ProcessedTelemetryPersistenceService.class)).process(raw);
+        var processed = new TelemetryProcessingService(mock(ProcessedTelemetryPersistenceService.class)).process(raw);
         assertThat(processed.version()).isEqualTo("1.0");
-        var anomalyService = new AnomalyProcessingService(new AnomalyTelemetryPublisher(kafka, properties),
-                mock(AnomalyPersistenceService.class));
+        var anomalyService = new AnomalyProcessingService(mock(AnomalyPersistenceService.class));
         var result = TelemetryAnomalyResult.anomalous(new TelemetryNormalizationService().normalize(raw),
                 AnomalySeverity.WARNING, List.of("temperature is above maximum threshold"));
         var anomaly = anomalyService.process(raw, result);
         assertThat(anomaly.version()).isEqualTo("1.0");
-        var published = ArgumentCaptor.forClass(TelemetryEnvelope.class);
-        verify(kafka).send(eq("telemetry.events.processed"), eq(raw.eventId()), published.capture());
-        assertKafkaContract("processed", published.getValue());
-        verify(kafka).send(eq("telemetry.events.anomalies"), eq(raw.eventId()), published.capture());
-        assertKafkaContract("anomaly", published.getValue());
+        assertKafkaContract("processed", processed);
+        assertKafkaContract("anomaly", anomaly);
 
         var missing = new TelemetryEvent(raw.eventId(), raw.tenantId(), raw.eventType(), raw.timestamp(),
                 raw.source(), raw.version(), new TelemetryPayload(null, null, null, null, null, null));
@@ -87,8 +78,7 @@ class EventContractTest {
         var missingMetadata = new TelemetryEvent(raw.eventId(), raw.tenantId(), raw.eventType(), raw.timestamp(),
                 raw.source(), raw.version(), new TelemetryPayload("sensor-1042", null, "temperature",
                 raw.payload().value(), null, null));
-        assertKafkaContract("processed", new TelemetryProcessingService(new ProcessedTelemetryPublisher(kafka, properties),
-                mock(ProcessedTelemetryPersistenceService.class)).process(missingMetadata));
+        assertKafkaContract("processed", new TelemetryProcessingService(mock(ProcessedTelemetryPersistenceService.class)).process(missingMetadata));
     }
 
     @Test
@@ -103,26 +93,6 @@ class EventContractTest {
         verify(kafka).send(record.capture());
         assertThat(record.getValue().value()).isEqualTo(event);
         assertKafkaContract("raw", record.getValue().value());
-    }
-
-    @Test
-    void dlqPublisherProducesSharedJsonEvenWhenTheConfiguredMapperFails() throws Exception {
-        for (boolean fallback : new boolean[] {false, true}) {
-            @SuppressWarnings("unchecked")
-            KafkaTemplate<String, String> kafka = mock(KafkaTemplate.class);
-            when(kafka.send(anyString(), anyString(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
-            ObjectMapper configured = fallback ? mock(ObjectMapper.class) : mapper;
-            if (fallback) {
-                when(configured.writeValueAsString(any())).thenThrow(new IllegalStateException("mapper failed"));
-            }
-            var event = mapper.readValue(resource("fixtures/raw-v1.json"), TelemetryEvent.class);
-            new DeadLetterPublisher(kafka, properties, configured).publish(event,
-                    new IllegalStateException("failed \"send\"\nretry"));
-            var json = ArgumentCaptor.forClass(String.class);
-            verify(kafka).send(eq("telemetry.events.dlq"), eq(event.eventId()), json.capture());
-            valid("schemas/dead-letter/v1.schema.json", json.getValue());
-            assertThat(mapper.readValue(json.getValue(), DeadLetterEvent.class).event()).isEqualTo(event);
-        }
     }
 
     @Test

@@ -58,7 +58,7 @@ class PostgresMigrationIntegrationTest {
     void emptyDatabaseStartsProcessorAndPersistsUsingTheMigratedContract() {
         application.run(context -> {
             assertThat(context).hasNotFailed();
-            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("3");
+            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("5");
             ProcessedTelemetryEntity saved = context.getBean(ProcessedTelemetryRepository.class).saveAndFlush(event("fresh"));
             assertThat(saved.getId()).isEqualTo(1L);
             assertThat(jdbc.queryForObject("SELECT value FROM platform.processed_telemetry", BigDecimal.class))
@@ -67,7 +67,7 @@ class PostgresMigrationIntegrationTest {
             assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class))
                     .isEqualByComparingTo("40.0000");
             assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_indexes WHERE schemaname = 'platform'", Integer.class))
-                    .isEqualTo(15); // Existing projection indexes plus three state primary keys and expiry index.
+                    .isEqualTo(21); // Includes receipt and pending outbox coordinate indexes.
         });
     }
 
@@ -173,7 +173,7 @@ class PostgresMigrationIntegrationTest {
         application.withPropertyValues("spring.flyway.locations=classpath:db/migration,classpath:db/forward")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
-                    assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("4");
+                    assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("6");
                     assertThat(context.getBean(ProcessedTelemetryRepository.class).findByEventId("before-upgrade")).isPresent();
                     assertThat(jdbc.queryForObject("SELECT quality FROM platform.processed_telemetry", String.class)).isEqualTo("unknown");
                 });
@@ -193,7 +193,7 @@ class PostgresMigrationIntegrationTest {
             var first = executor.submit(migrate);
             var second = executor.submit(migrate);
             start.countDown();
-            assertThat(first.get(30, TimeUnit.SECONDS) + second.get(30, TimeUnit.SECONDS)).isEqualTo(3);
+            assertThat(first.get(30, TimeUnit.SECONDS) + second.get(30, TimeUnit.SECONDS)).isEqualTo(5);
             application.run(context -> assertThat(context).hasNotFailed());
         } finally {
             executor.shutdownNow();
@@ -214,13 +214,43 @@ class PostgresMigrationIntegrationTest {
     }
 
     @Test
+    void upgradesV4OutboxWithoutLosingPendingOrDeliveredPublicationState() {
+        Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations")
+                .target("4").load().migrate();
+        jdbc.execute("""
+                INSERT INTO platform.processing_receipts (source_topic, source_partition, source_offset, input_hash)
+                VALUES ('raw-a', 2, 19, 'pending'), ('raw-b', 3, 7, 'delivered')
+                """);
+        jdbc.execute("""
+                INSERT INTO platform.delivery_outbox
+                    (receipt_id, destination, message_key, payload, attempts, next_attempt_at, last_error, delivered_at)
+                SELECT id, 'processed', input_hash, input_hash, 3, now() + interval '1 minute', 'TimeoutException',
+                    CASE WHEN input_hash = 'delivered' THEN now() ELSE NULL END
+                FROM platform.processing_receipts
+                """);
+        String retained = "SELECT id, receipt_id, destination, message_key, payload, attempts, next_attempt_at, "
+                + "last_error, created_at, delivered_at FROM platform.delivery_outbox ORDER BY id";
+        var before = jdbc.queryForList(retained);
+
+        Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations").load().migrate();
+
+        assertThat(jdbc.queryForList(retained)).isEqualTo(before);
+        assertThat(jdbc.queryForList("SELECT source_topic FROM platform.delivery_outbox ORDER BY id", String.class))
+                .containsExactly("raw-a", "raw-b");
+        assertThat(jdbc.queryForList("SELECT source_partition FROM platform.delivery_outbox ORDER BY id", Integer.class))
+                .containsExactly(2, 3);
+        assertThat(jdbc.queryForList("SELECT source_offset FROM platform.delivery_outbox ORDER BY id", Long.class))
+                .containsExactly(19L, 7L);
+    }
+
+    @Test
     void upgradesAnAlreadyVersionedV1WithoutLosingLegacyAnomalyMetadata() {
         Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations")
                 .target("1").load().migrate();
         insertAnomaly();
         application.run(context -> {
             assertThat(context).hasNotFailed();
-            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("3");
+            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("5");
             assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class)).isEqualByComparingTo("40");
             assertThat(jdbc.queryForObject("SELECT anomaly_type FROM platform.anomalies", String.class)).isEqualTo("threshold");
             assertThat(jdbc.queryForObject("SELECT reasons::text FROM platform.anomalies", String.class)).isEqualTo("[]");

@@ -26,16 +26,13 @@ import static org.mockito.Mockito.verifyNoInteractions;
 class TelemetryProcessingServiceTest {
 
     @Mock
-    private ProcessedTelemetryPublisher processedTelemetryPublisher;
-
-    @Mock
     private ProcessedTelemetryPersistenceService persistenceService;
 
     @Test
-    @DisplayName("should normalize raw telemetry event, persist it, and publish processed event")
-    void shouldNormalizeRawTelemetryEventPersistItAndPublishProcessedEvent() {
+    @DisplayName("should normalize raw telemetry event and persist the processed projection")
+    void shouldNormalizeRawTelemetryEventAndPersistProjection() {
         TelemetryProcessingService service =
-                new TelemetryProcessingService(processedTelemetryPublisher, persistenceService);
+                new TelemetryProcessingService(persistenceService);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 " evt-001 ",
                 " factory-01 ",
@@ -56,9 +53,8 @@ class TelemetryProcessingServiceTest {
         TelemetryEvent processedEvent = service.process(rawEvent);
 
         ArgumentCaptor<TelemetryEvent> captor = ArgumentCaptor.forClass(TelemetryEvent.class);
-        InOrder inOrder = inOrder(persistenceService, processedTelemetryPublisher);
+        InOrder inOrder = inOrder(persistenceService);
         inOrder.verify(persistenceService).persist(captor.capture());
-        inOrder.verify(processedTelemetryPublisher).publish(captor.getValue());
 
         TelemetryEvent persistedEvent = captor.getValue();
         assertThat(processedEvent).isEqualTo(persistedEvent);
@@ -81,7 +77,7 @@ class TelemetryProcessingServiceTest {
         Instant fixedNow = Instant.parse("2026-03-15T12:05:30Z");
         Clock clock = Clock.fixed(fixedNow, ZoneOffset.UTC);
         TelemetryProcessingService service =
-                new TelemetryProcessingService(processedTelemetryPublisher, persistenceService, clock);
+                new TelemetryProcessingService(persistenceService, clock);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 "evt-001",
                 "factory-01",
@@ -105,10 +101,10 @@ class TelemetryProcessingServiceTest {
     }
 
     @Test
-    @DisplayName("should not publish processed event when persistence fails")
-    void shouldNotPublishProcessedEventWhenPersistenceFails() {
+    @DisplayName("should propagate projection persistence failure")
+    void shouldPropagateProjectionPersistenceFailure() {
         TelemetryProcessingService service =
-                new TelemetryProcessingService(processedTelemetryPublisher, persistenceService);
+                new TelemetryProcessingService(persistenceService);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 "evt-001",
                 "factory-01",
@@ -130,14 +126,14 @@ class TelemetryProcessingServiceTest {
 
         assertThatThrownBy(() -> service.process(rawEvent))
                 .isSameAs(persistenceFailure);
-        verifyNoInteractions(processedTelemetryPublisher);
+
     }
 
     @Test
     @DisplayName("should reject raw telemetry events without payload")
     void shouldRejectRawTelemetryEventsWithoutPayload() {
         TelemetryProcessingService service =
-                new TelemetryProcessingService(processedTelemetryPublisher, persistenceService);
+                new TelemetryProcessingService(persistenceService);
         TelemetryEvent rawEvent = new TelemetryEvent(
                 "evt-001",
                 "factory-01",

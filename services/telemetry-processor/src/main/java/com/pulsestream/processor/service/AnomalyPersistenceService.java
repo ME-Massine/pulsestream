@@ -32,13 +32,25 @@ public class AnomalyPersistenceService {
             var entity = new AnomalyEntity(event.eventId(), event.tenantId(), event.timestamp(), event.payload(),
                     event.severity(), event.reasons(), event.detectedAt(), Instant.now());
             if (repository.persist(entity, replayed)) {
-                success.increment();
+                afterCommit(success);
             } else {
-                duplicate.increment();
+                afterCommit(duplicate);
             }
         } catch (RuntimeException ex) {
             failure.increment();
             throw ex;
         }
     }
+
+    private void afterCommit(Counter counter) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override public void afterCommit() { counter.increment(); }
+                    });
+        } else {
+            counter.increment();
+        }
+    }
+
 }

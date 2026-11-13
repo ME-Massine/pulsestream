@@ -5,7 +5,6 @@ import com.pulsestream.processor.model.AnomalySeverity;
 import com.pulsestream.processor.model.TelemetryPayload;
 import com.pulsestream.processor.model.TelemetryAnomalyEvent;
 import com.pulsestream.processor.service.AnomalyProcessingService;
-import com.pulsestream.processor.service.AnomalyTelemetryPublisher;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -31,7 +30,8 @@ import static org.assertj.core.api.Assertions.*;
 @Testcontainers
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration",
-        "otel.sdk.disabled=true"
+        "otel.sdk.disabled=true",
+        "pulsestream.outbox.enabled=false"
 })
 class PostgresAnomalyIntegrationTest {
     @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16");
@@ -48,11 +48,10 @@ class PostgresAnomalyIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired Flyway flyway;
     @Autowired AnomalyProcessingService processing;
-    @MockitoBean AnomalyTelemetryPublisher publisher;
 
     @BeforeEach
     void clean() {
-        jdbc.execute("TRUNCATE platform.anomalies, platform.processed_telemetry RESTART IDENTITY");
+        jdbc.execute("TRUNCATE platform.anomalies, platform.processed_telemetry, platform.delivery_outbox, platform.processing_receipts, platform.anomaly_decisions, platform.anomaly_partition_state, platform.anomaly_reading_state RESTART IDENTITY");
     }
 
     @Test
@@ -134,18 +133,39 @@ class PostgresAnomalyIntegrationTest {
     }
 
     @Test
-    void detectedAnomalyCommitsBeforePublishingAndDoesNotWriteNormalTelemetry() {
+    void detectedAnomalyPersistsOnlyItsSelectedProjection() {
         var raw = new com.pulsestream.processor.model.TelemetryEvent("detected", "tenant", "telemetry.reading", TIME,
                 "gateway", "1.0", entity("id", "tenant", "95", List.of()).payload());
         var result = com.pulsestream.processor.model.TelemetryAnomalyResult.anomalous(null, AnomalySeverity.WARNING,
                 List.of("threshold"));
-        org.mockito.Mockito.doAnswer(call -> {
-            TelemetryAnomalyEvent event = call.getArgument(0);
-            assertThat(jdbc.queryForObject("SELECT event_id FROM platform.anomalies", String.class)).isEqualTo(event.eventId());
-            return null;
-        }).when(publisher).publish(org.mockito.ArgumentMatchers.any());
-        processing.process(raw, result);
+        var event = processing.process(raw, result);
+        assertThat(jdbc.queryForObject("SELECT event_id FROM platform.anomalies", String.class)).isEqualTo(event.eventId());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.processed_telemetry", Integer.class)).isZero();
+    }
+
+    @Autowired com.pulsestream.processor.service.TelemetryDeliveryService delivery;
+
+    @Test
+    void applicationTransactionManagerRollsBackJdbcStateAndProjectionWhenEnqueueFails() {
+        jdbc.execute("CREATE OR REPLACE FUNCTION platform.fail_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'enqueue unavailable'; END $$");
+        jdbc.execute("CREATE TRIGGER fail_delivery BEFORE INSERT ON platform.delivery_outbox FOR EACH ROW EXECUTE FUNCTION platform.fail_delivery()");
+        var event = new com.pulsestream.processor.model.TelemetryEvent("atomic-app", "tenant", "telemetry.reading", TIME,
+                "gateway", "1.0", entity("id", "tenant", "95", List.of()).payload());
+        var record = new org.apache.kafka.clients.consumer.ConsumerRecord<String, com.pulsestream.processor.model.TelemetryEvent>(
+                "atomic-app", 0, 0, 1000, org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0,
+                com.pulsestream.processor.service.TelemetryOrderingKey.of("tenant", "device"), event,
+                new org.apache.kafka.common.header.internals.RecordHeaders(), java.util.Optional.empty());
+        try {
+            assertThatThrownBy(() -> delivery.consume(record)).isInstanceOf(org.springframework.dao.DataAccessException.class);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomalies", Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.processing_receipts", Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomaly_decisions", Integer.class)).isZero();
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_delivery ON platform.delivery_outbox");
+        }
+        delivery.consume(record);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomalies", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.delivery_outbox", Integer.class)).isEqualTo(1);
     }
 
     private AnomalyEntity entity(String id, String tenant, String value, List<String> reasons) {
