@@ -40,8 +40,8 @@ public class AnomalyRepository {
                 ON CONFLICT (event_id) DO UPDATE SET
                     timestamp = EXCLUDED.timestamp, device_id = EXCLUDED.device_id,
                     device_type = EXCLUDED.device_type, metric = EXCLUDED.metric, value = EXCLUDED.value,
-                    unit = EXCLUDED.unit, location = EXCLUDED.location,
-                    severity = EXCLUDED.severity,
+                    unit = EXCLUDED.unit, location = EXCLUDED.location, threshold = NULL,
+                    anomaly_type = EXCLUDED.anomaly_type, severity = EXCLUDED.severity,
                     reasons = EXCLUDED.reasons, detected_at = EXCLUDED.detected_at
                 WHERE :replayed AND existing.tenant_id = EXCLUDED.tenant_id
                 """, parameters);

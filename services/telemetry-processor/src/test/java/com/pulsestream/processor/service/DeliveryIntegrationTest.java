@@ -336,6 +336,22 @@ class DeliveryIntegrationTest {
         jdbc.execute(sql.substring(start, end));
     }
 
+    @Test void changedReplayResetsLegacyAnomalyMetadataAndUnchangedReplayKeepsIt() throws Exception {
+        jdbc.execute("DELETE FROM platform.anomaly_reading_state");
+        delivery.consume(record(0, "legacy-meta", "100"));
+        jdbc.execute("DELETE FROM platform.event_classifications");
+        backfill();
+        jdbc.execute("UPDATE platform.anomalies SET threshold = 40, anomaly_type = 'threshold' WHERE event_id = 'legacy-meta'");
+        replay(1, "legacy-meta", "100"); // Same result: the legacy row is not rewritten.
+        assertRevision("legacy-meta", 1, "ANOMALY");
+        assertThat(jdbc.queryForObject("SELECT anomaly_type FROM platform.anomalies", String.class)).isEqualTo("threshold");
+        assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class)).isEqualByComparingTo("40");
+        replay(2, "legacy-meta", "105"); // New result: the row describes the new detection only.
+        assertRevision("legacy-meta", 2, "ANOMALY");
+        assertThat(jdbc.queryForObject("SELECT anomaly_type FROM platform.anomalies", String.class)).isEqualTo("rule_violation");
+        assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class)).isNull();
+    }
+
     @Test void reclassificationKeepsTheFirstIngestionTime() {
         delivery.consume(record(0, "ingested", "20"));
         var first = jdbc.queryForObject("SELECT first_processed_at FROM platform.event_classifications WHERE event_id = 'ingested'", java.sql.Timestamp.class);
