@@ -26,8 +26,9 @@ services:
 - `java.version` is `25` in every service POM, so `maven-compiler-plugin` compiles
   with `--release 25`.
 - CI service verification and CodeQL builds run on Temurin 25.
-- Container images build on `maven:3.10.0-eclipse-temurin-25`, matching the Maven
-  version of the committed wrapper, and run on `eclipse-temurin:25-jre-jammy`.
+- Container images build on `eclipse-temurin:25-jdk` with SHA-256-pinned Maven
+  3.10.1, matching the version and ZIP checksum of the committed wrappers,
+  and run on `eclipse-temurin:25-jre-jammy`.
 
 Non-LTS Java releases are not adopted for builds or runtimes.
 
@@ -50,9 +51,13 @@ Non-LTS Java releases are not adopted for builds or runtimes.
 Dependabot keeps proposing newer non-LTS builder images. Those updates are
 declined in favour of the next LTS release, delivered as one coordinated change.
 
-The Docker configuration in `.github/dependabot.yml` ignores the `maven` image
-in all three service directories. Builder image updates, including Maven fixes
-on Java 25, require a coordinated maintenance change with the Maven wrappers.
+The Docker configuration in `.github/dependabot.yml` retains an ignore rule for
+the `maven` image in all three service directories. Current builders install
+Maven directly from its verified Apache distribution because the matching
+`maven:3.10.1-eclipse-temurin-25` tag was unavailable. The container build
+standard documents the checksum-enforced bootstrap. Maven distribution updates,
+including fixes on Java 25, require a coordinated change to the Dockerfile
+bootstrap and Maven wrappers.
 Dependabot's Docker version constraints compare the numeric release rather than
 the Java suffix, so they cannot selectively exclude Java 26 tags while retaining
 Java 25 tags for the same Maven release. Other Docker images and Maven library
