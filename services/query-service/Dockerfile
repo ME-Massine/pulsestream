@@ -1,4 +1,14 @@
-FROM maven:3.10.0-eclipse-temurin-25 AS builder
+FROM eclipse-temurin:25-jdk AS builder
+
+ADD --checksum=sha256:9c1ef9174ef250a5009ed0dec97cbe8699acf7479add4e62bf7b0ea791c0adb5 \
+    https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.10.1/apache-maven-3.10.1-bin.zip /tmp/apache-maven.zip
+RUN mkdir -p /opt/maven \
+    && cd /opt/maven \
+    && jar -xf /tmp/apache-maven.zip \
+    && chmod +x apache-maven-3.10.1/bin/mvn \
+    && rm /tmp/apache-maven.zip
+ENV MAVEN_HOME=/opt/maven/apache-maven-3.10.1
+ENV PATH="${MAVEN_HOME}/bin:${PATH}"
 
 WORKDIR /app
 
