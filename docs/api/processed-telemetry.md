@@ -181,7 +181,7 @@ unavailability fails the build. No H2 substitute is used for repository behavior
 
 Both APIs return only the active authoritative classification and include
 `classificationRevision` (positive integer) in each response item. Unresolved
-legacy conflicts are hidden until explicit replay. Changes across separate HTTP
+legacy conflicts are hidden until the next record for the event is processed. Changes across separate HTTP
 requests may expose different revisions. Query startup requires Flyway V6 and
 SELECT on `platform.event_classifications` in addition to both projections:
 

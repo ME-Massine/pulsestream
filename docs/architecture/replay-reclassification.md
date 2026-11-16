@@ -22,7 +22,9 @@ ingestion/detection times and publications unchanged. A return to an earlier
 classification increments revision rather than reusing its previous revision.
 
 Equality uses JSONB semantic content: normalized output payload, event timestamp
-as epoch seconds, classification, and anomaly severity/reasons/type/threshold.
+as epoch seconds at microsecond precision, classification, and anomaly
+severity/reasons. The anomaly type and threshold are fixed by the projection write
+and are neither compared nor rewritten by an unchanged replay.
 Decimal scale and object property order do not change equality. Generated
 processing/detection times, replay headers and wire versions are excluded.
 Reason array order is significant. Numeric and timestamp precision lost in old
@@ -59,7 +61,9 @@ in revisions. Cross-topic visibility is eventual, not atomic.
 
 Outbox rows are unique by receipt and sequence. Sequence 0 is the retraction and
 sequence 1 the replacement on boundary changes. Dispatch preserves source offset
-and sequence order within a partition; cross-partition arrivals can be reordered.
+and sequence order within a partition. A message also waits while an earlier
+undelivered row for the same event key exists on another source partition, so one
+event's revisions leave the processor in commit order.
 All retry payloads are immutable. A broker acceptance followed by a failed marker
 can duplicate a message; revision watermarks make recovery converge. PostgreSQL
 queries may lead Kafka while durable intents await delivery.
@@ -68,14 +72,21 @@ queries may lead Kafka while durable intents await delivery.
 
 V6 adopts single-projection events at revision 1 without historical publication
 backfill. Same-tenant IDs present in both tables remain physically preserved and
-UNRESOLVED. Both APIs join authoritative state and hide unresolved rows. Ordinary
-duplicates cannot resolve them; an explicit selected replay must choose the result.
+UNRESOLVED. Both APIs join authoritative state and hide unresolved rows. The first
+record that reaches an unresolved event, ordinary or replay, classifies it at
+revision 1 and deletes the other projection; a replay chooses the result
+deliberately. Once classified, ordinary duplicates are ignored.
 Cross-tenant ownership collisions fail migration without deleting rows.
 
 Both APIs add `classificationRevision`. Existing tenant boundaries, filters and
 pagination apply. Each HTTP request has its own database snapshot: separate
 requests around a transition may show different revisions. The query role needs
 SELECT on `platform.event_classifications` as well as both projections.
+
+The replay marker is a header on the raw topic and is trusted as written. Restrict
+write access to `telemetry.events.raw` with broker ACLs to the ingestion service
+and the replay publisher, because any other writer could replace an existing
+classification.
 
 ## Rollout and recovery
 

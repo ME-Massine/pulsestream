@@ -85,12 +85,18 @@ class PostgresQueryIntegrationTest {
     @Test
     void authoritativeClassificationHidesUnresolvedRowsAndExposesRevision() throws Exception {
         owner.update("UPDATE platform.event_classifications SET classification = 'UNRESOLVED', revision = 0, result = NULL WHERE event_id IN ('a-first', 'an-a-first')");
+        // A revision other than 1 proves the response carries the stored value rather than a constant.
+        owner.update("UPDATE platform.event_classifications SET revision = 3 WHERE event_id IN ('a-second', 'an-a-second')");
         mvc.perform(get("/api/v1/telemetry").principal(() -> "tenant-a"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.content.length()").value(2))
-                .andExpect(jsonPath("$.content[0].classificationRevision").value(1));
+                .andExpect(jsonPath("$.content[0].eventId").value("a-second"))
+                .andExpect(jsonPath("$.content[0].classificationRevision").value(3))
+                .andExpect(jsonPath("$.content[1].classificationRevision").value(1));
         mvc.perform(get("/api/v1/anomalies").principal(() -> "tenant-a"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.content.length()").value(2))
-                .andExpect(jsonPath("$.content[0].classificationRevision").value(1));
+                .andExpect(jsonPath("$.content[0].eventId").value("an-a-second"))
+                .andExpect(jsonPath("$.content[0].classificationRevision").value(3))
+                .andExpect(jsonPath("$.content[1].classificationRevision").value(1));
     }
 
     @Test

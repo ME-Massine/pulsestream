@@ -90,7 +90,7 @@ processors/query instances, apply V6, grant query SELECT, start updated services
 and verify before resuming. Mixed-version writers are unsupported. Allow migration
 locks, WAL and disk for backfill/index creation. Monitor delivery pending/failed
 counts, oldest age and database capacity. Unresolved legacy IDs stay hidden until
-explicit selective replay; there is no automatic historical replay or publication
+the next record for the event is processed (replay or ordinary); there is no automatic historical replay or publication
 backfill. Messages remain at least once and visibility across topics is eventual.
 Prefer forward fixes over returning to old writers after cutover.
 
