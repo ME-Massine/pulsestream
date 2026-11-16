@@ -48,6 +48,8 @@ class EventContractTest {
                         .isEqualByComparingTo("28.4");
             } else if (schema.contains("/dead-letter/")) {
                 assertThat(dlqDeserializer.deserialize("telemetry.events.dlq", bytes).event()).isNotNull();
+            } else if (schema.contains("/v2.")) {
+                assertThat(mapper.readTree(json).path("classificationRevision").asLong()).isPositive();
             } else if (schema.contains("/anomaly/")) {
                 assertThat(mapper.readValue(json, TelemetryAnomalyEvent.class).severity())
                         .isIn(AnomalySeverity.WARNING, AnomalySeverity.CRITICAL);

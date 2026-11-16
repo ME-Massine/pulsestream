@@ -21,7 +21,7 @@ public class OutboxDispatcher {
             SELECT id, destination, message_key, payload, attempts, next_attempt_at <= now()
             FROM platform.delivery_outbox
             WHERE source_topic = ? AND source_partition = ? AND delivered_at IS NULL
-            ORDER BY source_offset LIMIT 1 FOR UPDATE
+            ORDER BY source_offset, message_sequence LIMIT 1 FOR UPDATE
             """;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
@@ -54,14 +54,21 @@ public class OutboxDispatcher {
 
     @Scheduled(fixedDelayString = "${pulsestream.outbox.poll-interval:1000}")
     public void dispatch() {
-        // Bound each poll while allowing independent source partitions to make progress.
+        // Bound each poll while allowing independent source partitions to make progress. A head waits for
+        // any earlier undelivered row of the same event key, which keeps one event's revisions in commit
+        // order across partitions. Waits always point to a lower id, so they cannot form a cycle.
         var partitions = jdbc.query("""
                 SELECT source_topic, source_partition FROM (
                     SELECT DISTINCT ON (source_topic, source_partition)
-                        source_topic, source_partition, next_attempt_at, id
+                        source_topic, source_partition, next_attempt_at, id, message_key
                     FROM platform.delivery_outbox WHERE delivered_at IS NULL
-                    ORDER BY source_topic, source_partition, source_offset
-                ) heads WHERE next_attempt_at <= now() ORDER BY next_attempt_at, id LIMIT 100
+                    ORDER BY source_topic, source_partition, source_offset, message_sequence
+                ) heads WHERE next_attempt_at <= now() AND NOT EXISTS (
+                    SELECT 1 FROM platform.delivery_outbox earlier
+                    WHERE earlier.message_key = heads.message_key AND earlier.delivered_at IS NULL
+                        AND earlier.id < heads.id
+                        AND NOT (earlier.source_topic = heads.source_topic AND earlier.source_partition = heads.source_partition))
+                ORDER BY next_attempt_at, id LIMIT 100
                 """, (row, index) -> new Source(row.getString(1), row.getInt(2)));
         int remaining = 100;
         for (var source : partitions) {
@@ -81,6 +88,7 @@ public class OutboxDispatcher {
                         row.getString(4), row.getInt(5), row.getBoolean(6)), source.topic(), source.partition());
         if (rows.isEmpty() || !rows.getFirst().due()) return false;
         var message = rows.getFirst();
+        if (waitsForEarlierRevision(message.id(), message.key(), source)) return false;
         metrics.counter("pulsestream.delivery.attempts").increment();
         if (message.attempts() > 0) metrics.counter("pulsestream.delivery.retries").increment();
         try {
@@ -108,6 +116,15 @@ public class OutboxDispatcher {
                     }
                 });
         return true;
+    }
+
+    /** An earlier undelivered row of the same event on another partition must be delivered first. */
+    private boolean waitsForEarlierRevision(long id, String key, Source source) {
+        return key != null && Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM platform.delivery_outbox earlier
+                    WHERE earlier.message_key = ? AND earlier.delivered_at IS NULL AND earlier.id < ?
+                        AND NOT (earlier.source_topic = ? AND earlier.source_partition = ?))
+                """, Boolean.class, key, id, source.topic(), source.partition()));
     }
 
     private record Source(String topic, int partition) { }

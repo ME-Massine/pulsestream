@@ -119,3 +119,12 @@ the dispatcher retries Kafka publication across restarts. Kafka outages can grow
 the database backlog. Monitor pending count, failed-pending count and oldest age.
 See [delivery consistency](../../../docs/architecture/delivery-consistency.md) for
 metrics, recovery and the required paused/drained cutover. Live validation is pending.
+
+## Replay classification (#271)
+
+Authoritative event classifications and Flyway V6 now reconcile all replay
+transitions. Processed/anomaly writers emit v2 UPSERT/RETRACT values on existing
+topics; raw/DLQ contracts and published v1 fixtures remain available. Query readers
+require V6 and SELECT on `platform.event_classifications`. See [the classification
+contract](../../../docs/architecture/replay-reclassification.md) for revisions, unresolved legacy conflicts, bounded
+replay, consumer migration and the coordinated paused/drained cutover.

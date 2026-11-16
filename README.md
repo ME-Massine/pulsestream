@@ -5,7 +5,7 @@
 ![Last Commit](https://img.shields.io/github/last-commit/ME-Massine/pulsestream)
 ![Repo Size](https://img.shields.io/github/repo-size/ME-Massine/pulsestream)
 
-PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry and anomalies, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes. The query service implements tenant-scoped [processed telemetry](docs/api/processed-telemetry.md) and [anomaly](docs/api/anomalies.md) APIs; successful calls require a Phase 7 authentication integration to supply the servlet principal. Authentication integration, cross-classification replay consistency and simulator tooling remain gaps.
+PulseStream is a cloud-native distributed event processing platform designed for **IoT telemetry ingestion, streaming analytics, and anomaly detection**. The current implementation provides a Spring Boot ingestion service, a Spring Boot telemetry processor, Kafka-based event transport, PostgreSQL persistence for processed telemetry and anomalies, dead-letter and replay handling, distributed tracing via OpenTelemetry, a Prometheus/Grafana observability stack, and Kubernetes manifests for the application services, Kafka, and observability components. PostgreSQL must currently be supplied separately in Kubernetes. The query service implements tenant-scoped [processed telemetry](docs/api/processed-telemetry.md) and [anomaly](docs/api/anomalies.md) APIs; successful calls require a Phase 7 authentication integration to supply the servlet principal. Authentication integration and simulator tooling remain gaps; replay reclassification is implemented with live rollout pending.
 
 > **Project status.** **Phase 6 — Kubernetes Deployment** is implemented but awaiting live target-cluster validation. Phase 7 — Production Readiness and Platform Hardening begins only after that validation meets its entry criteria. The authoritative, up-to-date status is maintained in [PROJECT_STATE.md](./PROJECT_STATE.md).
 
@@ -176,3 +176,7 @@ We welcome contributions to the PulseStream project. Please review our [CONTRIBU
 ## License
 
 This project is licensed under the **MIT License**.
+
+Replay classification (#271) uses authoritative PostgreSQL state and v2 output
+retractions/replacements; unresolved legacy conflicts require selective replay.
+See [the operating contract](docs/architecture/replay-reclassification.md).

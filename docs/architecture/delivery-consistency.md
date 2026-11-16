@@ -37,11 +37,11 @@ propagates. The ingestion service's separate DLQ behavior is outside #270.
 | Delivery marker commits | Dispatcher skips the row on later polls and restarts. |
 | Invalid input plus database/Kafka outage | A durable DLQ intent or an uncommitted source remains; no best-effort acknowledgement. |
 
-Ordinary event-ID duplicates keep the first projection. Distinct source records
-can each publish a result; source receipts do not deduplicate different offsets.
-Explicit same-tenant replays update their selected projection and enqueue another
-result. Cross-tenant event-ID collisions fail. Cross-classification cleanup and
-consumer supersession remain #271.
+Ordinary event-ID duplicates keep the first authoritative classification and
+publish nothing. Explicit same-tenant replays replace changed results and remove
+the opposite projection; identical results produce no revision or publication.
+Cross-tenant collisions fail. See [reclassification](replay-reclassification.md)
+for v2 retractions, revisions and consumer convergence.
 
 ## Dispatcher and monitoring
 
@@ -53,7 +53,9 @@ blocks later offsets from that partition during backoff; independent partitions
 can continue. Locks release automatically on connection/process loss.
 
 Flyway V5 copies immutable source coordinates onto outbox rows and adds a partial
-index on `(source_topic, source_partition, source_offset)` for undelivered rows.
+index for undelivered rows. V6 extends it to
+`(source_topic, source_partition, source_offset, message_sequence)` to order
+multiple publication intents for a transition.
 Partition discovery and each oldest-offset lookup read pending outbox entries
 directly; delivered receipt history is outside that lookup path. Each enqueue
 copies the coordinates from its receipt in the processing transaction.
@@ -116,3 +118,12 @@ Coordinate database and Kafka offset/topic recovery. Topic recreation requires
 an explicit migration of receipts and anomaly state. Keep producers paused during
 recovery. Rollback to a pre-outbox binary requires draining pending publications
 and an explicit recovery plan; additive schema compatibility alone is insufficient.
+
+## Replay classification (#271)
+
+Authoritative event classifications and Flyway V6 now reconcile all replay
+transitions. Processed/anomaly writers emit v2 UPSERT/RETRACT values on existing
+topics; raw/DLQ contracts and published v1 fixtures remain available. Query readers
+require V6 and SELECT on `platform.event_classifications`. See [the classification
+contract](replay-reclassification.md) for revisions, unresolved legacy conflicts, bounded
+replay, consumer migration and the coordinated paused/drained cutover.

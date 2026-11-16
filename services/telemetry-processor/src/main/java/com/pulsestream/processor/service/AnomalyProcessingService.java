@@ -40,6 +40,13 @@ public class AnomalyProcessingService {
     }
 
     public TelemetryAnomalyEvent process(TelemetryEvent rawEvent, TelemetryAnomalyResult anomalyResult, boolean replayed) {
+        var anomalyEvent = build(rawEvent, anomalyResult);
+        persistenceService.persist(anomalyEvent, replayed);
+        return anomalyEvent;
+    }
+
+    /** Construct a result without modifying a projection. */
+    public TelemetryAnomalyEvent build(TelemetryEvent rawEvent, TelemetryAnomalyResult anomalyResult) {
         Assert.notNull(rawEvent, "rawEvent must not be null");
         Assert.notNull(rawEvent.payload(), "rawEvent payload must not be null");
         Assert.notNull(anomalyResult, "anomalyResult must not be null");
@@ -58,7 +65,14 @@ public class AnomalyProcessingService {
                 Instant.now(clock)
         );
 
-        persistenceService.persist(anomalyEvent, replayed);
         return anomalyEvent;
+    }
+
+    /**
+     * Projection upsert reserved for the classification coordinator. It overwrites an existing row, so
+     * the caller must hold the event's classification row lock and have decided the result is current.
+     */
+    void persistAuthoritative(TelemetryAnomalyEvent result, Instant ingestedAt) {
+        persistenceService.persist(result, true, ingestedAt);
     }
 }

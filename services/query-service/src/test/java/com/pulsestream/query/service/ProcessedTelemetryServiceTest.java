@@ -19,7 +19,7 @@ class ProcessedTelemetryServiceTest {
     void trimsLookaheadAndReportsNextPageWithoutLeakingExtraRows() {
         var query = new TelemetryQuery(null, null, null, 2, 1);
         var row = new ProcessedTelemetryResponse(1, "event", "tenant", null, null, null, null,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, 1L);
         when(repository.find("tenant", query)).thenReturn(Collections.nCopies(2, row));
         var result = service.query("tenant", query);
         assertThat(result.content()).containsExactly(row);
@@ -36,7 +36,7 @@ class ProcessedTelemetryServiceTest {
         assertThat(service.query("tenant", query).content()).isEmpty();
         var single = new TelemetryQuery(null, null, null, 0, 1);
         var row = new ProcessedTelemetryResponse(1, "event", "tenant", null, null, null, null,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, 1L);
         when(repository.find("tenant", single)).thenReturn(List.of(row));
         assertThat(service.query("tenant", single).hasNext()).isFalse();
     }

@@ -19,3 +19,5 @@ This directory contains the Architecture Decision Records (ADRs) for PulseStream
 
 ADRs capture important architectural decisions, their context, and their consequences.
 They provide historical traceability for why the system was designed the way it was.
+
+- [ADR 0010: Authoritative replay classification](0010-authoritative-replay-classification.md)

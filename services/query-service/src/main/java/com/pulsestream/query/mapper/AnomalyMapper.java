@@ -23,6 +23,6 @@ public class AnomalyMapper implements RowMapper<AnomalyResponse> {
                 row.getString("metric"), row.getBigDecimal("value"), row.getString("unit"), row.getString("location"),
                 row.getBigDecimal("threshold"), row.getString("anomaly_type"), row.getString("severity"),
                 Arrays.asList(mapper.readValue(row.getString("reasons"), String[].class)),
-                row.getTimestamp("detected_at").toInstant(), row.getTimestamp("ingested_at").toInstant());
+                row.getTimestamp("detected_at").toInstant(), row.getTimestamp("ingested_at").toInstant(), row.getLong("classification_revision"));
     }
 }

@@ -176,3 +176,18 @@ applies the processor's actual V1 migration and tests row mapping, read-only
 grants, tenant isolation, bound filters, tie ordering, pagination, HTTP schemas,
 SQL injection strings, database loss, readiness, liveness and recovery. Docker
 unavailability fails the build. No H2 substitute is used for repository behavior.
+
+## Replay classification (#271)
+
+Both APIs return only the active authoritative classification and include
+`classificationRevision` (positive integer) in each response item. Unresolved
+legacy conflicts are hidden until the next record for the event is processed. Changes across separate HTTP
+requests may expose different revisions. Query startup requires Flyway V6 and
+SELECT on `platform.event_classifications` in addition to both projections:
+
+```sql
+GRANT SELECT ON platform.event_classifications TO pulsestream_query;
+```
+
+See [reclassification](../architecture/replay-reclassification.md) for replay
+idempotency, stable ingestion times, v2 publications and rollout/recovery.

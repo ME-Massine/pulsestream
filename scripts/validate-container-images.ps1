@@ -298,7 +298,7 @@ try {
         if ($service -in @("telemetry-processor", "query-service")) {
             # Use a disposable real database on the selected network, including the
             # default Docker bridge used by CI. No host port or existing data volume
-            # is needed. Migrations remain enabled so image validation exercises V1, V2 and V3.
+            # is needed. Migrations remain enabled so image validation exercises V1 through V6.
             $validationDatabase = "pulsestream-validate-postgres-$([guid]::NewGuid().ToString('N'))"
             $databasePassword = [guid]::NewGuid().ToString('N')
             $databaseArgs = @(
@@ -329,7 +329,7 @@ try {
             if ($service -eq "query-service") {
                 # Query images never own migrations. Prepare the disposable database
                 # with the canonical processor SQL before checking query readiness.
-                foreach ($migrationName in @("V1__create_platform_tables.sql", "V2__persist_anomaly_metadata.sql", "V3__recoverable_anomaly_state.sql")) {
+                foreach ($migrationName in @("V1__create_platform_tables.sql", "V2__persist_anomaly_metadata.sql", "V3__recoverable_anomaly_state.sql", "V4__transactional_delivery_outbox.sql", "V5__index_pending_delivery_coordinates.sql", "V6__authoritative_classifications.sql")) {
                     $migration = Join-Path $repoRoot "services/telemetry-processor/src/main/resources/db/migration/$migrationName"
                     $copyArgs = @("cp", $migration, "${validationDatabase}:/tmp/platform.sql")
                     Invoke-Docker @copyArgs | Out-Null
@@ -345,12 +345,12 @@ try {
         Test-ServiceContainer $service
         if ($service -eq "telemetry-processor") {
             $historyArgs = @("exec", $validationDatabase, "psql", "-U", "pulsestream", "-d", "pulsestream", "-Atc",
-                "SELECT count(*) FROM pulsestream_migrations.flyway_schema_history WHERE version IN ('1', '2', '3') AND success")
+                "SELECT count(*) FROM pulsestream_migrations.flyway_schema_history WHERE version IN ('1', '2', '3', '4', '5', '6') AND success")
             $migrationCount = (Invoke-Docker @historyArgs | Out-String).Trim()
             Confirm-Condition -Permanent `
-                -Condition ($LASTEXITCODE -eq 0 -and $migrationCount -eq "3") `
-                -SuccessMessage "Processor image applied PostgreSQL migrations V1, V2 and V3" `
-                -FailureMessage "Processor image did not record successful schema migrations V1, V2 and V3."
+                -Condition ($LASTEXITCODE -eq 0 -and $migrationCount -eq "6") `
+                -SuccessMessage "Processor image applied PostgreSQL migrations V1 through V6" `
+                -FailureMessage "Processor image did not record successful schema migrations V1 through V6."
         }
         if ($null -ne $validationDatabase) {
             Invoke-Docker rm -fv $validationDatabase | Out-Null

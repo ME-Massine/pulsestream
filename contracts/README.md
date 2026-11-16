@@ -15,13 +15,13 @@ when the JSON value is structurally compatible.
 | Kafka topic | Authoritative contract | Producers | Current consumers |
 | --- | --- | --- | --- |
 | `telemetry.events.raw` | [raw v1](schemas/raw/v1.schema.json) | ingestion, processor replay | processor |
-| `telemetry.events.processed` | [processed v1](schemas/processed/v1.schema.json) | processor | external consumers; query uses PostgreSQL |
-| `telemetry.events.anomalies` | [anomaly v1](schemas/anomaly/v1.schema.json) | processor | external consumers; query uses PostgreSQL |
+| `telemetry.events.processed` | [processed v2](schemas/processed/v2.schema.json) | processor | external consumers; query uses PostgreSQL |
+| `telemetry.events.anomalies` | [anomaly v2](schemas/anomaly/v2.schema.json) | processor | external consumers; query uses PostgreSQL |
 | `telemetry.events.dlq` | [dead-letter v1](schemas/dead-letter/v1.schema.json) | ingestion and processor | processor replay |
 
 ## Fields and formats
 
-Raw, processed and anomaly events require `eventId`, `tenantId`, `eventType`,
+Raw, processed/anomaly v1 and v2 UPSERT events require `eventId`, `tenantId`, `eventType`,
 `timestamp`, `source`, `version` and `payload`. Identity/source strings are
 nonblank; IDs are opaque strings, not necessarily UUIDs. Timestamps are RFC 3339
 `date-time` strings, including offsets and fractional seconds. Format assertions
@@ -38,7 +38,8 @@ missing readings are themselves anomalous. Envelope identity remains required:
 unidentified input persistence failures stop consumption without acknowledgement.
 Missing-payload input uses durable DLQ routing; see [delivery consistency](../docs/architecture/delivery-consistency.md).
 
-Processed/anomaly `eventType` is fixed to `telemetry.processed`/`telemetry.anomaly`
+V2 RETRACT omits payload and detection metadata; the operation-specific schemas
+are authoritative. Processed/anomaly `eventType` is fixed to `telemetry.processed`/`telemetry.anomaly`
 and `source` to `telemetry-processor`. Anomalies additionally require `severity`
 (`WARNING` or `CRITICAL`), a nonempty array of nonblank `reasons`, and a
 `detectedAt` timestamp. `NONE` is an internal detection result, not an anomaly event.
@@ -59,7 +60,7 @@ topic and major select `schemas/<contract>/v<major>.schema.json`. Each major
 schema accepts numeric minor versions in that major (`1.0`, `1.1`, etc.). The
 schema URI identifies the major's evolving compatible contract; it is not a
 schema-registry address. Producers increment the minor when introducing optional
-fields. Current processed/anomaly/DLQ producers emit their own `1.0`, independently
+fields. Current processed/anomaly producers emit `2.0`; DLQ emits `1.0`, independently
 of the raw input's minor version. Replay preserves the nested raw version and
 event identity. Replay metadata remains in Kafka headers.
 
@@ -133,3 +134,12 @@ enum, nested, reference, unknown-keyword, deletion and explicit-new-major change
 
 No major is currently deprecated. Live target-cluster rollout remains separate
 from the repository's build-time contract validation.
+
+## Replay classification (#271)
+
+Authoritative event classifications and Flyway V6 now reconcile all replay
+transitions. Processed/anomaly writers emit v2 UPSERT/RETRACT values on existing
+topics; raw/DLQ contracts and published v1 fixtures remain available. Query readers
+require V6 and SELECT on `platform.event_classifications`. See [the classification
+contract](../docs/architecture/replay-reclassification.md) for revisions, unresolved legacy conflicts, bounded
+replay, consumer migration and the coordinated paused/drained cutover.

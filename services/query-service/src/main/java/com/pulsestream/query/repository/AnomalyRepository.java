@@ -22,9 +22,11 @@ public class AnomalyRepository {
     public List<AnomalyResponse> find(String tenantId, AnomalyQuery query) {
         var filters = query.telemetry();
         StringBuilder sql = new StringBuilder("""
-                SELECT id, event_id, tenant_id, timestamp, device_id, device_type, metric, value,
+                SELECT c.revision AS classification_revision, p.id, p.event_id, p.tenant_id, timestamp, device_id, device_type, metric, value,
                     unit, location, threshold, anomaly_type, severity, reasons, detected_at, ingested_at
-                FROM platform.anomalies WHERE tenant_id = :tenantId
+                FROM platform.anomalies p JOIN platform.event_classifications c
+                    ON c.event_id = p.event_id AND c.tenant_id = p.tenant_id
+                    AND c.classification = 'ANOMALY' WHERE p.tenant_id = :tenantId
                 """);
         var parameters = new MapSqlParameterSource("tenantId", tenantId);
         if (filters.deviceId() != null) {
@@ -47,7 +49,7 @@ public class AnomalyRepository {
             sql.append(" AND timestamp < :to");
             parameters.addValue("to", Timestamp.from(filters.to()));
         }
-        sql.append(" ORDER BY timestamp DESC, id DESC LIMIT :limit OFFSET :offset");
+        sql.append(" ORDER BY timestamp DESC, p.id DESC LIMIT :limit OFFSET :offset");
         parameters.addValue("limit", filters.size() + 1);
         parameters.addValue("offset", (long) filters.page() * filters.size());
         return jdbc.query(sql.toString(), parameters, mapper);

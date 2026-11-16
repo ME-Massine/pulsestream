@@ -1,5 +1,12 @@
 # Event Schema Specification
 
+Current processed/anomaly writers emit v2 operation envelopes. UPSERT carries the
+result; RETRACT omits payload/detection metadata and removes the obsolete topic
+projection. Both include classificationRevision and the resulting classification.
+The examples describing v1 below remain historical compatibility contracts. See
+[reclassification](replay-reclassification.md) and the authoritative v2 schemas in
+contracts/schemas for current producer behavior. Raw and DLQ remain v1.
+
 ## Overview
 
 PulseStream transports JSON events through Kafka. The authoritative contracts are
@@ -10,8 +17,8 @@ shared fixtures, validation, version mapping and deprecation.
 | Topic | Authoritative schema |
 | --- | --- |
 | `telemetry.events.raw` | [raw v1](../../contracts/schemas/raw/v1.schema.json) |
-| `telemetry.events.processed` | [processed v1](../../contracts/schemas/processed/v1.schema.json) |
-| `telemetry.events.anomalies` | [anomaly v1](../../contracts/schemas/anomaly/v1.schema.json) |
+| `telemetry.events.processed` | [processed v2](../../contracts/schemas/processed/v2.schema.json) (v1 is historical) |
+| `telemetry.events.anomalies` | [anomaly v2](../../contracts/schemas/anomaly/v2.schema.json) (v1 is historical) |
 | `telemetry.events.dlq` | [shared dead-letter v1](../../contracts/schemas/dead-letter/v1.schema.json) |
 
 ---
@@ -207,8 +214,10 @@ Events are routed through Kafka topics.
 ### Event Versioning
 
 The existing wire version is `MAJOR.MINOR`. Topic plus major selects the schema;
-v1 schemas accept `1.x`. Current processed/anomaly/DLQ producers declare `1.0`
-independently of the input minor version; replay preserves the raw event version.
+v1 schemas accept `1.x`. Current processed and anomaly producers declare `2.0`
+and publish v2 UPSERT/RETRACT operations; v1 is a historical compatibility contract.
+Current DLQ producers declare `1.0`. Versions are independent of the input minor
+version; replay preserves the raw event version.
 Historical DLQ wrappers without a version are implicitly `1.0`.
 
 ### Schema Evolution Strategy
@@ -249,3 +258,12 @@ By enforcing a consistent event structure, the platform ensures:
 *   reliable event processing
 *   safe schema evolution
 *   simplified debugging and monitoring
+
+## Replay classification (#271)
+
+Authoritative event classifications and Flyway V6 now reconcile all replay
+transitions. Processed/anomaly writers emit v2 UPSERT/RETRACT values on existing
+topics; raw/DLQ contracts and published v1 fixtures remain available. Query readers
+require V6 and SELECT on `platform.event_classifications`. See [the classification
+contract](replay-reclassification.md) for revisions, unresolved legacy conflicts, bounded
+replay, consumer migration and the coordinated paused/drained cutover.

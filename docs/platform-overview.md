@@ -2,7 +2,7 @@
 
 PulseStream is a cloud-native event processing platform designed to ingest, process, and analyze IoT telemetry data at scale.
 
-The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence and querying of processed telemetry and anomalies, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for the application services, Kafka, and observability components; PostgreSQL must currently be supplied separately. The [processed telemetry](api/processed-telemetry.md) and [anomaly](api/anomalies.md) APIs require the pending Phase 7 authenticated tenant integration. Cross-classification replay consistency remains planned in #271.
+The platform enables real-time ingestion of telemetry events, Kafka-based processing, anomaly event publishing, persistence and querying of processed telemetry and anomalies, dead-letter routing with event replay, distributed tracing, and a Prometheus/Grafana observability stack. Kubernetes manifests are committed for the application services, Kafka, and observability components; PostgreSQL must currently be supplied separately. The [processed telemetry](api/processed-telemetry.md) and [anomaly](api/anomalies.md) APIs require the pending Phase 7 authenticated tenant integration. Cross-classification replay consistency is implemented in #271; live rollout remains pending.
 
 The system is designed using an event-driven architecture built around Apache Kafka. The authoritative platform status is maintained in [PROJECT_STATE.md](../PROJECT_STATE.md).
 
@@ -202,3 +202,7 @@ docs/roadmap.md
 PostgreSQL/Kafka delivery (#270) now commits source receipts, anomaly state, projections
 and publication intents together. A durable outbox dispatcher retries Kafka sends;
 see [the delivery contract](../docs/architecture/delivery-consistency.md). Delivery remains at least once.
+
+Replay classification (#271) now uses authoritative PostgreSQL state and v2
+retractions/replacements. Unresolved legacy conflicts require selective replay.
+See [the operating contract](architecture/replay-reclassification.md).

@@ -97,13 +97,13 @@ Tenant and event identity are mandatory for durable persistence. A detector
 result with missing tenant/event identity follows the failure path; no anonymous
 or invented tenant projection is stored. Missing device, metric or value fields
 are preserved with the detector's reasons. Detection rules and thresholds are
-unchanged. Reclassification across the normal/anomaly boundary remains #271;
-this issue does not delete or supersede a projection in the other table.
+unchanged. Reclassification across the normal/anomaly boundary uses authoritative state (#271);
+the coordinator deletes the obsolete projection and emits a versioned retraction.
 
 Prometheus exports
 `pulsestream_anomaly_persistence_total{outcome="success|duplicate|failure"}`
 on the existing processor management surface. `success` counts committed
-inserts/replay updates, `duplicate` counts ignored ordinary duplicates, and
+inserts/replay updates, `duplicate` counts repository-level ignored duplicates; the classification coordinator skips ordinary duplicates before projection persistence, and
 `failure` counts rejected or failed persistence attempts, including transaction
 commit failures. Labels contain no tenant, event or device identifiers.
 
@@ -137,3 +137,18 @@ legacy preservation, inserts, duplicate deliveries, replay updates, concurrency,
 tenant collisions, missing fields, all filters, pagination and the SELECT-only
 role/API boundary. Docker unavailability fails these tests. Run Maven `verify`
 for all three services; no live target-cluster acceptance is implied.
+
+## Replay classification (#271)
+
+Both APIs return only the active authoritative classification and include
+`classificationRevision` (positive integer) in each response item. Unresolved
+legacy conflicts are hidden until the next record for the event is processed. Changes across separate HTTP
+requests may expose different revisions. Query startup requires Flyway V6 and
+SELECT on `platform.event_classifications` in addition to both projections:
+
+```sql
+GRANT SELECT ON platform.event_classifications TO pulsestream_query;
+```
+
+See [reclassification](../architecture/replay-reclassification.md) for replay
+idempotency, stable ingestion times, v2 publications and rollout/recovery.

@@ -69,7 +69,7 @@ failures stop consumption; missing-payload input uses durable DLQ routing.
 Since #270 the delivery coordinator commits detection state, the projection,
 source receipt and outbox intent together. Kafka publication retries from the
 [transactional outbox](delivery-consistency.md). Cross-classification replay
-reconciliation remains #271. Neither a second consumer group nor manual offset
+reconciliation uses authoritative state and v2 replacements/retractions (#271). Neither a second consumer group nor manual offset
 resets provide independent historical re-evaluation against these shared tables.
 Use an isolated database for independent processing experiments.
 
@@ -179,3 +179,12 @@ cluster rollout and representative capacity validation remain pending.
 References: [PostgreSQL row locks](https://www.postgresql.org/docs/16/explicit-locking.html#LOCKING-ROWS),
 [Spring Kafka offset commits](https://docs.spring.io/spring-kafka/reference/kafka/receiving-messages/message-listener-container.html#committing-offsets),
 [stopping error handlers](https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html#container-stopping-error-handlers).
+
+## Replay classification (#271)
+
+Authoritative event classifications and Flyway V6 now reconcile all replay
+transitions. Processed/anomaly writers emit v2 UPSERT/RETRACT values on existing
+topics; raw/DLQ contracts and published v1 fixtures remain available. Query readers
+require V6 and SELECT on `platform.event_classifications`. See [the classification
+contract](replay-reclassification.md) for revisions, unresolved legacy conflicts, bounded
+replay, consumer migration and the coordinated paused/drained cutover.

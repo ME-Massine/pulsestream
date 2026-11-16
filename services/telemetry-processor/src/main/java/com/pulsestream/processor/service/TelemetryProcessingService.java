@@ -43,6 +43,17 @@ public class TelemetryProcessingService {
      * behavior.
      */
     public TelemetryEvent process(TelemetryEvent rawEvent, boolean replayed) {
+        var processedEvent = build(rawEvent);
+        if (replayed) {
+            persistenceService.persist(processedEvent, true);
+        } else {
+            persistenceService.persist(processedEvent);
+        }
+        return processedEvent;
+    }
+
+    /** Construct a result without modifying a projection. */
+    public TelemetryEvent build(TelemetryEvent rawEvent) {
         Assert.notNull(rawEvent, "rawEvent must not be null");
         Assert.notNull(rawEvent.payload(), "rawEvent payload must not be null");
 
@@ -56,11 +67,14 @@ public class TelemetryProcessingService {
                 TelemetryEventNormalizer.normalizePayload(rawEvent.payload())
         );
 
-        if (replayed) {
-            persistenceService.persist(processedEvent, true);
-        } else {
-            persistenceService.persist(processedEvent);
-        }
         return processedEvent;
+    }
+
+    /**
+     * Projection upsert reserved for the classification coordinator. It overwrites an existing row, so
+     * the caller must hold the event's classification row lock and have decided the result is current.
+     */
+    void persistAuthoritative(TelemetryEvent result, Instant ingestedAt) {
+        persistenceService.persist(result, true, ingestedAt);
     }
 }

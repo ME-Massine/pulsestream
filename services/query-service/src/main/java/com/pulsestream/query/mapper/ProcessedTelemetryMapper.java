@@ -14,6 +14,6 @@ public class ProcessedTelemetryMapper implements RowMapper<ProcessedTelemetryRes
                 row.getString("tenant_id"), row.getString("event_type"), row.getTimestamp("timestamp").toInstant(),
                 row.getString("source"), row.getString("device_id"), row.getString("device_type"),
                 row.getString("metric"), row.getBigDecimal("value"), row.getString("unit"),
-                row.getString("location"), row.getTimestamp("ingested_at").toInstant());
+                row.getString("location"), row.getTimestamp("ingested_at").toInstant(), row.getLong("classification_revision"));
     }
 }
