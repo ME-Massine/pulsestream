@@ -15,7 +15,17 @@ Each service uses a two-stage build:
 ### Stage 1 — Builder
 
 ```dockerfile
-FROM maven:3.10.0-eclipse-temurin-25 AS builder
+FROM eclipse-temurin:25-jdk AS builder
+
+ADD --checksum=sha256:9c1ef9174ef250a5009ed0dec97cbe8699acf7479add4e62bf7b0ea791c0adb5 \
+    https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.10.1/apache-maven-3.10.1-bin.zip /tmp/apache-maven.zip
+RUN mkdir -p /opt/maven \
+    && cd /opt/maven \
+    && jar -xf /tmp/apache-maven.zip \
+    && chmod +x apache-maven-3.10.1/bin/mvn \
+    && rm /tmp/apache-maven.zip
+ENV MAVEN_HOME=/opt/maven/apache-maven-3.10.1
+ENV PATH="${MAVEN_HOME}/bin:${PATH}"
 
 WORKDIR /app
 
@@ -28,6 +38,13 @@ RUN mvn clean package -DskipTests
 RUN java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destination extracted
 ```
 
+* The builder installs Maven 3.10.1 from the same SHA-256-pinned ZIP as the
+  service wrappers, using the JDK's `jar` tool. Builds require Docker BuildKit
+  with support for [`ADD --checksum`](https://docs.docker.com/reference/dockerfile/#add---checksum).
+  A checksum mismatch stops the build. No Maven image tag for Java 26 is used.
+* Update the Maven URL, version, and checksum in all three Dockerfiles and
+  wrapper properties together. The `maven:3.10.1-eclipse-temurin-25` tag was
+  unavailable when this toolchain update was prepared.
 * Dependencies are resolved (`dependency:go-offline`) before the source is copied,
   so Docker caches the dependency layer and only rebuilds when `pom.xml` changes.
 * The Spring Boot jar is unpacked with the `tools` jar mode (`layertools` was
@@ -65,7 +82,7 @@ ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.la
 
 | Concern            | Standard                                                                                   |
 | ------------------ | ------------------------------------------------------------------------------------------ |
-| Base (build) image | `maven:3.10.0-eclipse-temurin-25`                                                           |
+| Base (build) image | `eclipse-temurin:25-jdk` with checksum-pinned Maven 3.10.1                                  |
 | Base (runtime) image | `eclipse-temurin:25-jre-jammy` (JRE only, smaller runtime)                                |
 | Build strategy     | Multi-stage; Spring Boot layered jar extracted with the `tools` jar mode                    |
 | Non-root execution | Dedicated `spring` user/group; `/app` owned by `spring`; `USER spring:spring`              |
@@ -89,7 +106,7 @@ ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.la
 ### Spring Boot launcher path
 
 Spring Boot 3.2+ moved the launcher to `org.springframework.boot.loader.launch.JarLauncher`.
-All services run Spring Boot 4.1.1 and must use this path. The pre-3.2 path
+All services run Spring Boot 4 and must use this path. The pre-3.2 path
 `org.springframework.boot.loader.JarLauncher` no longer exists and must not be used.
 
 ---

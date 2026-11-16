@@ -69,6 +69,10 @@ The workflow runs these checks:
 
 ### Running the checks locally
 
+Use JDK 25 for service builds. Unix wrapper bootstrap also requires `unzip`:
+the distributions are pinned to ZIP checksums, so the wrapper's tarball fallback
+cannot pass that checksum when `unzip` is missing.
+
 ```bash
 # Compile, test, package, report coverage, and enforce the baseline
 cd services/ingestion-service && ./mvnw verify
