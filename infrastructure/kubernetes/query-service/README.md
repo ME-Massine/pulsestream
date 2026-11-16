@@ -21,3 +21,12 @@ authenticated servlet principal supplied by the Phase 7 integration and returns
 401 until one is installed. The deployment does not expose an external route or
 trust forwarded tenant headers. Promote new images through the existing release
 workflow; image references are unchanged by this implementation.
+
+## Replay classification (#271)
+
+Authoritative event classifications and Flyway V6 now reconcile all replay
+transitions. Processed/anomaly writers emit v2 UPSERT/RETRACT values on existing
+topics; raw/DLQ contracts and published v1 fixtures remain available. Query readers
+require V6 and SELECT on `platform.event_classifications`. See [the classification
+contract](../../../docs/architecture/replay-reclassification.md) for revisions, unresolved legacy conflicts, bounded
+replay, consumer migration and the coordinated paused/drained cutover.

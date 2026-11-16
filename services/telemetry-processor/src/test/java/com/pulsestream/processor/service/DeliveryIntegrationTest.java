@@ -84,7 +84,7 @@ class DeliveryIntegrationTest {
         jdbc.execute("DROP TRIGGER IF EXISTS fail_enqueue ON platform.delivery_outbox");
         jdbc.execute("DROP TRIGGER IF EXISTS fail_commit ON platform.delivery_outbox");
         jdbc.execute("TRUNCATE platform.delivery_outbox, platform.processing_receipts, platform.processed_telemetry, platform.anomalies, "
-                + "platform.anomaly_decisions, platform.anomaly_reading_state, platform.anomaly_partition_state RESTART IDENTITY");
+                + "platform.event_classifications, platform.anomaly_decisions, platform.anomaly_reading_state, platform.anomaly_partition_state RESTART IDENTITY");
         raw = "delivery-" + UUID.randomUUID();
         properties = new TelemetryProcessorKafkaProperties();
         properties.setBootstrapServers(broker.getBrokersAsString());
@@ -101,11 +101,158 @@ class DeliveryIntegrationTest {
         var named = new NamedParameterJdbcTemplate(jdbc);
         return new TelemetryDeliveryService(manager, writer, normalizer, state,
                 new TelemetryProcessingService(new ProcessedTelemetryPersistenceService(new ProcessedTelemetryWriteRepository(named))),
-                new AnomalyProcessingService(new AnomalyPersistenceService(new AnomalyRepository(named, mapper), metrics)), properties, json);
+                new AnomalyProcessingService(new AnomalyPersistenceService(new AnomalyRepository(named, mapper), metrics)), properties, json,
+                new ClassificationCoordinator(jdbc,
+                    new TelemetryProcessingService(new ProcessedTelemetryPersistenceService(new ProcessedTelemetryWriteRepository(named))),
+                    new AnomalyProcessingService(new AnomalyPersistenceService(new AnomalyRepository(named, mapper), metrics)), writer, properties, json));
     }
 
     private OutboxDispatcher dispatcher(KafkaTemplate<String, String> sender) {
         return new OutboxDispatcher(jdbc, manager, sender, properties, metrics);
+    }
+
+    @Test void allClassificationTransitionsAndIdenticalReplaysConverge() {
+        delivery.consume(record(0, "transition", "20"));
+        replay(1, "transition", "21"); // normal -> normal
+        assertRevision("transition", 2, "NORMAL");
+        replay(2, "transition", "21.0000");
+        assertRevision("transition", 2, "NORMAL");
+        replay(3, "transition", "100"); // normal -> anomaly
+        assertRevision("transition", 3, "ANOMALY");
+        assertThat(count("processed_telemetry")).isZero();
+        replay(4, "transition", "101"); // anomaly -> anomaly
+        assertRevision("transition", 4, "ANOMALY");
+        replay(5, "transition", "101");
+        assertRevision("transition", 4, "ANOMALY");
+        replay(6, "transition", "20"); // anomaly -> normal
+        assertRevision("transition", 5, "NORMAL");
+        assertThat(count("anomalies")).isZero();
+        assertThat(count("delivery_outbox")).isEqualTo(7);
+        for (var row : jdbc.queryForList("SELECT destination, payload FROM platform.delivery_outbox")) {
+            String schema = row.get("destination").toString().endsWith("anomalies") ? "anomaly" : "processed";
+            com.pulsestream.processor.contract.ContractAssertions.valid("schemas/" + schema + "/v2.schema.json", row.get("payload").toString());
+        }
+        var pair = jdbc.queryForList("SELECT message_sequence, payload FROM platform.delivery_outbox WHERE source_offset = 3 ORDER BY message_sequence");
+        assertThat(pair).hasSize(2);
+        assertThat(pair.getFirst().get("payload").toString()).contains("RETRACT");
+        assertThat(pair.getLast().get("payload").toString()).contains("UPSERT");
+        // A consumer of both topics must accept the equal-revision pair in either order.
+        long watermark = 0;
+        String active = null;
+        tools.jackson.databind.JsonNode selected = null;
+        var publications = jdbc.queryForList("SELECT payload FROM platform.delivery_outbox ORDER BY source_offset, message_sequence", String.class);
+        var reversed = new ArrayList<>(publications.reversed());
+        reversed.addAll(publications); // duplicates and obsolete deliveries
+        for (String json : reversed) {
+            var message = mapper.readTree(json);
+            long revision = message.path("classificationRevision").asLong();
+            if (revision < watermark) continue;
+            if (revision > watermark) {
+                selected = null;
+                active = message.path("classification").asText();
+                watermark = revision;
+            }
+            if (message.path("operation").asText().equals("UPSERT")) selected = message;
+        }
+        assertThat(watermark).isEqualTo(5);
+        assertThat(active).isEqualTo("NORMAL");
+        assertThat(selected.path("payload").path("value").asInt()).isEqualTo(20);
+        dispatcher(kafka).dispatch();
+        assertThat(pending()).isZero();
+    }
+
+    @Test void failedSecondPublicationRollsBackEntireTransitionThenRecovers() {
+        delivery.consume(record(0, "rollback", "20"));
+        doThrow(new DataAccessResourceFailureException("second intent failed")).when(outbox)
+                .enqueue(anyLong(), eq(1), anyString(), anyString(), anyString());
+        assertThatThrownBy(() -> replay(1, "rollback", "100")).isInstanceOf(DataAccessResourceFailureException.class);
+        assertRevision("rollback", 1, "NORMAL");
+        assertThat(count("processed_telemetry")).isEqualTo(1);
+        assertThat(count("anomalies")).isZero();
+        assertThat(count("delivery_outbox")).isEqualTo(1);
+        delivery = service(new DeliveryOutbox(jdbc), mapper);
+        replay(1, "rollback", "100");
+        assertRevision("rollback", 2, "ANOMALY");
+        assertThat(count("delivery_outbox")).isEqualTo(3);
+    }
+
+    @Test void identicalRawReplayCanChangeClassificationWhenBaselineChanges() {
+        delivery.consume(record(0, "baseline-sensitive", "20"));
+        delivery.consume(record(1, "baseline-update", "100"));
+        var headers = new RecordHeaders().add(ReplayHeaders.REPLAY, "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        delivery.consume(record(2, record(2, "baseline-sensitive", "20").value(), headers));
+        assertRevision("baseline-sensitive", 2, "ANOMALY");
+        delivery.consume(record(3, record(3, "baseline-sensitive", "20").value(), headers));
+        assertRevision("baseline-sensitive", 3, "NORMAL");
+    }
+
+    @Test void failureBetweenTransitionMessagesRetriesOnlyRemainingIntent() {
+        delivery.consume(record(0, "partial-send", "20"));
+        dispatcher(kafka).dispatch();
+        replay(1, "partial-send", "100");
+        var partial = sender(CompletableFuture.completedFuture(null));
+        when(partial.send(eq("telemetry.events.anomalies"), anyString(), anyString()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("broker down")));
+        dispatcher(partial).dispatch();
+        assertThat(pending()).isEqualTo(1);
+        assertRevision("partial-send", 2, "ANOMALY");
+        assertThat(count("processed_telemetry")).isZero();
+        due();
+        dispatcher(kafka).dispatch();
+        assertThat(pending()).isZero();
+        assertThat(read("telemetry.events.anomalies", "partial-send", 1).getFirst()).contains("UPSERT");
+    }
+
+    @Test void unresolvedLegacyConflictRequiresExplicitReplay() {
+        delivery.consume(record(0, "unresolved", "20"));
+        jdbc.execute("""
+                INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, device_id, metric, value, anomaly_type, severity)
+                VALUES ('unresolved', 'tenant', now(), 'device', 'temperature', 100, 'rule_violation', 'WARNING');
+                UPDATE platform.event_classifications SET classification = 'UNRESOLVED', revision = 0, result = NULL WHERE event_id = 'unresolved';
+                """);
+        delivery.consume(record(1, "unresolved", "20"));
+        assertRevision("unresolved", 0, "UNRESOLVED");
+        replay(2, "unresolved", "20");
+        assertRevision("unresolved", 1, "NORMAL");
+        assertThat(count("anomalies")).isZero();
+        assertThat(count("delivery_outbox")).isEqualTo(3);
+    }
+
+    @Test void concurrentReplaysAcrossPartitionsSerializeOneActiveResult() throws Exception {
+        delivery.consume(record(0, "concurrent-result", "20"));
+        var headers = new RecordHeaders().add(ReplayHeaders.REPLAY, "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var first = record(1, record(1, "concurrent-result", "100").value(), headers);
+        var second = new ConsumerRecord<String, TelemetryEvent>(raw, 1, 0, 1002, TimestampType.CREATE_TIME, 0, 0,
+                first.key(), record(0, "concurrent-result", "21").value(), headers, Optional.empty());
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var a = executor.submit(() -> delivery.consume(first));
+            var b = executor.submit(() -> delivery.consume(second));
+            a.get(15, TimeUnit.SECONDS);
+            b.get(15, TimeUnit.SECONDS);
+        }
+        assertThat(count("processed_telemetry") + count("anomalies")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT revision FROM platform.event_classifications", Long.class)).isEqualTo(3);
+    }
+
+    @Test void ordinaryDuplicateCannotCrossClassificationBoundary() {
+        delivery.consume(record(0, "first-wins", "20"));
+        delivery.consume(record(1, "first-wins", "100"));
+        assertRevision("first-wins", 1, "NORMAL");
+        assertThat(count("anomalies")).isZero();
+        assertThat(count("delivery_outbox")).isEqualTo(1);
+    }
+
+    private void replay(long offset, String id, String value) {
+        // Start without a deviation baseline to isolate classification replacement from the detector algorithm.
+        jdbc.execute("DELETE FROM platform.anomaly_reading_state");
+        var headers = new RecordHeaders().add(ReplayHeaders.REPLAY, "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        delivery.consume(record(offset, record(offset, id, value).value(), headers));
+    }
+
+    private void assertRevision(String id, long revision, String classification) {
+        var row = jdbc.queryForMap("SELECT revision, classification FROM platform.event_classifications WHERE event_id = ?", id);
+        assertThat(((Number) row.get("revision")).longValue()).isEqualTo(revision);
+        assertThat(row.get("classification")).isEqualTo(classification);
     }
 
     @Test void pendingHeadUsesBoundedIndexLookupWithOneMillionRetainedReceipts() {
@@ -174,7 +321,7 @@ class DeliveryIntegrationTest {
         assertThat(pending()).isZero();
         for (var row : jdbc.queryForList("SELECT destination, payload FROM platform.delivery_outbox")) {
             String schema = row.get("destination").toString().endsWith("anomalies") ? "anomaly" : "processed";
-            com.pulsestream.processor.contract.ContractAssertions.valid("schemas/" + schema + "/v1.schema.json", row.get("payload").toString());
+            com.pulsestream.processor.contract.ContractAssertions.valid("schemas/" + schema + "/v2.schema.json", row.get("payload").toString());
         }
         assertThat(read("telemetry.events.processed", "normal", 1).getFirst()).contains("telemetry.processed");
         assertThat(read("telemetry.events.anomalies", "anomaly", 1).getFirst()).contains("telemetry.anomaly");
@@ -379,7 +526,7 @@ class DeliveryIntegrationTest {
         var headers = new RecordHeaders().add(ReplayHeaders.REPLAY, "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
         delivery.consume(record(2, record(2, "duplicate", "24").value(), headers));
         assertThat(jdbc.queryForObject("SELECT value FROM platform.processed_telemetry", BigDecimal.class)).isEqualByComparingTo("24");
-        assertThat(count("delivery_outbox")).isEqualTo(3);
+        assertThat(count("delivery_outbox")).isEqualTo(2);
         assertThatThrownBy(() -> delivery.consume(record(0, "duplicate", "99"))).hasMessageContaining("coordinate changed");
         var event = first.value();
         var foreign = new TelemetryEvent(event.eventId(), "other-tenant", event.eventType(), event.timestamp(), event.source(), event.version(), event.payload());

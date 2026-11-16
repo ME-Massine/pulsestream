@@ -40,6 +40,13 @@ public class AnomalyProcessingService {
     }
 
     public TelemetryAnomalyEvent process(TelemetryEvent rawEvent, TelemetryAnomalyResult anomalyResult, boolean replayed) {
+        var anomalyEvent = build(rawEvent, anomalyResult);
+        persistenceService.persist(anomalyEvent, replayed);
+        return anomalyEvent;
+    }
+
+    /** Construct a result without modifying a projection. */
+    public TelemetryAnomalyEvent build(TelemetryEvent rawEvent, TelemetryAnomalyResult anomalyResult) {
         Assert.notNull(rawEvent, "rawEvent must not be null");
         Assert.notNull(rawEvent.payload(), "rawEvent payload must not be null");
         Assert.notNull(anomalyResult, "anomalyResult must not be null");
@@ -58,7 +65,11 @@ public class AnomalyProcessingService {
                 Instant.now(clock)
         );
 
-        persistenceService.persist(anomalyEvent, replayed);
         return anomalyEvent;
+    }
+
+    /** Projection write used by the authoritative classification coordinator. */
+    public void persistResult(TelemetryAnomalyEvent result) {
+        persistenceService.persist(result, true);
     }
 }

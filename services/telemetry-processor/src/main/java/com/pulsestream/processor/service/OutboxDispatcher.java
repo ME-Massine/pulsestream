@@ -21,7 +21,7 @@ public class OutboxDispatcher {
             SELECT id, destination, message_key, payload, attempts, next_attempt_at <= now()
             FROM platform.delivery_outbox
             WHERE source_topic = ? AND source_partition = ? AND delivered_at IS NULL
-            ORDER BY source_offset LIMIT 1 FOR UPDATE
+            ORDER BY source_offset, message_sequence LIMIT 1 FOR UPDATE
             """;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
@@ -60,7 +60,7 @@ public class OutboxDispatcher {
                     SELECT DISTINCT ON (source_topic, source_partition)
                         source_topic, source_partition, next_attempt_at, id
                     FROM platform.delivery_outbox WHERE delivered_at IS NULL
-                    ORDER BY source_topic, source_partition, source_offset
+                    ORDER BY source_topic, source_partition, source_offset, message_sequence
                 ) heads WHERE next_attempt_at <= now() ORDER BY next_attempt_at, id LIMIT 100
                 """, (row, index) -> new Source(row.getString(1), row.getInt(2)));
         int remaining = 100;

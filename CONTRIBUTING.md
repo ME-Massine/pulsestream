@@ -133,3 +133,12 @@ re-apply the ruleset: a required check that never reports blocks every merge.
 - **Feature**: a meaningful platform capability or service-level increment
 - **Task**: a concrete implementation step, usually under a feature
 - **Bug**: a defect or incorrect behavior that needs fixing
+
+## Replay classification (#271)
+
+Authoritative event classifications and Flyway V6 now reconcile all replay
+transitions. Processed/anomaly writers emit v2 UPSERT/RETRACT values on existing
+topics; raw/DLQ contracts and published v1 fixtures remain available. Query readers
+require V6 and SELECT on `platform.event_classifications`. See [the classification
+contract](docs/architecture/replay-reclassification.md) for revisions, unresolved legacy conflicts, bounded
+replay, consumer migration and the coordinated paused/drained cutover.

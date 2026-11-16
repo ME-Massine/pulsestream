@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pulsestream.dev/contracts/anomaly/v2.schema.json",
+  "title": "PulseStream anomaly event v2",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "tenantId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "eventType": {
+      "const": "telemetry.anomaly"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "const": "telemetry-processor"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^2\\.[0-9]+$"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deviceType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metric": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "severity": {
+      "enum": [
+        "WARNING",
+        "CRITICAL"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "minItems": 1
+    },
+    "detectedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "operation": {
+      "enum": [
+        "UPSERT",
+        "RETRACT"
+      ]
+    },
+    "classification": {
+      "enum": [
+        "NORMAL",
+        "ANOMALY"
+      ]
+    },
+    "classificationRevision": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "eventId",
+    "tenantId",
+    "eventType",
+    "timestamp",
+    "source",
+    "version",
+    "operation",
+    "classification",
+    "classificationRevision"
+  ],
+  "additionalProperties": true,
+  "oneOf": [
+    {
+      "properties": {
+        "operation": {
+          "const": "UPSERT"
+        },
+        "classification": {
+          "const": "ANOMALY"
+        }
+      },
+      "required": [
+        "payload",
+        "severity",
+        "reasons",
+        "detectedAt"
+      ]
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "RETRACT"
+        },
+        "classification": {
+          "const": "NORMAL"
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "payload"
+            ]
+          },
+          {
+            "required": [
+              "severity"
+            ]
+          },
+          {
+            "required": [
+              "reasons"
+            ]
+          },
+          {
+            "required": [
+              "detectedAt"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

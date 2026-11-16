@@ -43,6 +43,17 @@ public class TelemetryProcessingService {
      * behavior.
      */
     public TelemetryEvent process(TelemetryEvent rawEvent, boolean replayed) {
+        var processedEvent = build(rawEvent);
+        if (replayed) {
+            persistenceService.persist(processedEvent, true);
+        } else {
+            persistenceService.persist(processedEvent);
+        }
+        return processedEvent;
+    }
+
+    /** Construct a result without modifying a projection. */
+    public TelemetryEvent build(TelemetryEvent rawEvent) {
         Assert.notNull(rawEvent, "rawEvent must not be null");
         Assert.notNull(rawEvent.payload(), "rawEvent payload must not be null");
 
@@ -56,11 +67,11 @@ public class TelemetryProcessingService {
                 TelemetryEventNormalizer.normalizePayload(rawEvent.payload())
         );
 
-        if (replayed) {
-            persistenceService.persist(processedEvent, true);
-        } else {
-            persistenceService.persist(processedEvent);
-        }
         return processedEvent;
+    }
+
+    /** Projection write used by the authoritative classification coordinator. */
+    public void persistResult(TelemetryEvent result) {
+        persistenceService.persist(result, true);
     }
 }

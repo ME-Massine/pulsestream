@@ -22,9 +22,11 @@ public class ProcessedTelemetryRepository {
 
     public List<ProcessedTelemetryResponse> find(String tenantId, TelemetryQuery query) {
         StringBuilder sql = new StringBuilder("""
-                SELECT id, event_id, tenant_id, event_type, timestamp, source, device_id,
+                SELECT c.revision AS classification_revision, p.id, p.event_id, p.tenant_id, event_type, timestamp, source, device_id,
                     device_type, metric, value, unit, location, ingested_at
-                FROM platform.processed_telemetry WHERE tenant_id = :tenantId
+                FROM platform.processed_telemetry p JOIN platform.event_classifications c
+                    ON c.event_id = p.event_id AND c.tenant_id = p.tenant_id
+                    AND c.classification = 'NORMAL' WHERE p.tenant_id = :tenantId
                 """);
         MapSqlParameterSource parameters = new MapSqlParameterSource("tenantId", tenantId);
         if (query.deviceId() != null) {
@@ -39,7 +41,7 @@ public class ProcessedTelemetryRepository {
             sql.append(" AND timestamp < :to");
             parameters.addValue("to", Timestamp.from(query.to()));
         }
-        sql.append(" ORDER BY timestamp DESC, id DESC LIMIT :limit OFFSET :offset");
+        sql.append(" ORDER BY timestamp DESC, p.id DESC LIMIT :limit OFFSET :offset");
         parameters.addValue("limit", query.size() + 1);
         parameters.addValue("offset", (long) query.page() * query.size());
         return jdbc.query(sql.toString(), parameters, mapper);

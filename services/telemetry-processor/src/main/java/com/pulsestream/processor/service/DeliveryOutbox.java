@@ -44,12 +44,16 @@ public class DeliveryOutbox {
     }
 
     public void enqueue(long receipt, String destination, String key, String payload) {
+        enqueue(receipt, 0, destination, key, payload);
+    }
+
+    public void enqueue(long receipt, int sequence, String destination, String key, String payload) {
         int inserted = jdbc.update("""
                 INSERT INTO platform.delivery_outbox
-                    (receipt_id, destination, message_key, payload, source_topic, source_partition, source_offset)
-                SELECT id, ?, ?, ?, source_topic, source_partition, source_offset
+                    (receipt_id, message_sequence, destination, message_key, payload, source_topic, source_partition, source_offset)
+                SELECT id, ?, ?, ?, ?, source_topic, source_partition, source_offset
                 FROM platform.processing_receipts WHERE id = ?
-                """, destination, key, payload, receipt);
+                """, sequence, destination, key, payload, receipt);
         if (inserted != 1) throw new DataIntegrityViolationException("Missing source receipt for outbox enqueue");
     }
 

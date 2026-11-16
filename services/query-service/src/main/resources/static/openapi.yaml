@@ -155,7 +155,7 @@ components:
     ProcessedTelemetry:
       type: object
       additionalProperties: false
-      required: [id, eventId, tenantId, eventType, timestamp, source, deviceId, deviceType, metric, value, unit, location, ingestedAt]
+      required: [id, eventId, tenantId, eventType, timestamp, source, deviceId, deviceType, metric, value, unit, location, ingestedAt, classificationRevision]
       properties:
         id:
           type: integer
@@ -195,6 +195,11 @@ components:
         location:
           type: string
           maxLength: 100
+        classificationRevision:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Monotonic authoritative event classification revision.
         ingestedAt:
           type: string
           format: date-time
@@ -221,7 +226,7 @@ components:
     Anomaly:
       type: object
       additionalProperties: false
-      required: [id, eventId, tenantId, timestamp, deviceId, deviceType, metric, value, unit, location, threshold, anomalyType, severity, reasons, detectedAt, ingestedAt]
+      required: [id, eventId, tenantId, timestamp, deviceId, deviceType, metric, value, unit, location, threshold, anomalyType, severity, reasons, detectedAt, ingestedAt, classificationRevision]
       properties:
         id:
           type: integer
@@ -272,6 +277,11 @@ components:
         detectedAt:
           type: string
           format: date-time
+        classificationRevision:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Monotonic authoritative event classification revision.
         ingestedAt:
           type: string
           format: date-time

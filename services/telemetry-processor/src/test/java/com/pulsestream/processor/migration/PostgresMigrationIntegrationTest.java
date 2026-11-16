@@ -55,10 +55,44 @@ class PostgresMigrationIntegrationTest {
     }
 
     @Test
+    void v5ConflictsRemainUnresolvedWithoutLosingEitherProjection() {
+        Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations")
+                .target("5").load().migrate();
+        jdbc.execute("""
+                INSERT INTO platform.processed_telemetry (event_id, tenant_id, event_type, timestamp, source, device_id, device_type, metric, value, unit, location)
+                VALUES ('conflict', 'tenant', 'telemetry.processed', now(), 'processor', 'device', 'sensor', 'temperature', 20, 'c', 'room');
+                INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, device_id, metric, value, anomaly_type, severity)
+                VALUES ('conflict', 'tenant', now(), 'device', 'temperature', 100, 'rule_violation', 'WARNING');
+                """);
+        Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations").load().migrate();
+        assertThat(jdbc.queryForObject("SELECT classification FROM platform.event_classifications", String.class)).isEqualTo("UNRESOLVED");
+        assertThat(jdbc.queryForObject("SELECT revision FROM platform.event_classifications", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.processed_telemetry", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomalies", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void v5CrossTenantConflictFailsWithoutDeletingLegacyRows() {
+        Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations")
+                .target("5").load().migrate();
+        jdbc.execute("""
+                INSERT INTO platform.processed_telemetry (event_id, tenant_id, event_type, timestamp, source, device_id, device_type, metric, value, unit, location)
+                VALUES ('conflict', 'tenant-a', 'telemetry.processed', now(), 'processor', 'device', 'sensor', 'temperature', 20, 'c', 'room');
+                INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, anomaly_type, severity)
+                VALUES ('conflict', 'tenant-b', now(), 'rule_violation', 'WARNING');
+                """);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> Flyway.configure().dataSource(jdbc.getDataSource())
+                .defaultSchema("pulsestream_migrations").load().migrate()).hasStackTraceContaining("Cross-tenant event ownership");
+        assertThat(jdbc.queryForObject("SELECT to_regclass('platform.event_classifications')", String.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.processed_telemetry", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.anomalies", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
     void emptyDatabaseStartsProcessorAndPersistsUsingTheMigratedContract() {
         application.run(context -> {
             assertThat(context).hasNotFailed();
-            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("5");
+            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("6");
             ProcessedTelemetryEntity saved = context.getBean(ProcessedTelemetryRepository.class).saveAndFlush(event("fresh"));
             assertThat(saved.getId()).isEqualTo(1L);
             assertThat(jdbc.queryForObject("SELECT value FROM platform.processed_telemetry", BigDecimal.class))
@@ -67,7 +101,7 @@ class PostgresMigrationIntegrationTest {
             assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class))
                     .isEqualByComparingTo("40.0000");
             assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_indexes WHERE schemaname = 'platform'", Integer.class))
-                    .isEqualTo(21); // Includes receipt and pending outbox coordinate indexes.
+                    .isEqualTo(22); // Includes receipt and pending outbox coordinate indexes.
         });
     }
 
@@ -173,7 +207,7 @@ class PostgresMigrationIntegrationTest {
         application.withPropertyValues("spring.flyway.locations=classpath:db/migration,classpath:db/forward")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
-                    assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("6");
+                    assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("7");
                     assertThat(context.getBean(ProcessedTelemetryRepository.class).findByEventId("before-upgrade")).isPresent();
                     assertThat(jdbc.queryForObject("SELECT quality FROM platform.processed_telemetry", String.class)).isEqualTo("unknown");
                 });
@@ -193,7 +227,7 @@ class PostgresMigrationIntegrationTest {
             var first = executor.submit(migrate);
             var second = executor.submit(migrate);
             start.countDown();
-            assertThat(first.get(30, TimeUnit.SECONDS) + second.get(30, TimeUnit.SECONDS)).isEqualTo(5);
+            assertThat(first.get(30, TimeUnit.SECONDS) + second.get(30, TimeUnit.SECONDS)).isEqualTo(6);
             application.run(context -> assertThat(context).hasNotFailed());
         } finally {
             executor.shutdownNow();
@@ -250,7 +284,7 @@ class PostgresMigrationIntegrationTest {
         insertAnomaly();
         application.run(context -> {
             assertThat(context).hasNotFailed();
-            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("5");
+            assertThat(context.getBean(Flyway.class).info().current().getVersion().toString()).isEqualTo("6");
             assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class)).isEqualByComparingTo("40");
             assertThat(jdbc.queryForObject("SELECT anomaly_type FROM platform.anomalies", String.class)).isEqualTo("threshold");
             assertThat(jdbc.queryForObject("SELECT reasons::text FROM platform.anomalies", String.class)).isEqualTo("[]");

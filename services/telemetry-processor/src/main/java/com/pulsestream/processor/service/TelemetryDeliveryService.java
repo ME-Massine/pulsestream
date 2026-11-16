@@ -2,7 +2,6 @@ package com.pulsestream.processor.service;
 
 import com.pulsestream.processor.config.TelemetryProcessorKafkaProperties;
 import com.pulsestream.processor.model.DeadLetterEvent;
-import com.pulsestream.processor.model.TelemetryEnvelope;
 import com.pulsestream.processor.model.TelemetryEvent;
 import java.time.Instant;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -17,26 +16,24 @@ import tools.jackson.databind.json.JsonMapper;
 /** The listener may return only after a complete durable outcome commits. */
 @Service
 public class TelemetryDeliveryService {
+    private final ClassificationCoordinator classifications;
     private final TransactionTemplate transaction;
     private final DeliveryOutbox outbox;
     private final TelemetryNormalizationService normalizer;
     private final AnomalyStateService state;
-    private final TelemetryProcessingService normal;
-    private final AnomalyProcessingService anomaly;
     private final TelemetryProcessorKafkaProperties kafka;
     private final ObjectMapper mapper;
 
     public TelemetryDeliveryService(PlatformTransactionManager manager, DeliveryOutbox outbox,
             TelemetryNormalizationService normalizer, AnomalyStateService state,
             TelemetryProcessingService normal, AnomalyProcessingService anomaly,
-            TelemetryProcessorKafkaProperties kafka, ObjectMapper mapper) {
+            TelemetryProcessorKafkaProperties kafka, ObjectMapper mapper, ClassificationCoordinator classifications) {
+        this.classifications = classifications;
         this.transaction = new TransactionTemplate(manager);
         this.transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.outbox = outbox;
         this.normalizer = normalizer;
         this.state = state;
-        this.normal = normal;
-        this.anomaly = anomaly;
         this.kafka = kafka;
         this.mapper = mapper;
     }
@@ -64,16 +61,7 @@ public class TelemetryDeliveryService {
         }
         var result = state.detect(normalizer.normalize(event), record);
         boolean replayed = ReplayHeaders.isReplay(record.headers());
-        TelemetryEnvelope output;
-        String destination;
-        if (result.anomalous()) {
-            output = anomaly.process(event, result, replayed);
-            destination = kafka.getTopics().getAnomalies();
-        } else {
-            output = normal.process(event, replayed);
-            destination = kafka.getTopics().getProcessed();
-        }
-        outbox.enqueue(receipt, destination, output.eventId(), mapper.writeValueAsString(output));
+        classifications.apply(receipt, event, result, replayed);
     }
 
     private void deadLetter(ConsumerRecord<String, TelemetryEvent> record, Throwable cause) {

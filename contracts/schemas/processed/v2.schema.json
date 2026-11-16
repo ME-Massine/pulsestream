@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pulsestream.dev/contracts/processed/v2.schema.json",
+  "title": "PulseStream processed event v2",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "tenantId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "eventType": {
+      "const": "telemetry.processed"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "const": "telemetry-processor"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^2\\.[0-9]+$"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "deviceType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metric": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "deviceId",
+        "metric",
+        "value"
+      ],
+      "additionalProperties": true
+    },
+    "operation": {
+      "enum": [
+        "UPSERT",
+        "RETRACT"
+      ]
+    },
+    "classification": {
+      "enum": [
+        "NORMAL",
+        "ANOMALY"
+      ]
+    },
+    "classificationRevision": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "eventId",
+    "tenantId",
+    "eventType",
+    "timestamp",
+    "source",
+    "version",
+    "operation",
+    "classification",
+    "classificationRevision"
+  ],
+  "additionalProperties": true,
+  "oneOf": [
+    {
+      "properties": {
+        "operation": {
+          "const": "UPSERT"
+        },
+        "classification": {
+          "const": "NORMAL"
+        }
+      },
+      "required": [
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "RETRACT"
+        },
+        "classification": {
+          "const": "ANOMALY"
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "payload"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

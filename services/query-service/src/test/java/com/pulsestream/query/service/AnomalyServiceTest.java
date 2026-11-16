@@ -17,7 +17,7 @@ class AnomalyServiceTest {
     @Test
     void trimsLookaheadAndReturnsImmutableBoundedPage() {
         var row = new AnomalyResponse(1, "event", "tenant", null, null, null, null, null, null, null,
-                null, "rule_violation", "WARNING", List.of("reason"), null, null);
+                null, "rule_violation", "WARNING", List.of("reason"), null, null, 1L);
         when(repository.find("tenant", query)).thenReturn(List.of(row, row));
         var page = service.query("tenant", query);
         assertThat(page.content()).containsExactly(row);

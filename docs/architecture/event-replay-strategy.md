@@ -4,14 +4,9 @@
 
 This document defines the strategy for replaying events in PulseStream. Replay is used to recover from failed event processing or to reprocess historical telemetry after a downstream fix, reusing the existing `telemetry.events.raw` topic and consumer rather than introducing new infrastructure (see [Alignment with Architecture](#alignment-with-architecture)).
 
-This document covers **strategy and scope only**. Implementation is tracked separately:
-
-- **#123** — Implement DLQ consumer for event replay
-- **#124** — Republish replayed events to `telemetry.events.raw`
-- **#126** — Add safeguards for replayed events (the replay marker, the upsert-by-`event_id`
-  persistence change, replay-metadata transport, and consumer-side dedup contract described below are
-  the *design* those safeguards will implement; this doc intentionally defines their strategy, and #126
-  owns the implementation)
+Bounded selective DLQ replay is implemented. Raw offset/time-range replay remains
+a design for future tooling. [Replay reclassification](replay-reclassification.md)
+defines current authoritative projection, revision, downstream and recovery behavior.
 
 ---
 
@@ -120,36 +115,13 @@ This also answers the "replaying the same source twice" case: because the `event
 original one, re-triggering a replay upserts the same row again rather than creating an additional row
 — the persisted state converges to the latest replay's result instead of accumulating duplicates.
 
-**Limitation: convergence holds only when classification does not cross the normal/anomaly boundary.**
-The processor persists normal events in `processed_telemetry` and anomalies in
-`anomalies` before publishing to the corresponding Kafka topic. Since #267,
-anomaly→anomaly replays atomically replace the same tenant's projection by event
-ID; ordinary duplicates keep the first row. The row ID and first ingestion time
-stay stable. See [the anomaly persistence contract](../api/anomalies.md). The
-boundary cases are not reconciled by upsert alone:
-
-- **Normal → anomaly on replay:** the new run takes the anomaly branch and never touches
-  `processed_telemetry`, so the original (now-incorrect) normal row is **left behind** — upsert never
-  fires because nothing writes the table.
-- **Anomaly → normal on replay:** the new run inserts or updates a normal row,
-  leaving the existing anomaly projection and previously emitted anomaly message
-  unreconciled. Both query APIs can therefore expose contradictory classifications.
-
-Reconciling reclassification — i.e. **retracting, tombstoning, or versioning** the stale
-`processed_telemetry` row when an event flips normal→anomaly (and defining how consumers of the
-anomalies topic supersede an earlier classification) — is **not solved by this doc and is assigned to
-#271**. Until #271 defines it, this is a documented limitation: replay converges persisted state only
-when the classification is unchanged.
-
-**Downstream idempotency is explicitly deferred, not solved here.** Raw replay uses the tenant/device
-ordering key (#269); processed and anomaly output retains event-ID keys. Neither key deduplicates messages: every replay execution
-emits a fresh message to `telemetry.events.processed` and, for anomalies,
-`telemetry.events.anomalies`. Downstream consumers can see the same `eventId`
-more than once and need a deduplication/replacement contract. The processor
-currently writes both PostgreSQL projections directly; query-service reads
-those tables and consumes no Kafka topic. Since #270, the projection and publication
-intent commit together; Kafka sends retry through the [outbox](delivery-consistency.md).
-Downstream reclassification/supersession remains #271.
+**Current classification and downstream contract (#271).** Replay now atomically
+replaces the selected projection, removes its obsolete opposite and publishes v2
+UPSERT/RETRACT intents. An identical result produces no revision or publication.
+Ordinary event-ID duplicates retain the authoritative result across classifications.
+Historical contradictions remain hidden until selected replay resolves them.
+See [reclassification](replay-reclassification.md) for equality, revisions, failure
+recovery, query visibility and consumer migration.
 
 Replay is a new reading at its appended raw offset, evaluated against the current
 tenant/device/metric/unit baseline. Raw offset redelivery recovers its retained
@@ -202,7 +174,8 @@ flowchart LR
 
 - Reuses the existing `telemetry.events.raw` topic and `telemetry-processor` consumer group documented
   in [topics.md](./topics.md) — no new topic and no new subscription. Replay metadata travels in Kafka
-  headers and prevents a failed replay from being routed to the DLQ again.
+  headers. Infrastructure failures stop raw consumption; missing-payload inputs
+  retain the durable DLQ behavior defined by #270.
 - Reuses the existing DLQ (`telemetry.events.dlq`) as the primary failure-recovery source rather than introducing a new failure-handling mechanism.
 - Follows the standard event envelope from [event-schema.md](./event-schema.md). Replay metadata rides
   alongside it in Kafka headers, so the envelope remains **unchanged**.
@@ -213,8 +186,6 @@ flowchart LR
 
 ## Out of Scope
 
-- Implementation of the replay process/service (#123, #124).
-- The consumer-side deduplication contract for `telemetry.events.processed` / `telemetry.events.anomalies` (#126).
-- Reconciling reclassification across the normal/anomaly boundary — retracting/tombstoning/versioning a stale `processed_telemetry` row when a replay flips an event's classification (#126).
-- Automatic retry policies from the DLQ (and, by extension, changing the current "DLQ on first failure" behavior).
+- Bulk raw-topic replay tooling and automatic retries from the DLQ.
+- Long-term classification audit retention and historical publication backfill.
 - Replay tooling UI.

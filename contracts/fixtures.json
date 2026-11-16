@@ -38,5 +38,21 @@
   {
     "fixture": "fixtures/dead-letter-v1-invalid-event.json",
     "schema": "schemas/dead-letter/v1.schema.json"
+  },
+  {
+    "fixture": "fixtures/processed-v2-upsert.json",
+    "schema": "schemas/processed/v2.schema.json"
+  },
+  {
+    "fixture": "fixtures/processed-v2-retract.json",
+    "schema": "schemas/processed/v2.schema.json"
+  },
+  {
+    "fixture": "fixtures/anomaly-v2-upsert.json",
+    "schema": "schemas/anomaly/v2.schema.json"
+  },
+  {
+    "fixture": "fixtures/anomaly-v2-retract.json",
+    "schema": "schemas/anomaly/v2.schema.json"
   }
 ]

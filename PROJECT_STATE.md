@@ -90,7 +90,7 @@ The configuration is managed via [infrastructure/docker/docker-compose.yml](infr
     metrics, device/severity/metric/time filters and bounded deterministic pages.
     See [the anomaly API and recovery contract](docs/api/anomalies.md). Authenticated
     tenant integration and live validation remain pending; cross-classification
-    replay reconciliation remains #271.
+    replay reconciliation is implemented in #271, with live rollout pending.
 *   Recoverable PostgreSQL/Kafka delivery (#270): source receipts, detector state,
     projections and publication intents commit together; a partition-serialized
     dispatcher retries durable processed/anomaly/DLQ messages. Delivery remains
@@ -171,7 +171,7 @@ The Phase 6 live-deployment evidence required to begin Phase 7 is not yet record
 *   Authenticated tenant principal integration and live rollout for the processed
     telemetry (#266) and anomaly (#267) APIs remain pending. Both query paths are
     implemented and fail closed without an authenticated tenant principal.
-*   Cross-classification replay reconciliation (#271) remains pending.
+*   Cross-classification replay reconciliation (#271) is implemented; coordinated v2 rollout remains pending.
     PostgreSQL/Kafka outbox delivery (#270) is implemented; live rollout remains pending.
 *   Coordinated tenant/device producer-key cutover and live validation for durable
     anomaly detection (#269) remain pending; implementation and local integration
@@ -212,3 +212,7 @@ services/
 # Long-Term Vision
 
 PulseStream is designed to serve as a reference implementation for modern distributed systems. The project demonstrates best practices in event-driven microservices, scalable streaming pipelines, cloud-native deployment patterns, and production-grade observability. It provides a practical framework for building resilient and scalable event-processing systems.
+
+Replay classification (#271) now uses authoritative PostgreSQL state and v2
+retractions/replacements. Unresolved legacy conflicts require selective replay.
+See [the operating contract](docs/architecture/replay-reclassification.md).

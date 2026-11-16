@@ -44,7 +44,17 @@ class PostgresQueryIntegrationTest {
         var jdbc = new JdbcTemplate(owner);
         jdbc.execute("CREATE ROLE query_reader LOGIN PASSWORD 'query-test-only'");
         jdbc.execute("GRANT USAGE ON SCHEMA platform TO query_reader");
-        jdbc.execute("GRANT SELECT ON platform.processed_telemetry, platform.anomalies TO query_reader");
+        jdbc.execute("GRANT SELECT ON platform.processed_telemetry, platform.anomalies, platform.event_classifications TO query_reader");
+        jdbc.execute("""
+                CREATE FUNCTION platform.test_authority() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+                    INSERT INTO platform.event_classifications (event_id, tenant_id, classification, revision, result, first_processed_at)
+                    VALUES (NEW.event_id, NEW.tenant_id, CASE WHEN TG_TABLE_NAME = 'anomalies' THEN 'ANOMALY' ELSE 'NORMAL' END, 1, '{}'::jsonb, NEW.ingested_at)
+                    ON CONFLICT (event_id) DO UPDATE SET classification = EXCLUDED.classification;
+                    RETURN NEW;
+                END $$;
+                CREATE TRIGGER seed_authority AFTER INSERT ON platform.processed_telemetry FOR EACH ROW EXECUTE FUNCTION platform.test_authority();
+                CREATE TRIGGER seed_authority AFTER INSERT ON platform.anomalies FOR EACH ROW EXECUTE FUNCTION platform.test_authority();
+                """);
         properties.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         properties.add("spring.datasource.username", () -> "query_reader");
         properties.add("spring.datasource.password", () -> "query-test-only");
@@ -61,15 +71,26 @@ class PostgresQueryIntegrationTest {
     @BeforeEach
     void seed() {
         owner = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
-        owner.execute("TRUNCATE platform.processed_telemetry, platform.anomalies RESTART IDENTITY");
+        owner.execute("TRUNCATE platform.processed_telemetry, platform.anomalies, platform.event_classifications RESTART IDENTITY");
         insert("a-old", "tenant-a", "sensor-1", TIME.minusSeconds(1));
         insert("a-first", "tenant-a", "sensor-1", TIME);
         insert("a-second", "tenant-a", "sensor-2", TIME);
         insert("b-secret", "tenant-b", "sensor-1", TIME.plusSeconds(1));
-        insertAnomaly("a-old", "tenant-a", "sensor-1", "WARNING", "temperature", TIME.minusSeconds(1));
-        insertAnomaly("a-first", "tenant-a", "sensor-1", "CRITICAL", "temperature", TIME);
-        insertAnomaly("a-second", "tenant-a", "sensor-2", "WARNING", "humidity", TIME);
-        insertAnomaly("b-secret", "tenant-b", "sensor-1", "CRITICAL", "temperature", TIME.plusSeconds(1));
+        insertAnomaly("an-a-old", "tenant-a", "sensor-1", "WARNING", "temperature", TIME.minusSeconds(1));
+        insertAnomaly("an-a-first", "tenant-a", "sensor-1", "CRITICAL", "temperature", TIME);
+        insertAnomaly("an-a-second", "tenant-a", "sensor-2", "WARNING", "humidity", TIME);
+        insertAnomaly("an-b-secret", "tenant-b", "sensor-1", "CRITICAL", "temperature", TIME.plusSeconds(1));
+    }
+
+    @Test
+    void authoritativeClassificationHidesUnresolvedRowsAndExposesRevision() throws Exception {
+        owner.update("UPDATE platform.event_classifications SET classification = 'UNRESOLVED', revision = 0, result = NULL WHERE event_id IN ('a-first', 'an-a-first')");
+        mvc.perform(get("/api/v1/telemetry").principal(() -> "tenant-a"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[0].classificationRevision").value(1));
+        mvc.perform(get("/api/v1/anomalies").principal(() -> "tenant-a"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[0].classificationRevision").value(1));
     }
 
     @Test
@@ -183,7 +204,7 @@ class PostgresQueryIntegrationTest {
         var page = anomalies.query("tenant-a", query);
         assertThat(page.content()).hasSize(1);
         var row = page.content().get(0);
-        assertThat(row.eventId()).isEqualTo("a-first");
+        assertThat(row.eventId()).isEqualTo("an-a-first");
         assertThat(row.tenantId()).isEqualTo("tenant-a");
         assertThat(row.value()).isEqualByComparingTo("95.1234");
         assertThat(row.threshold()).isNull();
@@ -202,9 +223,9 @@ class PostgresQueryIntegrationTest {
         var first = anomalies.query("tenant-a", anomalyQuery(0, 1));
         var second = anomalies.query("tenant-a", anomalyQuery(1, 1));
         var last = anomalies.query("tenant-a", anomalyQuery(2, 1));
-        assertThat(first.content()).extracting("eventId").containsExactly("a-second");
-        assertThat(second.content()).extracting("eventId").containsExactly("a-first");
-        assertThat(last.content()).extracting("eventId").containsExactly("a-old");
+        assertThat(first.content()).extracting("eventId").containsExactly("an-a-second");
+        assertThat(second.content()).extracting("eventId").containsExactly("an-a-first");
+        assertThat(last.content()).extracting("eventId").containsExactly("an-a-old");
         assertThat(first.hasNext()).isTrue();
         assertThat(last.hasNext()).isFalse();
         assertThat(anomalies.query("tenant-a", anomalyQuery(10000, 100)).content()).isEmpty();
@@ -237,7 +258,7 @@ class PostgresQueryIntegrationTest {
     void anomalyApiEnforcesIdentityAndSerializesLegacyAndMissingFields() throws Exception {
         mvc.perform(get("/api/v1/anomalies").principal(() -> "tenant-a").param("severity", "CRITICAL").param("metric", "temperature"))
                 .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
-                .andExpect(jsonPath("$.content.length()").value(1)).andExpect(jsonPath("$.content[0].eventId").value("a-first"))
+                .andExpect(jsonPath("$.content.length()").value(1)).andExpect(jsonPath("$.content[0].eventId").value("an-a-first"))
                 .andExpect(jsonPath("$.content[0].reasons[0]").value("threshold"));
         mvc.perform(get("/api/v1/anomalies").principal(() -> "tenant-a").param("tenantId", "tenant-b"))
                 .andExpect(status().isBadRequest());

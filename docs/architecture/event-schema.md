@@ -1,5 +1,12 @@
 # Event Schema Specification
 
+Current processed/anomaly writers emit v2 operation envelopes. UPSERT carries the
+result; RETRACT omits payload/detection metadata and removes the obsolete topic
+projection. Both include classificationRevision and the resulting classification.
+The examples describing v1 below remain historical compatibility contracts. See
+[reclassification](replay-reclassification.md) and the authoritative v2 schemas in
+contracts/schemas for current producer behavior. Raw and DLQ remain v1.
+
 ## Overview
 
 PulseStream transports JSON events through Kafka. The authoritative contracts are
@@ -249,3 +256,12 @@ By enforcing a consistent event structure, the platform ensures:
 *   reliable event processing
 *   safe schema evolution
 *   simplified debugging and monitoring
+
+## Replay classification (#271)
+
+Authoritative event classifications and Flyway V6 now reconcile all replay
+transitions. Processed/anomaly writers emit v2 UPSERT/RETRACT values on existing
+topics; raw/DLQ contracts and published v1 fixtures remain available. Query readers
+require V6 and SELECT on `platform.event_classifications`. See [the classification
+contract](replay-reclassification.md) for revisions, unresolved legacy conflicts, bounded
+replay, consumer migration and the coordinated paused/drained cutover.
