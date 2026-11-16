@@ -352,6 +352,26 @@ class DeliveryIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class)).isNull();
     }
 
+    @Test void unchangedReplayRestoresALostProjectionWithoutPublishing() {
+        delivery.consume(record(0, "restored", "20"));
+        var ingested = jdbc.queryForObject("SELECT ingested_at FROM platform.processed_telemetry WHERE event_id = 'restored'", java.sql.Timestamp.class);
+        jdbc.execute("DELETE FROM platform.processed_telemetry WHERE event_id = 'restored'");
+        int published = count("delivery_outbox");
+        replay(1, "restored", "20");
+        assertRevision("restored", 1, "NORMAL");
+        assertThat(count("processed_telemetry")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT ingested_at FROM platform.processed_telemetry WHERE event_id = 'restored'", java.sql.Timestamp.class))
+                .isEqualTo(ingested);
+        assertThat(count("delivery_outbox")).isEqualTo(published);
+    }
+
+    @Test void ordinaryAnomalyRedeliveryCountsAsDuplicate() {
+        delivery.consume(record(0, "dup", "100"));
+        delivery.consume(record(1, "dup", "100"));
+        assertThat(metrics.counter("pulsestream.anomaly.persistence", "outcome", "duplicate").count()).isEqualTo(1.0);
+        assertThat(count("delivery_outbox")).isEqualTo(1);
+    }
+
     @Test void reclassificationKeepsTheFirstIngestionTime() {
         delivery.consume(record(0, "ingested", "20"));
         var first = jdbc.queryForObject("SELECT first_processed_at FROM platform.event_classifications WHERE event_id = 'ingested'", java.sql.Timestamp.class);

@@ -24,7 +24,9 @@ classification increments revision rather than reusing its previous revision.
 Equality uses JSONB semantic content: normalized output payload, event timestamp
 as epoch seconds at microsecond precision, classification, and anomaly
 severity/reasons. The anomaly type and threshold are fixed by the projection write
-and are neither compared nor rewritten by an unchanged replay.
+and are neither compared nor rewritten by an unchanged replay. An unchanged replay
+still recreates a selected projection row that is missing, without a new revision
+or publication.
 Decimal scale and object property order do not change equality. Generated
 processing/detection times, replay headers and wire versions are excluded.
 Reason array order is significant. Numeric and timestamp precision lost in old

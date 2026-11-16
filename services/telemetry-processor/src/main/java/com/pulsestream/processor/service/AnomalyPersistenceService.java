@@ -46,6 +46,11 @@ public class AnomalyPersistenceService {
         }
     }
 
+    /** Counts an ordinary redelivery that the classification coordinator ignored. */
+    public void recordDuplicate() {
+        afterCommit(duplicate);
+    }
+
     private void afterCommit(Counter counter) {
         if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(

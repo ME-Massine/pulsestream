@@ -68,6 +68,10 @@ public class AnomalyProcessingService {
         return anomalyEvent;
     }
 
+    void recordDuplicate() {
+        persistenceService.recordDuplicate();
+    }
+
     /**
      * Projection upsert reserved for the classification coordinator. It overwrites an existing row, so
      * the caller must hold the event's classification row lock and have decided the result is current.
