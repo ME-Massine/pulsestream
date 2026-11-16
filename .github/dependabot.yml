@@ -39,6 +39,11 @@ updates:
       - /services/query-service
     schedule:
       interval: weekly
+    # ADR 0006: keep the Maven builder on Java 25 and aligned with the wrapper.
+    # Upgrade this toolchain together; Docker version ignores cannot filter
+    # the Java suffix independently of the Maven version.
+    ignore:
+      - dependency-name: maven
 
   - package-ecosystem: docker-compose
     directory: /infrastructure/docker

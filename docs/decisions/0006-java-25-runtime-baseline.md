@@ -49,3 +49,16 @@ Non-LTS Java releases are not adopted for builds or runtimes.
 
 Dependabot keeps proposing newer non-LTS builder images. Those updates are
 declined in favour of the next LTS release, delivered as one coordinated change.
+
+The Docker configuration in `.github/dependabot.yml` ignores the `maven` image
+in all three service directories. Builder image updates, including Maven fixes
+on Java 25, require a coordinated maintenance change with the Maven wrappers.
+Dependabot's Docker version constraints compare the numeric release rather than
+the Java suffix, so they cannot selectively exclude Java 26 tags while retaining
+Java 25 tags for the same Maven release. Other Docker images and Maven library
+updates remain enabled. Review the builder image and wrapper together during
+dependency maintenance and remove or revise the ignore rule with the next
+coordinated toolchain upgrade.
+
+References: [Dependabot ignore options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#ignore)
+and [Docker requirement comparison](https://github.com/dependabot/dependabot-core/blob/main/docker/lib/dependabot/docker/requirement.rb).

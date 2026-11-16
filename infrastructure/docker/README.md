@@ -181,9 +181,9 @@ docker compose up -d
 
 #### Kafka 8.4 upgrade
 
-Both `kafka` and `kafka-init` use `confluentinc/cp-kafka:8.4.0`. This is an
-in-place upgrade from 8.3.2 for the existing KRaft configuration; it does not
-repeat the earlier ZooKeeper migration. Pause local producers and consumers,
+Both `kafka` and `kafka-init` use `confluentinc/cp-kafka:8.4.1`. This is an
+in-place upgrade from 8.4.0 (or 8.3.2) for the existing KRaft configuration; it
+does not repeat the earlier ZooKeeper migration. Pause local producers and consumers,
 stop the broker and archive `pulsestream-local_kafka_kraft_data` before changing
 images. Keep the cluster ID and volume intact. Start the new broker, rerun
 `kafka-init`, verify all four topics and test a produce/consume cycle before
@@ -340,7 +340,7 @@ Dashboard JSON is version-controlled under [`observability/grafana/dashboards`](
 
 #### Prometheus 3 and Grafana 13 upgrade
 
-The stack runs `prom/prometheus:v3.15.1` and `grafana/grafana:13.3.0`. Kubernetes
+The stack runs `prom/prometheus:v3.16.0` and `grafana/grafana:13.3.1`. Kubernetes
 keeps its separately reviewed, digest-pinned images. Both local services reuse
 their existing volumes:
 
