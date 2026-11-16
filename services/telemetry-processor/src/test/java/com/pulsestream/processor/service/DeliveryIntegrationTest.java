@@ -277,6 +277,65 @@ class DeliveryIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT payload FROM platform.delivery_outbox", String.class)).contains("UPSERT");
     }
 
+    @Test void reclassificationRetractsEvenWhenTheObsoleteProjectionRowWasLost() {
+        delivery.consume(record(0, "lost", "100"));
+        assertRevision("lost", 1, "ANOMALY");
+        jdbc.execute("DELETE FROM platform.anomalies WHERE event_id = 'lost'");
+        jdbc.execute("DELETE FROM platform.delivery_outbox");
+        replay(1, "lost", "20");
+        assertRevision("lost", 2, "NORMAL");
+        var rows = jdbc.queryForList("SELECT destination, payload FROM platform.delivery_outbox ORDER BY id");
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).get("destination")).isEqualTo("telemetry.events.anomalies");
+        assertThat(rows.get(0).get("payload").toString()).contains("RETRACT");
+    }
+
+    @Test void replayOfMigratedProjectionsKeepsTheRevision() throws Exception {
+        long base = 100;
+        for (String[] legacy : new String[][] {{"20", null}, {"100", "anomaly"}}) {
+            base += 10;
+            String id = "migrated-" + (legacy[1] == null ? "normal" : "anomaly");
+            jdbc.execute("DELETE FROM platform.anomaly_reading_state");
+            delivery.consume(record(base, id, legacy[0]));
+            jdbc.execute("DELETE FROM platform.event_classifications");
+            jdbc.execute("DELETE FROM platform.delivery_outbox");
+            backfill();
+            assertRevision(id, 1, legacy[1] == null ? "NORMAL" : "ANOMALY");
+            String before = jdbc.queryForObject("SELECT result::text FROM platform.event_classifications WHERE event_id = ?", String.class, id);
+            replay(base + 1, id, legacy[0]);
+            String after = jdbc.queryForObject("SELECT result::text FROM platform.event_classifications WHERE event_id = ?", String.class, id);
+            assertThat(after).as("migrated vs replayed result").isEqualTo(before);
+            assertRevision(id, 1, legacy[1] == null ? "NORMAL" : "ANOMALY");
+            assertThat(count("delivery_outbox")).isZero();
+        }
+    }
+
+    @Test void replayOfMigratedProjectionWithMissingOptionalFieldsKeepsTheRevision() throws Exception {
+        var payload = new TelemetryPayload("device", null, "temperature", new BigDecimal("100"), null, null);
+        var event = new TelemetryEvent("sparse", "tenant", "telemetry.reading", Instant.parse("2026-01-01T00:00:00Z"), "test", "1.0", payload);
+        delivery.consume(record(0, event, new RecordHeaders()));
+        jdbc.execute("DELETE FROM platform.event_classifications");
+        jdbc.execute("DELETE FROM platform.delivery_outbox");
+        backfill();
+        assertRevision("sparse", 1, "ANOMALY");
+        var headers = new RecordHeaders().add(ReplayHeaders.REPLAY, "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        jdbc.execute("DELETE FROM platform.anomaly_reading_state");
+        delivery.consume(record(1, event, headers));
+        assertRevision("sparse", 1, "ANOMALY");
+        assertThat(count("delivery_outbox")).isZero();
+    }
+
+    /** Runs the migration's own backfill statement against the current projections. */
+    private void backfill() throws Exception {
+        String sql;
+        try (var in = getClass().getResourceAsStream("/db/migration/V6__authoritative_classifications.sql")) {
+            sql = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        int start = sql.indexOf("INSERT INTO platform.event_classifications");
+        int end = sql.indexOf("GROUP BY event_id;", start) + "GROUP BY event_id".length();
+        jdbc.execute(sql.substring(start, end));
+    }
+
     @Test void reclassificationKeepsTheFirstIngestionTime() {
         delivery.consume(record(0, "ingested", "20"));
         var first = jdbc.queryForObject("SELECT first_processed_at FROM platform.event_classifications WHERE event_id = 'ingested'", java.sql.Timestamp.class);

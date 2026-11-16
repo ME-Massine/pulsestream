@@ -92,9 +92,13 @@ public class ClassificationCoordinator {
         if (Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT result = CAST(? AS jsonb) FROM platform.event_classifications WHERE event_id = ?",
                 Boolean.class, result, id))) return;
+        long previousRevision = revision;
         revision++;
-        // Only a projection that existed may be retracted downstream; deleting nothing means nothing was published.
-        boolean retract = jdbc.update(anomalous ? DELETE_NORMAL : DELETE_ANOMALY, id, tenant) > 0;
+        // Retract what was published for the opposite class. That is known from a deleted projection row or,
+        // if the row was lost, from the previous resolved classification. An unresolved event publishes nothing.
+        String previous = current.get("classification").toString();
+        boolean deleted = jdbc.update(anomalous ? DELETE_NORMAL : DELETE_ANOMALY, id, tenant) > 0;
+        boolean retract = deleted || (previousRevision > 0 && !previous.equals(classification));
         Instant ingestedAt = ((Timestamp) current.get("first_processed_at")).toInstant();
         if (output instanceof TelemetryAnomalyEvent a) anomaly.persistAuthoritative(a, ingestedAt);
         else normal.persistAuthoritative((TelemetryEvent) output, ingestedAt);
