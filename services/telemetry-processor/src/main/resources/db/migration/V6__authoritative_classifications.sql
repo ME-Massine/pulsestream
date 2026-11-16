@@ -34,12 +34,13 @@ FROM (
         jsonb_build_object('classification', 'ANOMALY', 'eventTime', extract(epoch FROM timestamp),
             'payload', jsonb_build_object('deviceId', device_id, 'deviceType', device_type,
                 'metric', metric, 'value', value, 'unit', unit, 'location', location),
-            'severity', severity, 'reasons', reasons, 'anomalyType', anomaly_type, 'threshold', threshold)
+            'severity', severity, 'reasons', reasons)
     FROM platform.anomalies
 ) projections GROUP BY event_id;
 ALTER TABLE platform.delivery_outbox DROP CONSTRAINT delivery_outbox_receipt_id_key;
 ALTER TABLE platform.delivery_outbox ADD COLUMN message_sequence INTEGER NOT NULL DEFAULT 0 CHECK (message_sequence >= 0);
 ALTER TABLE platform.delivery_outbox ADD CONSTRAINT delivery_outbox_receipt_sequence_key UNIQUE (receipt_id, message_sequence);
 DROP INDEX platform.delivery_outbox_pending_source_idx;
+CREATE INDEX delivery_outbox_pending_key_idx ON platform.delivery_outbox (message_key, id) WHERE delivered_at IS NULL;
 CREATE INDEX delivery_outbox_pending_source_idx ON platform.delivery_outbox
     (source_topic, source_partition, source_offset, message_sequence) WHERE delivered_at IS NULL;

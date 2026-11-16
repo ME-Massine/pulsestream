@@ -99,9 +99,7 @@ class DeliveryIntegrationTest {
         var normalizer = new TelemetryNormalizationService();
         var state = new AnomalyStateService(jdbc, manager, AnomalyDetectionProperties.defaults(), new TelemetryAnomalyDetectionService());
         var named = new NamedParameterJdbcTemplate(jdbc);
-        return new TelemetryDeliveryService(manager, writer, normalizer, state,
-                new TelemetryProcessingService(new ProcessedTelemetryPersistenceService(new ProcessedTelemetryWriteRepository(named))),
-                new AnomalyProcessingService(new AnomalyPersistenceService(new AnomalyRepository(named, mapper), metrics)), properties, json,
+        return new TelemetryDeliveryService(manager, writer, normalizer, state, properties, json,
                 new ClassificationCoordinator(jdbc,
                     new TelemetryProcessingService(new ProcessedTelemetryPersistenceService(new ProcessedTelemetryWriteRepository(named))),
                     new AnomalyProcessingService(new AnomalyPersistenceService(new AnomalyRepository(named, mapper), metrics)), writer, properties, json));
@@ -203,7 +201,7 @@ class DeliveryIntegrationTest {
         assertThat(read("telemetry.events.anomalies", "partial-send", 1).getFirst()).contains("UPSERT");
     }
 
-    @Test void unresolvedLegacyConflictRequiresExplicitReplay() {
+    @Test void unresolvedLegacyConflictResolvesFromTheFirstRecord() {
         delivery.consume(record(0, "unresolved", "20"));
         jdbc.execute("""
                 INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, device_id, metric, value, anomaly_type, severity)
@@ -211,8 +209,6 @@ class DeliveryIntegrationTest {
                 UPDATE platform.event_classifications SET classification = 'UNRESOLVED', revision = 0, result = NULL WHERE event_id = 'unresolved';
                 """);
         delivery.consume(record(1, "unresolved", "20"));
-        assertRevision("unresolved", 0, "UNRESOLVED");
-        replay(2, "unresolved", "20");
         assertRevision("unresolved", 1, "NORMAL");
         assertThat(count("anomalies")).isZero();
         assertThat(count("delivery_outbox")).isEqualTo(3);
@@ -240,6 +236,62 @@ class DeliveryIntegrationTest {
         assertRevision("first-wins", 1, "NORMAL");
         assertThat(count("anomalies")).isZero();
         assertThat(count("delivery_outbox")).isEqualTo(1);
+    }
+
+    @Test void sameEventRevisionsAreDeliveredInCommitOrderAcrossPartitions() {
+        delivery.consume(record(0, "ordered", "20"));
+        var headers = new RecordHeaders().add(ReplayHeaders.REPLAY, "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var first = record(1, "ordered", "100");
+        // The replay arrives on another source partition, so only the event key orders it after revision 1.
+        delivery.consume(new ConsumerRecord<String, TelemetryEvent>(raw, 1, 0, 1002, TimestampType.CREATE_TIME, 0, 0,
+                first.key(), first.value(), headers, Optional.empty()));
+        assertRevision("ordered", 2, "ANOMALY");
+        jdbc.update("""
+                UPDATE platform.delivery_outbox SET next_attempt_at = now() + interval '1 hour'
+                WHERE source_partition = 0
+                """);
+        var successful = sender(CompletableFuture.completedFuture(null));
+        dispatcher(successful).dispatch();
+        verify(successful, never()).send(anyString(), anyString(), anyString());
+        assertThat(pending()).isEqualTo(3);
+
+        due();
+        var dispatcher = dispatcher(successful);
+        dispatcher.dispatch(); // Delivers the first partition; the second waits for it within the same poll.
+        dispatcher.dispatch();
+        var order = inOrder(successful);
+        order.verify(successful).send(eq("telemetry.events.processed"), eq("ordered"), contains("\"classificationRevision\":1"));
+        order.verify(successful).send(eq("telemetry.events.processed"), eq("ordered"), contains("RETRACT"));
+        order.verify(successful).send(eq("telemetry.events.anomalies"), eq("ordered"), contains("\"classificationRevision\":2"));
+        assertThat(pending()).isZero();
+    }
+
+    @Test void reclassificationWithoutAnObsoleteProjectionPublishesNoRetraction() {
+        delivery.consume(record(0, "single", "20"));
+        // A legacy event with a single projection and no resolved classification.
+        jdbc.execute("UPDATE platform.event_classifications SET classification = 'UNRESOLVED', revision = 0, result = NULL WHERE event_id = 'single'");
+        jdbc.execute("DELETE FROM platform.delivery_outbox");
+        replay(1, "single", "20");
+        assertRevision("single", 1, "NORMAL");
+        assertThat(count("delivery_outbox")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT payload FROM platform.delivery_outbox", String.class)).contains("UPSERT");
+    }
+
+    @Test void reclassificationKeepsTheFirstIngestionTime() {
+        delivery.consume(record(0, "ingested", "20"));
+        var first = jdbc.queryForObject("SELECT first_processed_at FROM platform.event_classifications WHERE event_id = 'ingested'", java.sql.Timestamp.class);
+        replay(1, "ingested", "100");
+        assertThat(jdbc.queryForObject("SELECT ingested_at FROM platform.anomalies WHERE event_id = 'ingested'", java.sql.Timestamp.class))
+                .isEqualTo(first);
+    }
+
+    @Test void replayOfSubMicrosecondEventTimeIsUnchanged() {
+        var payload = new TelemetryPayload("device", "sensor", "temperature", new BigDecimal("20"), "c", "room");
+        var event = new TelemetryEvent("nanos", "tenant", "telemetry.reading", Instant.parse("2026-01-01T00:00:00.123456789Z"), "test", "1.0", payload);
+        delivery.consume(record(0, event, new RecordHeaders()));
+        var headers = new RecordHeaders().add(ReplayHeaders.REPLAY, "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        delivery.consume(record(1, event, headers));
+        assertRevision("nanos", 1, "NORMAL");
     }
 
     private void replay(long offset, String id, String value) {

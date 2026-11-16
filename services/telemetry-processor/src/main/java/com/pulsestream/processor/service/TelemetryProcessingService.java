@@ -70,8 +70,11 @@ public class TelemetryProcessingService {
         return processedEvent;
     }
 
-    /** Projection write used by the authoritative classification coordinator. */
-    public void persistResult(TelemetryEvent result) {
-        persistenceService.persist(result, true);
+    /**
+     * Projection upsert reserved for the classification coordinator. It overwrites an existing row, so
+     * the caller must hold the event's classification row lock and have decided the result is current.
+     */
+    void persistAuthoritative(TelemetryEvent result, Instant ingestedAt) {
+        persistenceService.persist(result, true, ingestedAt);
     }
 }

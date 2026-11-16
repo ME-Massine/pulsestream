@@ -216,7 +216,6 @@ class AnomalyStateIntegrationTest {
         when(outbox.begin(any())).thenReturn(1L);
         var listener = new TelemetryEventConsumer(new TelemetryDeliveryService(
                 new JdbcTransactionManager(jdbc.getDataSource()), outbox, normalizer, broken,
-                mock(TelemetryProcessingService.class), mock(AnomalyProcessingService.class),
                 kafkaProperties("failure"), tools.jackson.databind.json.JsonMapper.builder().build(), mock(ClassificationCoordinator.class)));
         var attempted = new CountDownLatch(1);
         container.getContainerProperties().setMessageListener((MessageListener<String, TelemetryEvent>) record -> {

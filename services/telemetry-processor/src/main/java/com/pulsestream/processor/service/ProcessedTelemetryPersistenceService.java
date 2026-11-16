@@ -43,13 +43,18 @@ public class ProcessedTelemetryPersistenceService {
      * {@code event_id}; ordinary at-least-once redelivery still treats that collision as a no-op.
      */
     public void persist(TelemetryEvent processedEvent, boolean replayed) {
+        persist(processedEvent, replayed, Instant.now(clock));
+    }
+
+    /** Persists with a caller-supplied ingestion time, so a reclassification keeps the original one. */
+    public void persist(TelemetryEvent processedEvent, boolean replayed, Instant ingestedAt) {
         Assert.notNull(processedEvent, "processedEvent must not be null");
         Assert.notNull(processedEvent.payload(), "processedEvent payload must not be null");
 
-        repository.persist(toEntity(processedEvent), replayed);
+        repository.persist(toEntity(processedEvent, ingestedAt), replayed);
     }
 
-    private ProcessedTelemetryEntity toEntity(TelemetryEvent processedEvent) {
+    private ProcessedTelemetryEntity toEntity(TelemetryEvent processedEvent, Instant ingestedAt) {
         TelemetryPayload payload = processedEvent.payload();
         return new ProcessedTelemetryEntity(
                 processedEvent.eventId(),
@@ -63,7 +68,7 @@ public class ProcessedTelemetryPersistenceService {
                 payload.value(),
                 payload.unit(),
                 payload.location(),
-                Instant.now(clock)
+                ingestedAt
         );
     }
 }

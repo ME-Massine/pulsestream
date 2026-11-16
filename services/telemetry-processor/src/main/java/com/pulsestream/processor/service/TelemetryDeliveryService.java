@@ -26,7 +26,6 @@ public class TelemetryDeliveryService {
 
     public TelemetryDeliveryService(PlatformTransactionManager manager, DeliveryOutbox outbox,
             TelemetryNormalizationService normalizer, AnomalyStateService state,
-            TelemetryProcessingService normal, AnomalyProcessingService anomaly,
             TelemetryProcessorKafkaProperties kafka, ObjectMapper mapper, ClassificationCoordinator classifications) {
         this.classifications = classifications;
         this.transaction = new TransactionTemplate(manager);

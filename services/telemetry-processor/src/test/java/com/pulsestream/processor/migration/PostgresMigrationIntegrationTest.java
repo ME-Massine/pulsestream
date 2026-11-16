@@ -72,6 +72,20 @@ class PostgresMigrationIntegrationTest {
     }
 
     @Test
+    void backfilledAnomalyResultOmitsLegacyTypeAndThreshold() {
+        Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations")
+                .target("5").load().migrate();
+        jdbc.execute("""
+                INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, device_id, metric, value, threshold, anomaly_type, severity)
+                VALUES ('legacy', 'tenant', now(), 'device', 'temperature', 45.5, 40, 'threshold', 'high');
+                """);
+        Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations").load().migrate();
+        assertThat(jdbc.queryForObject("SELECT jsonb_exists(result, 'anomalyType') OR jsonb_exists(result, 'threshold') FROM platform.event_classifications", Boolean.class))
+                .isFalse();
+        assertThat(jdbc.queryForObject("SELECT anomaly_type FROM platform.anomalies", String.class)).isEqualTo("threshold");
+    }
+
+    @Test
     void v5CrossTenantConflictFailsWithoutDeletingLegacyRows() {
         Flyway.configure().dataSource(jdbc.getDataSource()).defaultSchema("pulsestream_migrations")
                 .target("5").load().migrate();
@@ -101,7 +115,7 @@ class PostgresMigrationIntegrationTest {
             assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class))
                     .isEqualByComparingTo("40.0000");
             assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_indexes WHERE schemaname = 'platform'", Integer.class))
-                    .isEqualTo(22); // Includes receipt and pending outbox coordinate indexes.
+                    .isEqualTo(23); // Includes receipt and pending outbox coordinate and event-key indexes.
         });
     }
 
