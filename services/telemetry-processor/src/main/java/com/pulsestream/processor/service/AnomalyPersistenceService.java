@@ -24,10 +24,14 @@ public class AnomalyPersistenceService {
     }
 
     public void persist(TelemetryAnomalyEvent event, boolean replayed) {
-        persist(event, replayed, Instant.now());
+        persist(event, replayed, Instant.now(), false);
     }
 
     public void persist(TelemetryAnomalyEvent event, boolean replayed, Instant ingestedAt) {
+        persist(event, replayed, ingestedAt, true);
+    }
+
+    private void persist(TelemetryAnomalyEvent event, boolean replayed, Instant ingestedAt, boolean authoritative) {
         try {
             Assert.notNull(event, "anomaly event must not be null");
             Assert.hasText(event.eventId(), "eventId is required for anomaly persistence");
@@ -35,7 +39,8 @@ public class AnomalyPersistenceService {
             Assert.notNull(event.payload(), "anomaly payload must not be null");
             var entity = new AnomalyEntity(event.eventId(), event.tenantId(), event.timestamp(), event.payload(),
                     event.severity(), event.reasons(), event.detectedAt(), ingestedAt);
-            if (repository.persist(entity, replayed)) {
+            boolean changed = authoritative ? repository.persist(entity, replayed, true) : repository.persist(entity, replayed);
+            if (changed) {
                 afterCommit(success);
             } else {
                 afterCommit(duplicate);

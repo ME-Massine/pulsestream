@@ -31,10 +31,14 @@ Decimal scale and object property order do not change equality. Generated
 processing/detection times, replay headers and wire versions are excluded.
 Reason array order is significant. Numeric and timestamp precision lost in old
 PostgreSQL rows cannot be recovered by migration; a higher-precision replay may
-establish a corrected revision. Missing event timestamps reuse the existing
-projection timestamp, or the first processing time for a new event.
+establish a corrected revision. Missing event timestamps reuse the resolved
+classification's stored semantic event time, including when its projection is
+missing. Unresolved events reuse an existing projection timestamp, or the first
+processing time when no projection exists.
 Same-classification updates retain projection IDs; cross-classification changes
-allocate a new destination ID. `ingestedAt` retains first event processing time.
+allocate a new destination ID. Authoritative projection updates set `ingestedAt`
+to the registry's first event processing time, including when an unresolved
+legacy conflict selects an anomaly row ingested later than its normal row.
 
 ## Downstream v2 contract
 

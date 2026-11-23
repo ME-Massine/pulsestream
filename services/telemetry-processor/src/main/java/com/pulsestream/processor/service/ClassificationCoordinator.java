@@ -64,7 +64,10 @@ public class ClassificationCoordinator {
                     (event_id, tenant_id, classification, revision, first_processed_at)
                 VALUES (?, ?, 'UNRESOLVED', 0, now()) ON CONFLICT DO NOTHING
                 """, id, tenant);
-        var current = jdbc.queryForMap("SELECT * FROM platform.event_classifications WHERE event_id = ? FOR UPDATE", id);
+        var current = jdbc.queryForMap("""
+                SELECT *, result->>'eventTime' AS stored_event_time
+                FROM platform.event_classifications WHERE event_id = ? FOR UPDATE
+                """, id);
         if (!tenant.equals(current.get("tenant_id"))) {
             throw new DataIntegrityViolationException("Event identifier belongs to another tenant");
         }
@@ -77,6 +80,12 @@ public class ClassificationCoordinator {
             return;
         }
         Instant eventTime = input.timestamp();
+        if (eventTime == null && revision > 0) {
+            // The semantic timestamp survives projection loss and can differ from first processing time.
+            BigDecimal seconds = new BigDecimal(current.get("stored_event_time").toString());
+            eventTime = Instant.ofEpochSecond(seconds.longValue(),
+                    seconds.remainder(BigDecimal.ONE).movePointRight(9).longValueExact());
+        }
         if (eventTime == null) {
             var times = jdbc.query("""
                     SELECT timestamp FROM platform.processed_telemetry WHERE event_id = ?
