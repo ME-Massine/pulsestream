@@ -64,7 +64,10 @@ public class ClassificationCoordinator {
                     (event_id, tenant_id, classification, revision, first_processed_at)
                 VALUES (?, ?, 'UNRESOLVED', 0, now()) ON CONFLICT DO NOTHING
                 """, id, tenant);
-        var current = jdbc.queryForMap("SELECT * FROM platform.event_classifications WHERE event_id = ? FOR UPDATE", id);
+        var current = jdbc.queryForMap("""
+                SELECT *, result->>'eventTime' AS stored_event_time
+                FROM platform.event_classifications WHERE event_id = ? FOR UPDATE
+                """, id);
         if (!tenant.equals(current.get("tenant_id"))) {
             throw new DataIntegrityViolationException("Event identifier belongs to another tenant");
         }
@@ -72,8 +75,17 @@ public class ClassificationCoordinator {
         // A classified event ignores ordinary redelivery. An unresolved one (a fresh placeholder, a legacy
         // contradiction or a row written before this version) takes the first record that reaches it, so
         // it never stays hidden from queries until an operator replays it.
-        if (!replay && revision > 0) return;
+        if (!replay && revision > 0) {
+            if (detection.anomalous()) anomaly.recordDuplicate(); // Keeps the documented duplicate outcome counter.
+            return;
+        }
         Instant eventTime = input.timestamp();
+        if (eventTime == null && revision > 0) {
+            // The semantic timestamp survives projection loss and can differ from first processing time.
+            BigDecimal seconds = new BigDecimal(current.get("stored_event_time").toString());
+            eventTime = Instant.ofEpochSecond(seconds.longValue(),
+                    seconds.remainder(BigDecimal.ONE).movePointRight(9).longValueExact());
+        }
         if (eventTime == null) {
             var times = jdbc.query("""
                     SELECT timestamp FROM platform.processed_telemetry WHERE event_id = ?
@@ -91,7 +103,10 @@ public class ClassificationCoordinator {
         String result = mapper.writeValueAsString(semantic(classification, eventTime, output));
         if (Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT result = CAST(? AS jsonb) FROM platform.event_classifications WHERE event_id = ?",
-                Boolean.class, result, id))) return;
+                Boolean.class, result, id))) {
+            restoreMissingProjection(output, id, ((Timestamp) current.get("first_processed_at")).toInstant());
+            return;
+        }
         long previousRevision = revision;
         revision++;
         // Retract what was published for the opposite class. That is known from a deleted projection row or,
@@ -115,6 +130,18 @@ public class ClassificationCoordinator {
         String upsert = publication(output, classification, revision, false);
         if (retract) outbox.enqueue(receipt, 1, destination, id, upsert);
         else outbox.enqueue(receipt, destination, id, upsert);
+    }
+
+    /**
+     * An unchanged replay is the repair path for a selected projection row that was lost. Downstream
+     * already holds this revision, so only the database row is rewritten and nothing is published.
+     */
+    private void restoreMissingProjection(TelemetryEnvelope output, String id, Instant ingestedAt) {
+        String table = output instanceof TelemetryAnomalyEvent ? "anomalies" : "processed_telemetry";
+        if (Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM platform." + table + " WHERE event_id = ?)", Boolean.class, id))) return;
+        if (output instanceof TelemetryAnomalyEvent a) anomaly.persistAuthoritative(a, ingestedAt);
+        else normal.persistAuthoritative((TelemetryEvent) output, ingestedAt);
     }
 
     /**

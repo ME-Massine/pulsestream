@@ -21,6 +21,8 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -352,12 +354,99 @@ class DeliveryIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT threshold FROM platform.anomalies", BigDecimal.class)).isNull();
     }
 
+    @Test void unchangedReplayRestoresALostProjectionWithoutPublishing() {
+        delivery.consume(record(0, "restored", "20"));
+        var ingested = jdbc.queryForObject("SELECT ingested_at FROM platform.processed_telemetry WHERE event_id = 'restored'", java.sql.Timestamp.class);
+        jdbc.execute("DELETE FROM platform.processed_telemetry WHERE event_id = 'restored'");
+        int published = count("delivery_outbox");
+        replay(1, "restored", "20");
+        assertRevision("restored", 1, "NORMAL");
+        assertThat(count("processed_telemetry")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT ingested_at FROM platform.processed_telemetry WHERE event_id = 'restored'", java.sql.Timestamp.class))
+                .isEqualTo(ingested);
+        assertThat(count("delivery_outbox")).isEqualTo(published);
+    }
+
+    @Test void ordinaryAnomalyRedeliveryCountsAsDuplicate() {
+        delivery.consume(record(0, "dup", "100"));
+        delivery.consume(record(1, "dup", "100"));
+        assertThat(metrics.counter("pulsestream.anomaly.persistence", "outcome", "duplicate").count()).isEqualTo(1.0);
+        assertThat(count("delivery_outbox")).isEqualTo(1);
+    }
+
     @Test void reclassificationKeepsTheFirstIngestionTime() {
         delivery.consume(record(0, "ingested", "20"));
         var first = jdbc.queryForObject("SELECT first_processed_at FROM platform.event_classifications WHERE event_id = 'ingested'", java.sql.Timestamp.class);
         replay(1, "ingested", "100");
         assertThat(jdbc.queryForObject("SELECT ingested_at FROM platform.anomalies WHERE event_id = 'ingested'", java.sql.Timestamp.class))
                 .isEqualTo(first);
+    }
+
+    @Test void migratedConflictResolvedAsAnomalyKeepsTheEarliestIngestionAcrossTransitions() throws Exception {
+        delivery.consume(record(0, "legacy-ingested", "20"));
+        jdbc.execute("""
+                UPDATE platform.processed_telemetry SET ingested_at = '2025-01-01T00:00:00Z';
+                INSERT INTO platform.anomalies (event_id, tenant_id, timestamp, device_id, metric, value,
+                    anomaly_type, severity, ingested_at)
+                VALUES ('legacy-ingested', 'tenant', '2026-01-01T00:00:00Z', 'device', 'temperature', 100,
+                    'rule_violation', 'WARNING', '2026-01-01T00:00:00Z');
+                DELETE FROM platform.event_classifications;
+                DELETE FROM platform.delivery_outbox;
+                """);
+        backfill();
+        assertRevision("legacy-ingested", 0, "UNRESOLVED");
+        var first = jdbc.queryForObject("SELECT first_processed_at FROM platform.event_classifications", java.sql.Timestamp.class);
+        var anomalyId = jdbc.queryForObject("SELECT id FROM platform.anomalies", Long.class);
+        assertThat(first.toInstant()).isEqualTo(Instant.parse("2025-01-01T00:00:00Z"));
+
+        replay(1, "legacy-ingested", "100");
+        assertRevision("legacy-ingested", 1, "ANOMALY");
+        assertThat(count("processed_telemetry")).isZero();
+        assertThat(jdbc.queryForObject("SELECT id FROM platform.anomalies", Long.class)).isEqualTo(anomalyId);
+        assertThat(jdbc.queryForObject("SELECT ingested_at FROM platform.anomalies", java.sql.Timestamp.class)).isEqualTo(first);
+        replay(2, "legacy-ingested", "105");
+        assertRevision("legacy-ingested", 2, "ANOMALY");
+        assertThat(jdbc.queryForObject("SELECT ingested_at FROM platform.anomalies", java.sql.Timestamp.class)).isEqualTo(first);
+        replay(3, "legacy-ingested", "20");
+        assertRevision("legacy-ingested", 3, "NORMAL");
+        assertThat(count("anomalies")).isZero();
+        assertThat(jdbc.queryForObject("SELECT ingested_at FROM platform.processed_telemetry", java.sql.Timestamp.class)).isEqualTo(first);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "20, NORMAL, processed_telemetry, 2026-01-01T00:00:00.123456Z",
+            "100, ANOMALY, anomalies, 2026-01-01T00:00:00.123456Z",
+            "20, NORMAL, processed_telemetry, 1969-12-31T23:59:59.123456Z",
+            "100, ANOMALY, anomalies, 1969-12-31T23:59:59.123456Z"
+    })
+    void timestampLessReplayRestoresMigratedProjectionFromSemanticTime(String value, String classification,
+            String table, String timestamp) throws Exception {
+        var input = record(0, "legacy-time", value).value();
+        var event = new TelemetryEvent(input.eventId(), input.tenantId(), input.eventType(), null,
+                input.source(), input.version(), input.payload());
+        delivery.consume(record(0, event, new RecordHeaders()));
+        Instant eventTime = Instant.parse(timestamp);
+        jdbc.update("UPDATE platform." + table + " SET timestamp = ?, ingested_at = '2025-01-01T00:00:00Z'",
+                java.sql.Timestamp.from(eventTime));
+        jdbc.execute("DELETE FROM platform.event_classifications");
+        jdbc.execute("DELETE FROM platform.delivery_outbox");
+        backfill();
+        var original = jdbc.queryForMap("SELECT result, changed_at, first_processed_at FROM platform.event_classifications");
+        var headers = new RecordHeaders().add(ReplayHeaders.REPLAY, "true".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        for (long offset : new long[] {1, 2}) {
+            if (offset == 2) jdbc.execute("DELETE FROM platform." + table);
+            jdbc.execute("DELETE FROM platform.anomaly_reading_state");
+            delivery.consume(record(offset, event, headers));
+            assertRevision("legacy-time", 1, classification);
+            assertThat(jdbc.queryForMap("SELECT result, changed_at, first_processed_at FROM platform.event_classifications"))
+                    .isEqualTo(original);
+            assertThat(jdbc.queryForObject("SELECT timestamp FROM platform." + table, java.sql.Timestamp.class).toInstant())
+                    .isEqualTo(eventTime);
+            assertThat(jdbc.queryForObject("SELECT ingested_at FROM platform." + table, java.sql.Timestamp.class))
+                    .isEqualTo(original.get("first_processed_at"));
+            assertThat(count("delivery_outbox")).isZero();
+        }
     }
 
     @Test void replayOfSubMicrosecondEventTimeIsUnchanged() {

@@ -162,3 +162,77 @@ visibility, retained outbox history and forward-fix recovery remain applicable.
 - [x] Linked issue referenced
 - [x] Changes stay within issue scope
 ```
+
+## PR #398 timestamp recovery follow-up
+
+Owner: `@ME-Massine`. Issue: #271. PR: #398.
+Branch: `fix/271-replay-followups`. C-xx IDs: none assigned.
+
+Authoritative anomaly upserts now apply the registry's `first_processed_at` to
+existing rows. Resolving a migrated conflict whose normal row was ingested in
+2025 and anomaly row in 2026 therefore keeps 2025 as `ingestedAt` through anomaly
+updates and a later NORMAL transition. Standalone anomaly replay writes retain
+their existing first-ingestion behavior.
+
+Timestamp-less replays of resolved events reuse `result.eventTime` before
+projection/first-processing fallbacks. Epoch seconds are read as decimal text
+and converted without floating-point rounding, preserving microseconds before
+and after the Unix epoch. Recreating a missing projection leaves the registry
+result, revision, change time and outbox unchanged.
+
+Shared files: processor anomaly repository/persistence service, classification
+coordinator, delivery integration tests and the replay operating contract.
+No C-xx interfaces, migration files, event schemas or topic names change.
+Joint review remains pending with processor/replay, PostgreSQL, query and
+platform/operations owners. Required GitHub CI remains pending.
+
+Validation on 2026-11-23 with Java 25 and `.\mvnw.cmd -o clean verify` in each
+service: processor 199 tests, ingestion 29 tests and query 50 tests passed with
+no failures, errors or skips (278 total). All JaCoCo gates passed: processor
+95.35% line / 86.22% branch; ingestion 90.48% / 50.00%; query 98.82% / 97.50%.
+Docker Compose configuration and `git diff --check` passed.
+All five new regression cases failed against the pre-fix production code,
+reproducing the wrong ingestion year and revision increment. The corrected
+targeted run passed all five plus the existing standalone replay ingestion test.
+PostgreSQL regression coverage includes the V6 conflict backfill, anomaly row-ID
+retention, both projection types, positive/negative fractional epoch timestamps,
+and unchanged replay before and after projection loss.
+Logs: `$env:TEMP/pulsestream-271-timestamp-*.log`. GitHub CI and live rollout
+remain pending.
+
+Operating effects: processor forward fix; no new migration or configuration.
+Existing conflicting rows receive the registry ingestion time on authoritative
+updates. Recovery remains explicit replay; no bulk repair is introduced.
+The existing paused/drained V6 rollout contract still applies.
+
+The local merge from `origin/main` resolves PR #398's overlapping replay changes
+while retaining lost-projection recovery and duplicate metrics. The merge is
+uncommitted. Review the diff, then run from the repository root:
+
+```powershell
+git diff --check
+git add -u -- docs/architecture/replay-reclassification.md docs/implementation/issue-271-handoff.md services/telemetry-processor/src
+git diff --cached --check
+git diff --cached --stat
+git commit -m "fix(processor): preserve authoritative replay timestamps"
+git push origin HEAD:fix/271-replay-followups
+```
+
+Copy-ready PR update:
+
+```markdown
+Preserve the registry's first processing time when resolving legacy conflicts
+as ANOMALY. Restore missing projections on timestamp-less unchanged replay using
+the stored semantic event time, without a new revision or UPSERT.
+
+Owner: @ME-Massine. Refs #271; follow-up PR #398. C-xx IDs: none assigned.
+Shared files: processor persistence/classification, delivery integration tests,
+replay operating contract and issue-271 handoff.
+Joint review pending: processor/replay, PostgreSQL, query and operations owners.
+Validation: Java 25 clean Maven verify passed for all three services (278 tests,
+no failures/errors/skips); coverage gates, Compose config and diff checks passed.
+All five new PostgreSQL regressions fail against the pre-fix code and pass with
+the fix. Required GitHub CI remains pending.
+Operating effects: processor forward fix, no schema/configuration change;
+existing V6 cutover requirements remain applicable.
+```

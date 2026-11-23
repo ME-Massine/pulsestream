@@ -22,6 +22,12 @@ public class AnomalyRepository {
     /** Join the delivery transaction when present; standalone callers commit before returning. */
     @Transactional
     public boolean persist(AnomalyEntity entity, boolean replayed) {
+        return persist(entity, replayed, false);
+    }
+
+    /** Authoritative writes use the registry's first processing time even for existing rows. */
+    @Transactional
+    public boolean persist(AnomalyEntity entity, boolean replayed, boolean authoritative) {
         var payload = entity.payload();
         var parameters = new MapSqlParameterSource("eventId", entity.eventId())
                 .addValue("tenantId", entity.tenantId()).addValue("timestamp", Timestamp.from(entity.timestamp()))
@@ -30,7 +36,8 @@ public class AnomalyRepository {
                 .addValue("unit", payload.unit()).addValue("location", payload.location())
                 .addValue("severity", entity.severity().name()).addValue("reasons", mapper.writeValueAsString(entity.reasons()))
                 .addValue("detectedAt", Timestamp.from(entity.detectedAt()))
-                .addValue("ingestedAt", Timestamp.from(entity.ingestedAt())).addValue("replayed", replayed);
+                .addValue("ingestedAt", Timestamp.from(entity.ingestedAt())).addValue("replayed", replayed)
+                .addValue("authoritative", authoritative);
         int changed = jdbc.update("""
                 INSERT INTO platform.anomalies AS existing
                     (event_id, tenant_id, timestamp, device_id, device_type, metric, value, unit,
@@ -42,7 +49,8 @@ public class AnomalyRepository {
                     device_type = EXCLUDED.device_type, metric = EXCLUDED.metric, value = EXCLUDED.value,
                     unit = EXCLUDED.unit, location = EXCLUDED.location, threshold = NULL,
                     anomaly_type = EXCLUDED.anomaly_type, severity = EXCLUDED.severity,
-                    reasons = EXCLUDED.reasons, detected_at = EXCLUDED.detected_at
+                    reasons = EXCLUDED.reasons, detected_at = EXCLUDED.detected_at,
+                    ingested_at = CASE WHEN :authoritative THEN EXCLUDED.ingested_at ELSE existing.ingested_at END
                 WHERE :replayed AND existing.tenant_id = EXCLUDED.tenant_id
                 """, parameters);
         if (changed == 0) {

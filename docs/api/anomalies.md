@@ -66,6 +66,8 @@ payload metadata can also be null. Decimals use PostgreSQL `NUMERIC(18,4)`.
 `threshold` and `anomalyType` preserve legacy records. New results use
 `rule_violation` and null threshold: the detector supplies explanations rather
 than a structured numeric threshold, and one event can violate several rules.
+A replay that changes the result resets legacy values to the same defaults; an
+unchanged replay leaves them untouched.
 Legacy records have empty reasons, null additional payload metadata and an
 initial `detectedAt` equal to their original `ingestedAt`.
 
@@ -103,8 +105,8 @@ the coordinator deletes the obsolete projection and emits a versioned retraction
 Prometheus exports
 `pulsestream_anomaly_persistence_total{outcome="success|duplicate|failure"}`
 on the existing processor management surface. `success` counts committed
-inserts/replay updates, `duplicate` counts repository-level ignored duplicates; the classification coordinator skips ordinary duplicates before projection persistence, and
-`failure` counts rejected or failed persistence attempts, including transaction
+inserts/replay updates, `duplicate` counts ordinary anomaly redeliveries that the classification coordinator
+ignores, and `failure` counts rejected or failed persistence attempts, including transaction
 commit failures. Labels contain no tenant, event or device identifiers.
 
 ## Deployment and verification

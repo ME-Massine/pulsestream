@@ -24,15 +24,21 @@ classification increments revision rather than reusing its previous revision.
 Equality uses JSONB semantic content: normalized output payload, event timestamp
 as epoch seconds at microsecond precision, classification, and anomaly
 severity/reasons. The anomaly type and threshold are fixed by the projection write
-and are neither compared nor rewritten by an unchanged replay.
+and are neither compared nor rewritten by an unchanged replay. An unchanged replay
+still recreates a selected projection row that is missing, without a new revision
+or publication.
 Decimal scale and object property order do not change equality. Generated
 processing/detection times, replay headers and wire versions are excluded.
 Reason array order is significant. Numeric and timestamp precision lost in old
 PostgreSQL rows cannot be recovered by migration; a higher-precision replay may
-establish a corrected revision. Missing event timestamps reuse the existing
-projection timestamp, or the first processing time for a new event.
+establish a corrected revision. Missing event timestamps reuse the resolved
+classification's stored semantic event time, including when its projection is
+missing. Unresolved events reuse an existing projection timestamp, or the first
+processing time when no projection exists.
 Same-classification updates retain projection IDs; cross-classification changes
-allocate a new destination ID. `ingestedAt` retains first event processing time.
+allocate a new destination ID. Authoritative projection updates set `ingestedAt`
+to the registry's first event processing time, including when an unresolved
+legacy conflict selects an anomaly row ingested later than its normal row.
 
 ## Downstream v2 contract
 
